@@ -1,0 +1,19 @@
+[package]
+name = "rw-desktop"
+version = "0.1.0"
+edition = "2024"
+description = "Robot Whisperer, native desktop shell"
+
+[[bin]]
+name = "robot-whisperer"
+path = "src/main.rs"
+
+[dependencies]
+rw-ui.workspace = true
+rw-core.workspace = true
+gpui.workspace = true
+gpui_platform.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

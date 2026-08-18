@@ -1,0 +1,32 @@
+[package]
+name = "rw-ui"
+version = "0.1.0"
+edition = "2024"
+description = "The Robot Whisperer GPUI application"
+
+[dependencies]
+gpui.workspace = true
+gpui-component.workspace = true
+
+rw-core.workspace = true
+rw-canonical.workspace = true
+rw-pipeline.workspace = true
+rw-transport.workspace = true
+
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+smallvec = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+# Frames arrive from tokio worker threads natively and from JS callbacks on the
+# web; both feed an async channel that a `cx.spawn` task drains. smol's channel
+# works on both targets, unlike tokio's runtime-bound primitives.
+smol = "2"
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros", "time"] }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+tokio = { workspace = true, features = ["sync", "macros"] }

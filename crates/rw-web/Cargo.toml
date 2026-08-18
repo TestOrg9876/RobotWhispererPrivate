@@ -1,0 +1,27 @@
+[package]
+name = "rw-web"
+version = "0.1.0"
+edition = "2024"
+description = "Robot Whisperer, browser shell (wasm32)"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rw-ui.workspace = true
+# Not inherited: the web build needs IndexedDB storage instead of the
+# default SQLite backend, and Cargo forbids overriding `default-features`
+# on an inherited dependency.
+rw-core = { path = "../rw-core", default-features = false, features = ["wasm-storage"] }
+gpui.workspace = true
+gpui_platform.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+gpui_web.workspace = true
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"
+console_log = "1"
+log = "0.4"
+tracing-wasm = "0.2"

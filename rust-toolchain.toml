@@ -1,0 +1,9 @@
+# Matches the toolchain zed pins for gpui (crates/gpui uses std::hint::cold_path,
+# stable only from 1.96). The wasm32 build is the exception: gpui_web depends on
+# zed's wasm_thread fork, which needs `feature(stdarch_wasm_atomic_wait)`, so
+# `cargo xtask web` shells out to `rustup run nightly` explicitly.
+[toolchain]
+channel = "1.97.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]

@@ -1,0 +1,31 @@
+[workspace]
+members = [
+    "crates/rw-canonical",
+    "crates/rw-codec-cdr",
+    "crates/rw-codec-json",
+    "crates/rw-codec-rosmsg",
+    "crates/rw-core",
+    "crates/rw-pipeline",
+    "crates/rw-schema-foxglove",
+    "crates/rw-schema-ros1",
+    "crates/rw-schema-ros2",
+    "crates/rw-session",
+    "crates/rw-transport",
+    "crates/rw-transport-dummy",
+    "crates/rw-transport-foxglove-ws",
+    "crates/rw-transport-rosbridge",
+    "crates/rw-validation",
+    "crates/rw-wire",
+    "crates/rw-ws",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+
+[workspace.dependencies]
+tokio = { version = "1", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tracing = "0.1"

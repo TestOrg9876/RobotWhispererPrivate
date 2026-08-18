@@ -1,7 +1,0 @@
-build
-.svelte-kit
-package
-node_modules
-src-tauri/target
-src/lib/wasm/generated
-bun.lock

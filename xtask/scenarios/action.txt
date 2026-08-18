@@ -1,4 +1,4 @@
-# Discovery offers on the target field: the connections tree's replacement.
+# Sending an action goal, and watching feedback arrive before the result.
 #
 # Coordinates are relative to the app window, which GPUI opens at 1440x900.
 
@@ -21,25 +21,28 @@ wait 1500
 click 200 750
 wait 900
 
-# A request, pointed at the new connection by default.
+# A request, switched to an action.
 # The list's + button, which is there whether or not the list is empty.
 click 261 81
 wait 1400
-
-# Clicking the target field shows everything the system advertises.
-click 700 133
-wait 900
-shot 01-all-offers
-
-# Typing narrows it, prefix matches first.
-type /dummy/w
-wait 800
-shot 02-narrowed
-
-# Down highlights the next row; Enter takes it.
-key Down
-wait 400
-shot 03-highlighted
-key Return
+click 330 133
 wait 600
-shot 04-accepted
+click 350 217
+wait 800
+
+# Pick the Dummy action from the offers.
+click 700 133
+wait 800
+key Return
+wait 1000
+shot 01-goal-form
+
+# An order to compute, then send.
+click 975 251
+type 6
+wait 300
+click 1364 133
+wait 1200
+shot 02-feedback
+wait 4000
+shot 03-result

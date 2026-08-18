@@ -197,6 +197,90 @@ impl Workspace {
         })
     }
 
+    /// Adds a connection to a ROS system.
+    ///
+    /// Several can be connected at once — that is the point of them — so this
+    /// makes no attempt to be "the" connection.
+    pub fn create_connection(
+        &mut self,
+        draft: NewConnection,
+        cx: &mut Context<Self>,
+    ) -> Task<Option<Connection>> {
+        let storage = self.storage();
+        cx.spawn(async move |workspace, cx| {
+            let created = storage.create_connection(draft).await;
+            workspace
+                .update(cx, |workspace, cx| {
+                    cx.notify();
+                    match created {
+                        Ok(connection) => {
+                            workspace.connections.push(connection.clone());
+                            Some(connection)
+                        }
+                        Err(error) => {
+                            workspace.fail("create connection", error);
+                            None
+                        }
+                    }
+                })
+                .ok()
+                .flatten()
+        })
+    }
+
+    pub fn update_connection(
+        &mut self,
+        connection: Connection,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        let storage = self.storage();
+        if let Some(existing) = self
+            .connections
+            .iter_mut()
+            .find(|entry| entry.id == connection.id)
+        {
+            *existing = connection.clone();
+        }
+        cx.notify();
+
+        cx.spawn(async move |workspace, cx| {
+            let outcome = storage.update_connection(&connection).await;
+            workspace
+                .update(cx, |workspace, cx| {
+                    if let Err(error) = outcome {
+                        workspace.fail("save connection", error);
+                        cx.notify();
+                    }
+                })
+                .ok();
+        })
+    }
+
+    pub fn delete_connection(&mut self, id: i64, cx: &mut Context<Self>) -> Task<()> {
+        let storage = self.storage();
+        cx.spawn(async move |workspace, cx| {
+            let outcome = storage.delete_connection(id).await;
+            workspace
+                .update(cx, |workspace, cx| {
+                    match outcome {
+                        Ok(()) => {
+                            workspace.connections.retain(|entry| entry.id != id);
+                            // Requests pointing at it are detached by storage;
+                            // mirror that here rather than re-reading everything.
+                            for request in &mut workspace.requests {
+                                if request.connection_id == Some(id) {
+                                    request.connection_id = None;
+                                }
+                            }
+                        }
+                        Err(error) => workspace.fail("delete connection", error),
+                    }
+                    cx.notify();
+                })
+                .ok();
+        })
+    }
+
     /// Writes an edited request back to storage and to the in-memory list.
     pub fn save_request(&mut self, request: Request, cx: &mut Context<Self>) -> Task<()> {
         let storage = self.storage();

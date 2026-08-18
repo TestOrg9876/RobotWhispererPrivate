@@ -7,6 +7,8 @@
 pub mod actions;
 pub mod assets;
 pub mod discovery;
+pub mod form;
+pub mod palette;
 pub mod panels;
 pub mod prefs;
 pub mod session;

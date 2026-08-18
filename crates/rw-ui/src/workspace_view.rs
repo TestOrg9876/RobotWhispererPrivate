@@ -1,9 +1,11 @@
-//! The window root: title bar, body, status bar.
+//! The window root: title bar, dock, status bar.
 //!
-//! The body arrangement is chosen by [`LayoutMode`]. Every surface is a
-//! `gpui_component::dock::Panel` in both modes, so `Fixed` and `Docked` host the
-//! *same* entities and switching between them is a setting rather than a rewrite.
+//! The body is a `gpui_component::dock::DockArea` and nothing else. Every
+//! surface — the request list, request editors, the console — is a `Panel`
+//! inside it, which is what gives tabs that drag, reorder, split and restore
+//! without this file implementing any of it.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder as _;
@@ -11,23 +13,25 @@ use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Entity, InteractiveElement as _,
     IntoElement, ParentElement as _, Render, Styled as _, Subscription, Window, div, px,
 };
-use gpui_component::dock::{DockArea, DockItem, DockPlacement};
+use gpui_component::dock::{DockArea, DockItem, DockPlacement, PanelView};
 use gpui_component::menu::DropdownMenu as _;
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, Root, Sizable as _, StyledExt as _, TitleBar,
+    ActiveTheme as _, Icon, IconName, Root, Sizable as _, TitleBar, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    resizable::{h_resizable, resizable_panel, v_resizable},
     status_bar::StatusBar,
-    tab::{Tab, TabBar},
     v_flex,
 };
 
 use crate::actions::{
-    Connect, Disconnect, NewConnection, NewRequest, ResetLayout, SetTheme, ToggleConsole,
-    ToggleSidebar,
+    CommandPalette, Connect, Disconnect, ManageConnections, NewRequest, OpenSettings,
+    ToggleConsole, ToggleSidebar,
 };
-use crate::panels::{CollectionsEvent, CollectionsPanel, ConsolePanel, RequestPanel};
+use crate::palette::{Choice, Entry};
+use crate::panels::{
+    CollectionsEvent, CollectionsPanel, ConnectionsPanel, ConsolePanel, PaletteEvent, PaletteView,
+    RequestPanel, SettingsEvent, SettingsView, WelcomeEvent, WelcomePanel,
+};
 use crate::prefs::Prefs;
 use crate::session::{RobotWhisperer, Sessions, Status};
 use crate::theme::{self, Preference};
@@ -36,30 +40,23 @@ use crate::workspace::Workspace;
 
 /// Bumped when the default dock arrangement changes, so stale saved layouts get
 /// rebuilt rather than loaded into a shape that no longer exists.
-const LAYOUT_VERSION: usize = 2;
-
-/// How the body hosts its panels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LayoutMode {
-    /// Postman-shaped: sidebar, request tabs, optional console. Predictable.
-    Fixed,
-    /// Everything draggable and tabbable through `DockArea`.
-    Docked,
-}
+const LAYOUT_VERSION: usize = 3;
 
 pub struct WorkspaceView {
     workspace: Entity<Workspace>,
     sessions: Entity<Sessions>,
+    dock: Entity<DockArea>,
     collections: Entity<CollectionsPanel>,
-    console: Entity<ConsolePanel>,
-    /// Open request editors, in tab order.
-    open: Vec<Entity<RequestPanel>>,
-    active: usize,
-    layout: LayoutMode,
-    console_open: bool,
-    sidebar_open: bool,
-    /// Built lazily, and only in `Docked` mode.
-    dock: Option<Entity<DockArea>>,
+    /// Request editors currently open, by request id. The dock owns their order
+    /// and which is active; this only answers "is it already open".
+    open: HashMap<i64, Entity<RequestPanel>>,
+    /// Built the first time connections are opened, and kept so reopening the
+    /// dock shows the same panel rather than a fresh one mid-edit.
+    connections: Option<Entity<ConnectionsPanel>>,
+    /// Shown in the centre while nothing else is, and taken out when the first
+    /// request arrives. A panel rather than a special case in `render`, so the
+    /// dock stays the only thing that decides what the centre looks like.
+    welcome: Option<Entity<WelcomePanel>>,
     prefs: Prefs,
     _subscriptions: Vec<Subscription>,
 }
@@ -73,10 +70,28 @@ impl WorkspaceView {
         let collections = CollectionsPanel::view(workspace.clone(), window, cx);
         let console = ConsolePanel::view(window, cx);
 
+        let dock = cx.new(|cx| DockArea::new("workspace", Some(LAYOUT_VERSION), window, cx));
+        let weak = dock.downgrade();
+        let left = DockItem::tab(collections.clone(), &weak, window, cx);
+        let bottom = DockItem::tab(console.clone(), &weak, window, cx);
+        let welcome = WelcomePanel::view(cx);
+        let centre = DockItem::tabs(
+            vec![Arc::new(welcome.clone()) as Arc<dyn PanelView>],
+            &weak,
+            window,
+            cx,
+        );
+        dock.update(cx, |area, cx| {
+            area.set_center(centre, window, cx);
+            area.set_left_dock(left, Some(px(280.)), true, window, cx);
+            area.set_bottom_dock(bottom, Some(px(180.)), false, window, cx);
+        });
+
         let subscriptions = vec![
             cx.observe(&workspace, |_, _, cx| cx.notify()),
             cx.observe(&sessions, |_, _, cx| cx.notify()),
             cx.subscribe_in(&collections, window, Self::on_collections_event),
+            cx.subscribe_in(&welcome, window, Self::on_welcome_event),
         ];
 
         workspace
@@ -86,90 +101,99 @@ impl WorkspaceView {
         Self {
             workspace,
             sessions,
+            dock,
             collections,
-            console,
-            open: Vec::new(),
-            active: 0,
-            layout: LayoutMode::Fixed,
-            console_open: false,
-            sidebar_open: true,
-            dock: None,
+            open: HashMap::new(),
+            connections: None,
+            welcome: Some(welcome),
             prefs,
             _subscriptions: subscriptions,
         }
     }
 
-    // ── request tabs ───────────────────────────────────────────────────────────
+    // ── requests ───────────────────────────────────────────────────────────────
 
     fn open_request(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(index) = self
-            .open
-            .iter()
-            .position(|panel| panel.read(cx).request_id() == Some(id))
-        {
-            self.activate(index, cx);
-            return;
-        }
-
         let Some(request) = self.workspace.read(cx).request(id).cloned() else {
             return;
         };
-        let panel = RequestPanel::view(&request, window, cx);
-        self.open.push(panel);
-        self.activate(self.open.len() - 1, cx);
-        self.sync_dock(window, cx);
-    }
 
-    /// Selects an open tab, and highlights its request in the sidebar.
-    fn activate(&mut self, index: usize, cx: &mut Context<Self>) {
-        if index >= self.open.len() {
-            return;
+        // Re-opening an already-open request has to bring its tab to the front,
+        // and `TabPanel::add_panel` returns early for a panel it already holds
+        // rather than activating it. Taking it out and putting it back is the
+        // only way to do that through the dock's public API.
+        if let Some(existing) = self.open.get(&id).cloned() {
+            let panel = Arc::new(existing) as Arc<dyn PanelView>;
+            self.dock.update(cx, |dock, cx| {
+                dock.remove_panel(panel.clone(), DockPlacement::Center, window, cx);
+                dock.add_panel(panel, DockPlacement::Center, None, window, cx);
+            });
+        } else {
+            let panel = RequestPanel::view(&request, window, cx);
+            self.open.insert(id, panel.clone());
+            self.dock.update(cx, |dock, cx| {
+                dock.add_panel(
+                    Arc::new(panel) as Arc<dyn PanelView>,
+                    DockPlacement::Center,
+                    None,
+                    window,
+                    cx,
+                )
+            });
+            self.dismiss_welcome(window, cx);
         }
-        self.active = index;
-        let selected = self.open[index].read(cx).request_id();
+
         self.collections
-            .update(cx, |panel, cx| panel.select(selected, cx));
+            .update(cx, |panel, cx| panel.select(Some(id), cx));
         cx.notify();
     }
 
-    fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if index >= self.open.len() {
+    fn close_request(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(panel) = self.open.remove(&id) else {
             return;
-        }
-        self.open.remove(index);
-        self.activate(self.active.min(self.open.len().saturating_sub(1)), cx);
-        self.sync_dock(window, cx);
+        };
+        self.dock.update(cx, |dock, cx| {
+            dock.remove_panel(
+                Arc::new(panel) as Arc<dyn PanelView>,
+                DockPlacement::Center,
+                window,
+                cx,
+            )
+        });
         cx.notify();
     }
 
-    fn on_collections_event(
+    /// Takes the welcome panel out once there is something real to look at.
+    fn dismiss_welcome(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(welcome) = self.welcome.take() else {
+            return;
+        };
+        self.dock.update(cx, |dock, cx| {
+            dock.remove_panel(
+                Arc::new(welcome) as Arc<dyn PanelView>,
+                DockPlacement::Center,
+                window,
+                cx,
+            )
+        });
+    }
+
+    fn on_welcome_event(
         &mut self,
-        _panel: &Entity<CollectionsPanel>,
-        event: &CollectionsEvent,
+        _panel: &Entity<WelcomePanel>,
+        event: &WelcomeEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
-            CollectionsEvent::Open(id) => self.open_request(*id, window, cx),
-            CollectionsEvent::New => self.new_request(window, cx),
-            CollectionsEvent::Duplicate(id) => self.duplicate_request(*id, window, cx),
-            CollectionsEvent::Delete(id) => {
-                if let Some(index) = self
-                    .open
-                    .iter()
-                    .position(|panel| panel.read(cx).request_id() == Some(*id))
-                {
-                    self.close_tab(index, window, cx);
-                }
-                self.workspace
-                    .update(cx, |workspace, cx| workspace.delete_request(*id, cx))
-                    .detach();
-            }
+            WelcomeEvent::NewRequest => self.new_request(window, cx),
+            WelcomeEvent::ManageConnections => self.open_connections(window, cx),
+            WelcomeEvent::CommandPalette => self.open_palette(window, cx),
         }
     }
 
     fn new_request(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let environment = self.default_environment(cx);
+        let connection = self.default_connection(cx);
         let creating = self
             .workspace
             .update(cx, |workspace, cx| workspace.create_request(cx));
@@ -181,7 +205,7 @@ impl WorkspaceView {
             window
                 .update(|window, cx| {
                     view.update(cx, |view, cx| {
-                        if let Some(id) = environment {
+                        if let Some(id) = connection {
                             request.connection_id = Some(id);
                             view.workspace
                                 .update(cx, |workspace, cx| {
@@ -196,19 +220,6 @@ impl WorkspaceView {
                 .ok();
         })
         .detach();
-    }
-
-    /// The environment a new request should start out pointing at: whichever one
-    /// is connected, else the only one there is. Leaving it unset when the choice
-    /// is obvious just makes the first send fail.
-    fn default_environment(&self, cx: &App) -> Option<i64> {
-        let connections = self.workspace.read(cx).connections();
-        let sessions = self.sessions.read(cx);
-        connections
-            .iter()
-            .find(|connection| sessions.status(connection.id).is_connected())
-            .or_else(|| connections.first())
-            .map(|connection| connection.id)
     }
 
     fn duplicate_request(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
@@ -230,239 +241,39 @@ impl WorkspaceView {
         .detach();
     }
 
-    // ── layout ─────────────────────────────────────────────────────────────────
-
-    /// Keeps the dock's contents in step with `open` while in `Docked` mode. A
-    /// no-op in `Fixed` mode, which is what makes switching cheap.
-    fn sync_dock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.layout != LayoutMode::Docked {
-            return;
-        }
-        let dock = self.ensure_dock(window, cx);
-        let panels: Vec<Arc<dyn gpui_component::dock::PanelView>> = self
-            .open
+    /// The connection a new request should start out pointing at: whichever one
+    /// is connected, else the only one there is.
+    fn default_connection(&self, cx: &App) -> Option<i64> {
+        let connections = self.workspace.read(cx).connections();
+        let sessions = self.sessions.read(cx);
+        connections
             .iter()
-            .map(|panel| Arc::new(panel.clone()) as Arc<dyn gpui_component::dock::PanelView>)
-            .collect();
-
-        dock.update(cx, |dock, cx| {
-            let weak = cx.entity().downgrade();
-            let centre = DockItem::tabs(panels, &weak, window, cx);
-            dock.set_center(centre, window, cx);
-        });
+            .find(|connection| sessions.status(connection.id).is_connected())
+            .or_else(|| connections.first())
+            .map(|connection| connection.id)
     }
 
-    fn ensure_dock(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<DockArea> {
-        if let Some(dock) = &self.dock {
-            return dock.clone();
-        }
-
-        let dock = cx.new(|cx| DockArea::new("workspace", Some(LAYOUT_VERSION), window, cx));
-        let weak = dock.downgrade();
-        let left = DockItem::tab(self.collections.clone(), &weak, window, cx);
-        let bottom = DockItem::tab(self.console.clone(), &weak, window, cx);
-        let centre = DockItem::tabs(vec![], &weak, window, cx);
-
-        dock.update(cx, |area, cx| {
-            area.set_version(LAYOUT_VERSION, window, cx);
-            area.set_center(centre, window, cx);
-            area.set_left_dock(left, Some(px(280.)), true, window, cx);
-            area.set_bottom_dock(bottom, Some(px(180.)), false, window, cx);
-        });
-
-        self.dock = Some(dock.clone());
-        dock
-    }
-
-    fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        match self.layout {
-            LayoutMode::Docked => {
-                let dock = self.ensure_dock(window, cx);
-                self.sync_dock(window, cx);
-                dock.into_any_element()
-            }
-            LayoutMode::Fixed => self.fixed_body(cx),
-        }
-    }
-
-    fn fixed_body(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let editor = self.editor_area(cx);
-        let console = self.console.clone();
-        let console_open = self.console_open;
-
-        let centre = if console_open {
-            v_resizable("editor-console")
-                .child(resizable_panel().child(editor))
-                .child(
-                    resizable_panel()
-                        .size(px(180.))
-                        .size_range(px(100.)..px(420.))
-                        .child(console),
-                )
-                .into_any_element()
-        } else {
-            editor
-        };
-
-        if !self.sidebar_open {
-            return centre;
-        }
-
-        h_resizable("shell")
-            .child(
-                resizable_panel()
-                    .size(px(280.))
-                    .size_range(px(220.)..px(420.))
-                    .child(self.collections.clone()),
-            )
-            .child(resizable_panel().child(centre))
-            .into_any_element()
-    }
-
-    /// Request tabs plus the active editor.
-    fn editor_area(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        if self.open.is_empty() {
-            return self.welcome(cx);
-        }
-
-        let active = self.active;
-        let tabs: Vec<_> = self
-            .open
-            .iter()
-            .enumerate()
-            .map(|(index, panel)| {
-                let request = panel.read(cx);
-                Tab::new()
-                    .label(request.title())
-                    .prefix(tokens::status_dot(tokens::kind_color(request.kind(), cx)))
-                    .suffix(
-                        h_flex()
-                            .gap_1()
-                            .items_center()
-                            .when(request.dirty(), |row| {
-                                row.child(div().size(px(5.)).rounded_full().bg(cx.theme().warning))
-                            })
-                            .child(
-                                Button::new(("close-tab", index))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::Close)
-                                    .tooltip("Close request")
-                                    .on_click(cx.listener(
-                                        move |this, _: &ClickEvent, window, cx| {
-                                            this.close_tab(index, window, cx)
-                                        },
-                                    )),
-                            ),
-                    )
-            })
-            .collect();
-
-        v_flex()
-            .size_full()
-            .min_w_0()
-            .bg(cx.theme().background)
-            .child(
-                TabBar::new("request-tabs")
-                    .selected_index(active)
-                    .children(tabs)
-                    .on_click(cx.listener(|this, index: &usize, _, cx| this.activate(*index, cx))),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .children(self.open.get(active).cloned()),
-            )
-            .into_any_element()
-    }
-
-    fn welcome(&self, cx: &mut Context<Self>) -> AnyElement {
-        v_flex()
-            .size_full()
-            .items_center()
-            .justify_center()
-            .gap_5()
-            .bg(cx.theme().background)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .size_16()
-                    .rounded(cx.theme().radius_lg)
-                    .bg(cx.theme().secondary)
-                    .text_color(cx.theme().primary)
-                    .child(Icon::new(IconName::Bot).size_8()),
-            )
-            .child(
-                v_flex()
-                    .gap_1p5()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_2xl()
-                            .font_semibold()
-                            .text_color(cx.theme().foreground)
-                            .child("Robot Whisperer"),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Save a request, point it at an environment, and send it."),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        Button::new("welcome-new-request")
-                            .primary()
-                            .icon(IconName::Plus)
-                            .label("New request")
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                this.new_request(window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("welcome-add-environment")
-                            .outline()
-                            .icon(IconName::Globe)
-                            .label("Add environment")
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.add_dummy(cx);
-                            })),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    // ── environments ───────────────────────────────────────────────────────────
-
-    /// Adds the Dummy environment and connects it.
-    ///
-    /// Adding an environment and then finding every request refuses to run is a
-    /// dead end, so creating one connects it. Dummy is local and synthetic, so
-    /// there is nothing to ask permission for.
-    fn add_dummy(&mut self, cx: &mut Context<Self>) {
-        let creating = self
-            .workspace
-            .update(cx, |workspace, cx| workspace.create_dummy_connection(cx));
-
-        cx.spawn(async move |view, cx| {
-            let Some(connection) = creating.await else {
-                return;
-            };
-            view.update(cx, |view, cx| {
-                view.sessions
-                    .update(cx, |sessions, cx| sessions.connect(&connection, cx))
+    fn on_collections_event(
+        &mut self,
+        _panel: &Entity<CollectionsPanel>,
+        event: &CollectionsEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            CollectionsEvent::Open(id) => self.open_request(*id, window, cx),
+            CollectionsEvent::New => self.new_request(window, cx),
+            CollectionsEvent::Duplicate(id) => self.duplicate_request(*id, window, cx),
+            CollectionsEvent::Delete(id) => {
+                self.close_request(*id, window, cx);
+                self.workspace
+                    .update(cx, |workspace, cx| workspace.delete_request(*id, cx))
                     .detach();
-            })
-            .ok();
-        })
-        .detach();
+            }
+        }
     }
+
+    // ── connections ────────────────────────────────────────────────────────────
 
     fn toggle_connection(&mut self, id: i64, cx: &mut Context<Self>) {
         let connected = self.sessions.read(cx).status(id).is_connected();
@@ -480,25 +291,32 @@ impl WorkspaceView {
             .detach();
     }
 
-    /// The environment pill: a status dot, the active environment's name, and a
-    /// menu to connect, disconnect or add one.
-    fn environment_pill(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The connection status in the title bar.
+    ///
+    /// Several ROS systems can be connected at once, so this counts them rather
+    /// than naming one: which system a *request* talks to is that request's
+    /// business, shown in its own bar.
+    fn connections_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let workspace = self.workspace.read(cx);
         let sessions = self.sessions.read(cx);
+        let total = workspace.connections().len();
+        let connected = sessions.connected_count();
 
-        let (label, colour) = workspace
-            .connections()
-            .iter()
-            .map(|connection| (connection.name.clone(), sessions.status(connection.id)))
-            .find(|(_, status)| status.is_connected())
-            .map(|(name, _)| (name, cx.theme().success))
-            .unwrap_or_else(|| match workspace.connections().first() {
-                Some(connection) => (
-                    connection.name.clone(),
-                    status_colour(&sessions.status(connection.id), cx),
-                ),
-                None => ("No environment".to_string(), cx.theme().muted_foreground),
-            });
+        let colour = if total == 0 {
+            cx.theme().muted_foreground
+        } else if connected == 0 {
+            cx.theme().danger
+        } else if connected < total {
+            cx.theme().warning
+        } else {
+            cx.theme().success
+        };
+
+        let label = match (total, connected) {
+            (0, _) => "No connections".to_string(),
+            (total, connected) if connected == total => format!("{connected} connected"),
+            (total, connected) => format!("{connected}/{total} connected"),
+        };
 
         let entries: Vec<_> = workspace
             .connections()
@@ -512,7 +330,7 @@ impl WorkspaceView {
             })
             .collect();
 
-        Button::new("environment")
+        Button::new("connections")
             .ghost()
             .small()
             .child(
@@ -528,57 +346,178 @@ impl WorkspaceView {
                     ),
             )
             .dropdown_menu(move |mut menu, _window, _cx| {
-                if entries.is_empty() {
-                    menu = menu.menu("Add Dummy environment", Box::new(NewConnection));
-                    return menu;
-                }
                 for (id, name, connected) in &entries {
                     let action: Box<dyn gpui::Action> = if *connected {
                         Box::new(Disconnect(*id))
                     } else {
                         Box::new(Connect(*id))
                     };
-                    menu = menu.menu_with_check(
-                        format!("{name}{}", if *connected { "" } else { "  — disconnected" }),
-                        *connected,
-                        action,
-                    );
+                    menu = menu.menu_with_check(name.clone(), *connected, action);
                 }
-                menu.separator()
-                    .menu("Add Dummy environment", Box::new(NewConnection))
+                if !entries.is_empty() {
+                    menu = menu.separator();
+                }
+                menu.menu("Manage connections…", Box::new(ManageConnections))
             })
             .into_any_element()
     }
 
-    fn theme_menu(&self, cx: &mut Context<Self>) -> AnyElement {
-        let current = theme::current(cx);
-        let following = self.prefs.theme() == Preference::System;
-
-        Button::new("theme")
+    /// Everything that is not a per-request control, behind one button.
+    ///
+    /// A theme picker permanently occupying the title bar is a setting wearing a
+    /// toolbar button's clothes; it lives in Settings with the other ones.
+    fn app_menu(&self) -> AnyElement {
+        Button::new("app-menu")
             .ghost()
             .small()
-            .icon(IconName::Palette)
-            .tooltip(format!("Theme: {current}"))
-            .dropdown_menu(move |mut menu, _window, cx| {
-                menu = menu
-                    .menu_with_check(
-                        "Match system",
-                        following,
-                        Box::new(SetTheme("system".into())),
-                    )
-                    .separator();
-                let active = theme::current(cx);
-                for name in theme::names() {
-                    let selected = !following && active == name;
-                    menu = menu.menu_with_check(
-                        name.clone(),
-                        selected,
-                        Box::new(SetTheme(name.into())),
-                    );
-                }
-                menu
+            .icon(IconName::Ellipsis)
+            .tooltip("Menu")
+            .dropdown_menu(move |menu, _window, _cx| {
+                menu.menu("Command palette…", Box::new(CommandPalette))
+                    .menu("New request", Box::new(NewRequest))
+                    .menu("Manage connections…", Box::new(ManageConnections))
+                    .separator()
+                    .menu("Toggle request list", Box::new(ToggleSidebar))
+                    .menu("Toggle console", Box::new(ToggleConsole))
+                    .separator()
+                    .menu("Settings…", Box::new(OpenSettings))
             })
             .into_any_element()
+    }
+
+    // ── dialogs ────────────────────────────────────────────────────────────────
+
+    /// Shows the connections panel, docked to the right.
+    ///
+    /// A panel rather than a dialog: connecting to several ROS systems is
+    /// something you do *while* working, watching them come up, not a modal
+    /// errand that blocks the window until it is dismissed.
+    fn open_connections(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let panel = self
+            .connections
+            .get_or_insert_with(|| ConnectionsPanel::view(window, cx))
+            .clone();
+
+        self.dock.update(cx, |dock, cx| {
+            if dock.has_dock(DockPlacement::Right) {
+                if !dock.is_dock_open(DockPlacement::Right, cx) {
+                    dock.toggle_dock(DockPlacement::Right, window, cx);
+                }
+            } else {
+                // Created rather than added, so it opens at a width the form
+                // actually fits in: `add_panel` would take the dock default.
+                let weak = cx.entity().downgrade();
+                let item = DockItem::tab(panel, &weak, window, cx);
+                dock.set_right_dock(item, Some(px(340.)), true, window, cx);
+            }
+        });
+        cx.notify();
+    }
+
+    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let settings = SettingsView::view(&self.prefs, cx);
+
+        // The theme applies as it is chosen rather than on a Save button: it is
+        // a preview you are looking at, and nobody wants to guess.
+        cx.subscribe(&settings, |this, _, event: &SettingsEvent, cx| {
+            let SettingsEvent::ThemeChosen(preference) = event;
+            this.apply_theme(preference.clone(), cx);
+        })
+        .detach();
+
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            dialog.title("Settings").w(px(460.)).child(settings.clone())
+        });
+        cx.notify();
+    }
+
+    fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let palette = PaletteView::view(self.palette_entries(cx), window, cx);
+        palette.update(cx, |palette, cx| palette.focus(window, cx));
+
+        cx.subscribe_in(
+            &palette,
+            window,
+            |this, _, event: &PaletteEvent, window, cx| {
+                window.close_dialog(cx);
+                if let PaletteEvent::Chose(choice) = event {
+                    this.run_choice(choice.clone(), window, cx);
+                }
+            },
+        )
+        .detach();
+
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            dialog.title("Go to").w(px(620.)).child(palette.clone())
+        });
+        cx.notify();
+    }
+
+    /// Everything the palette can reach. Commands first: with nothing typed the
+    /// palette should read as a menu of what this app does.
+    fn palette_entries(&self, cx: &App) -> Vec<Entry> {
+        let mut entries = vec![
+            Entry::new("Command", "New request", Choice::Command("NewRequest")),
+            Entry::new(
+                "Command",
+                "Manage connections",
+                Choice::Command("ManageConnections"),
+            ),
+            Entry::new("Command", "Settings", Choice::Command("OpenSettings")),
+            Entry::new(
+                "Command",
+                "Toggle request list",
+                Choice::Command("ToggleSidebar"),
+            ),
+            Entry::new(
+                "Command",
+                "Toggle console",
+                Choice::Command("ToggleConsole"),
+            ),
+        ];
+
+        let workspace = self.workspace.read(cx);
+        entries.extend(workspace.requests().iter().map(|request| {
+            Entry::new("Request", request.name.clone(), Choice::Request(request.id))
+                .detail(request.target.clone())
+        }));
+
+        let sessions = self.sessions.read(cx);
+        entries.extend(workspace.connections().iter().map(|connection| {
+            let connected = sessions.status(connection.id).is_connected();
+            Entry::new(
+                "Connection",
+                connection.name.clone(),
+                Choice::Connection(connection.id),
+            )
+            .detail(if connected {
+                "connected"
+            } else {
+                "disconnected"
+            })
+        }));
+
+        entries
+    }
+
+    fn run_choice(&mut self, choice: Choice, window: &mut Window, cx: &mut Context<Self>) {
+        match choice {
+            Choice::Request(id) => self.open_request(id, window, cx),
+            Choice::Connection(id) => self.toggle_connection(id, cx),
+            Choice::Command("NewRequest") => self.new_request(window, cx),
+            Choice::Command("ManageConnections") => self.open_connections(window, cx),
+            Choice::Command("OpenSettings") => self.open_settings(window, cx),
+            Choice::Command("ToggleSidebar") => self.on_toggle_sidebar(&ToggleSidebar, window, cx),
+            Choice::Command("ToggleConsole") => self.on_toggle_console(&ToggleConsole, window, cx),
+            Choice::Command(unknown) => tracing::warn!("palette has no handler for {unknown}"),
+        }
+    }
+
+    fn apply_theme(&mut self, preference: Preference, cx: &mut Context<Self>) {
+        self.prefs.set_theme(&preference);
+        theme::apply(&preference, cx);
+        cx.refresh_windows();
+        cx.notify();
     }
 
     // ── actions ────────────────────────────────────────────────────────────────
@@ -587,8 +526,26 @@ impl WorkspaceView {
         self.new_request(window, cx);
     }
 
-    fn on_new_connection(&mut self, _: &NewConnection, _: &mut Window, cx: &mut Context<Self>) {
-        self.add_dummy(cx);
+    fn on_command_palette(
+        &mut self,
+        _: &CommandPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_palette(window, cx);
+    }
+
+    fn on_manage_connections(
+        &mut self,
+        _: &ManageConnections,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_connections(window, cx);
+    }
+
+    fn on_open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_settings(window, cx);
     }
 
     fn on_connect(&mut self, action: &Connect, _: &mut Window, cx: &mut Context<Self>) {
@@ -599,29 +556,15 @@ impl WorkspaceView {
         self.toggle_connection(action.0, cx);
     }
 
-    fn on_set_theme(&mut self, action: &SetTheme, _: &mut Window, cx: &mut Context<Self>) {
-        let preference = Preference::parse(&action.0);
-        self.prefs.set_theme(&preference);
-        theme::apply(&preference, cx);
-        cx.refresh_windows();
-        cx.notify();
-    }
-
     fn on_toggle_sidebar(
         &mut self,
         _: &ToggleSidebar,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match self.layout {
-            LayoutMode::Fixed => self.sidebar_open = !self.sidebar_open,
-            LayoutMode::Docked => {
-                let dock = self.ensure_dock(window, cx);
-                dock.update(cx, |dock, cx| {
-                    dock.toggle_dock(DockPlacement::Left, window, cx)
-                });
-            }
-        }
+        self.dock.update(cx, |dock, cx| {
+            dock.toggle_dock(DockPlacement::Left, window, cx)
+        });
         cx.notify();
     }
 
@@ -631,38 +574,15 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match self.layout {
-            LayoutMode::Fixed => self.console_open = !self.console_open,
-            LayoutMode::Docked => {
-                let dock = self.ensure_dock(window, cx);
-                dock.update(cx, |dock, cx| {
-                    dock.toggle_dock(DockPlacement::Bottom, window, cx)
-                });
-            }
-        }
-        cx.notify();
-    }
-
-    /// Flips between the fixed and docked shells. Both host the same panels, so
-    /// this is a re-render, not a migration.
-    fn on_reset_layout(&mut self, _: &ResetLayout, window: &mut Window, cx: &mut Context<Self>) {
-        self.layout = match self.layout {
-            LayoutMode::Fixed => LayoutMode::Docked,
-            LayoutMode::Docked => LayoutMode::Fixed,
-        };
-        self.sync_dock(window, cx);
+        self.dock.update(cx, |dock, cx| {
+            dock.toggle_dock(DockPlacement::Bottom, window, cx)
+        });
         cx.notify();
     }
 
     fn status_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         let workspace = self.workspace.read(cx);
-        let connected = self.sessions.read(cx).connected_count();
-        let environments = workspace.connections().len();
         let requests = workspace.requests().len();
-        let mode = match self.layout {
-            LayoutMode::Fixed => "Fixed",
-            LayoutMode::Docked => "Docked",
-        };
 
         StatusBar::new()
             .left(
@@ -670,7 +590,7 @@ impl WorkspaceView {
                     .ghost()
                     .xsmall()
                     .icon(IconName::PanelLeft)
-                    .tooltip("Toggle sidebar")
+                    .tooltip("Toggle request list")
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.on_toggle_sidebar(&ToggleSidebar, window, cx);
                     })),
@@ -686,11 +606,6 @@ impl WorkspaceView {
                     })),
             )
             .child(tokens::meta("Requests", requests.to_string(), cx))
-            .child(tokens::meta(
-                "Connected",
-                format!("{connected}/{environments}"),
-                cx,
-            ))
             // A storage failure used to leave the sidebar empty with no
             // explanation, which looks exactly like a click that did nothing.
             .when_some(workspace.error().map(str::to_owned), |bar, error| {
@@ -710,21 +625,17 @@ impl WorkspaceView {
                 )
             })
             .right(
-                Button::new("layout-mode")
-                    .ghost()
-                    .xsmall()
-                    .label(mode)
-                    .tooltip("Switch between the fixed and docked layouts")
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.on_reset_layout(&ResetLayout, window, cx);
-                    })),
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(concat!("v", env!("CARGO_PKG_VERSION"))),
             )
-            .right(format!("v{}", env!("CARGO_PKG_VERSION")))
             .into_any_element()
     }
 }
 
-fn status_colour(status: &Status, cx: &App) -> gpui::Hsla {
+/// The colour standing for a connection's state.
+pub fn status_colour(status: &Status, cx: &App) -> gpui::Hsla {
     match status {
         Status::Connected => cx.theme().success,
         Status::Connecting | Status::Reconnecting => cx.theme().warning,
@@ -734,54 +645,40 @@ fn status_colour(status: &Status, cx: &App) -> gpui::Hsla {
 }
 
 impl Render for WorkspaceView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let sheet_layer = Root::render_sheet_layer(window, cx);
-        let dialog_layer = Root::render_dialog_layer(window, cx);
-        let notification_layer = Root::render_notification_layer(window, cx);
-
-        let environment = self.environment_pill(cx);
-        let themes = self.theme_menu(cx);
-        let body = self.body(window, cx);
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let connections = self.connections_button(cx);
+        let menu = self.app_menu();
         let status_bar = self.status_bar(cx);
+        // Dialogs and notifications live on `Root` but are placed by the view:
+        // `Root::render` draws neither, so a dialog opened without these is
+        // stored and never seen.
+        let dialog_layer = Root::render_dialog_layer(_window, cx);
+        let notification_layer = Root::render_notification_layer(_window, cx);
 
-        div()
-            .id("workspace")
-            .relative()
+        v_flex()
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .on_action(cx.listener(Self::on_command_palette))
             .on_action(cx.listener(Self::on_new_request))
-            .on_action(cx.listener(Self::on_new_connection))
+            .on_action(cx.listener(Self::on_manage_connections))
+            .on_action(cx.listener(Self::on_open_settings))
             .on_action(cx.listener(Self::on_connect))
             .on_action(cx.listener(Self::on_disconnect))
-            .on_action(cx.listener(Self::on_set_theme))
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_toggle_console))
-            .on_action(cx.listener(Self::on_reset_layout))
             .child(
-                v_flex()
-                    .size_full()
-                    .child(
-                        TitleBar::new().child(
-                            h_flex()
-                                .w_full()
-                                .items_center()
-                                .justify_between()
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .font_semibold()
-                                        .text_color(cx.theme().foreground)
-                                        .child("Robot Whisperer"),
-                                )
-                                .child(h_flex().gap_1().child(environment).child(themes)),
-                        ),
-                    )
-                    .child(div().flex_1().min_h_0().child(body))
-                    .child(status_bar),
+                TitleBar::new().child(div().flex_1()).child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(connections)
+                        .child(menu),
+                ),
             )
-            .child(div().absolute().top_8().children(notification_layer))
+            .child(div().flex_1().min_h_0().child(self.dock.clone()))
+            .child(status_bar)
             .children(dialog_layer)
-            .children(sheet_layer)
+            .children(notification_layer)
     }
 }

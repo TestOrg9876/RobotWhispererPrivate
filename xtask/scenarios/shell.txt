@@ -1,33 +1,30 @@
-# The default shell: welcome screen, an environment, and one open request.
+# The shell: welcome, the app menu, connections and the command palette.
 #
-# Coordinates are relative to the app window, which GPUI opens at 1440x900 —
-# `screenshot-native` prints the size it found, so a mismatch is visible rather
-# than silently clicking empty space. A deliberate layout change is expected to
-# move these.
+# Coordinates are relative to the app window, which GPUI opens at 1440x900.
 
-wait 800
+wait 900
 shot 01-welcome
 
-# "Add environment" on the welcome hero creates the Dummy connection.
-click 926 529
-wait 1000
-shot 02-environment
+# The app menu sits left of the window controls.
+click 1327 16
+wait 700
+shot 02-menu
+key Escape
+wait 500
 
-# "New request" opens the request editor with an empty topic request.
-click 775 529
-wait 1200
-shot 03-request
+# Connections dock to the right, so they stay in view while you work.
+click 789 484
+wait 900
+shot 03-connections
 
-# Point the request at a Dummy topic and subscribe. Frames arrive on a transport
-# thread and the panel repaints on a timer, so the wait is deliberate.
-click 700 133
-type /dummy/wave
-wait 400
-click 1364 133
-wait 3000
-shot 04-streaming
+# Add a Dummy system: no URL, and it connects as soon as it is saved.
+click 1392 82
+wait 800
+shot 04-new-connection
+click 1372 148
+wait 500
+click 1300 200
+type Simulator
+wait 500
+shot 05-form
 
-# The kind selector switches to a service, which adds the payload card.
-click 330 133
-wait 600
-shot 05-kind-menu

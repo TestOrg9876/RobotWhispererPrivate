@@ -24,9 +24,11 @@ use gpui_component::{
     v_flex,
 };
 use rw_canonical::CanonicalValue;
-use rw_core::domain::{Request, RequestKind};
+use rw_core::domain::{Request, RequestKind, Value};
+use rw_transport::ConnectionId;
 
 use crate::discovery::{self, Suggestion};
+use crate::form::{self, Field};
 use crate::session::{RobotWhisperer, Sessions};
 use crate::tokens;
 use crate::value;
@@ -123,6 +125,39 @@ fn discriminant_of(kind: RequestKind) -> u8 {
     }
 }
 
+/// What the request currently has in flight.
+///
+/// One enum rather than a set of `Option`s: a request is subscribed *or*
+/// calling *or* running a goal, never two at once, and the Send button's label,
+/// its variant and what Stop does all follow from this.
+#[derive(Debug, Default)]
+enum Activity {
+    #[default]
+    Idle,
+    /// A topic subscription, identified for unsubscribing.
+    Subscribed(String),
+    /// A service call, awaiting its response.
+    Calling,
+    /// An action goal, identified for cancelling.
+    Goal(String),
+}
+
+impl Activity {
+    fn is_idle(&self) -> bool {
+        matches!(self, Activity::Idle)
+    }
+
+    /// What the primary button says while this is happening.
+    fn stop_label(&self) -> &'static str {
+        match self {
+            Activity::Subscribed(_) => "Stop",
+            Activity::Calling => "Calling…",
+            Activity::Goal(_) => "Cancel",
+            Activity::Idle => "Stop",
+        }
+    }
+}
+
 pub struct RequestPanel {
     focus_handle: FocusHandle,
     workspace: Entity<Workspace>,
@@ -142,8 +177,15 @@ pub struct RequestPanel {
     highlighted: usize,
     offers_open: bool,
 
+    /// The payload form: one input per leaf of the request or goal message,
+    /// rebuilt whenever the schema behind the target changes.
+    payload: Vec<(Field, Entity<InputState>)>,
+    /// The schema the current form was built from, so it is only rebuilt when
+    /// it actually changes rather than on every render.
+    payload_schema: Option<String>,
+
     incoming: Arc<Mutex<Incoming>>,
-    subscription: Option<String>,
+    activity: Activity,
     tab: ResponseTab,
     problem: Option<Problem>,
     _repaint: Option<Task<()>>,
@@ -216,8 +258,10 @@ impl RequestPanel {
             target,
             highlighted: 0,
             offers_open: false,
+            payload: Vec::new(),
+            payload_schema: None,
             incoming: Arc::new(Mutex::new(Incoming::default())),
-            subscription: None,
+            activity: Activity::default(),
             tab: ResponseTab::Raw,
             problem: None,
             _repaint: None,
@@ -333,10 +377,15 @@ impl RequestPanel {
     }
 
     fn running(&self) -> bool {
-        self.subscription.is_some()
+        !self.activity.is_idle()
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
+        // The form is the truth for the payload, so it is collected before the
+        // comparison rather than tracked field by field.
+        if let Ok(payload) = self.payload_value(cx) {
+            self.draft.input = payload;
+        }
         if !self.dirty() {
             return;
         }
@@ -356,7 +405,7 @@ impl RequestPanel {
             .connection_id
             .and_then(|id| self.sessions.read(cx).session(id))
     }
-
+    /// Runs the request, in whichever way its kind means.
     fn start(&mut self, cx: &mut Context<Self>) {
         let target = self.draft.target.trim().to_string();
         if target.is_empty() {
@@ -370,9 +419,28 @@ impl RequestPanel {
             return;
         };
 
+        let payload = match self.payload_value(cx) {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.problem = Some(Problem::new(error));
+                cx.notify();
+                return;
+            }
+        };
+
         self.problem = None;
         *self.incoming.lock().expect("incoming mutex") = Incoming::default();
+        self.start_repaint(cx);
 
+        match self.draft.kind {
+            RequestKind::Topic => self.subscribe(session, target, cx),
+            RequestKind::Service => self.call(session, target, payload, cx),
+            RequestKind::Action => self.send_goal(session, target, payload, cx),
+        }
+        cx.notify();
+    }
+
+    fn subscribe(&mut self, session: ConnectionId, target: String, cx: &mut Context<Self>) {
         let pipeline = self.sessions.read(cx).pipeline();
         let incoming = Arc::clone(&self.incoming);
 
@@ -391,17 +459,263 @@ impl RequestPanel {
             panel
                 .update(cx, |panel, cx| {
                     match outcome {
-                        Ok(result) => {
-                            panel.subscription = Some(result.subscription_id);
-                            panel.start_repaint(cx);
-                        }
-                        Err(error) => panel.problem = Some(Problem::new(error.to_string())),
+                        Ok(result) => panel.activity = Activity::Subscribed(result.subscription_id),
+                        Err(error) => panel.failed(error, cx),
                     }
                     cx.notify();
                 })
                 .ok();
         })
         .detach();
+    }
+
+    fn call(
+        &mut self,
+        session: ConnectionId,
+        target: String,
+        request: Value,
+        cx: &mut Context<Self>,
+    ) {
+        let pipeline = self.sessions.read(cx).pipeline();
+        self.activity = Activity::Calling;
+
+        cx.spawn(async move |panel, cx| {
+            let outcome = pipeline
+                .call_service(session, &target, request.into())
+                .await;
+
+            panel
+                .update(cx, |panel, cx| {
+                    match outcome {
+                        Ok(response) => {
+                            let mut incoming = panel.incoming.lock().expect("incoming mutex");
+                            incoming.value = Some(response);
+                            incoming.count += 1;
+                        }
+                        Err(error) => panel.failed(error, cx),
+                    }
+                    // A call is over the moment it answers; there is nothing to
+                    // stop afterwards.
+                    panel.activity = Activity::Idle;
+                    panel._repaint = None;
+                    cx.notify();
+                })
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Sends a goal and follows it: feedback replaces the shown value as it
+    /// arrives, and the result replaces it once.
+    fn send_goal(
+        &mut self,
+        session: ConnectionId,
+        target: String,
+        goal: Value,
+        cx: &mut Context<Self>,
+    ) {
+        let pipeline = self.sessions.read(cx).pipeline();
+        let incoming = Arc::clone(&self.incoming);
+
+        cx.spawn(async move |panel, cx| {
+            let mut stream = match pipeline
+                .send_action_goal(session, &target, goal.into())
+                .await
+            {
+                Ok(stream) => stream,
+                Err(error) => {
+                    panel
+                        .update(cx, |panel, cx| {
+                            panel.failed(error, cx);
+                            panel.activity = Activity::Idle;
+                            cx.notify();
+                        })
+                        .ok();
+                    return;
+                }
+            };
+
+            let goal_id = stream.cancel_token.goal_id.clone();
+            if panel
+                .update(cx, |panel, cx| {
+                    panel.activity = Activity::Goal(goal_id.clone());
+                    cx.notify();
+                })
+                .is_err()
+            {
+                return;
+            }
+
+            // Feedback and the result arrive on separate channels. Draining
+            // feedback first and then awaiting the result is safe because the
+            // feedback channel closes when the goal finishes.
+            while let Some(feedback) = stream.feedback.recv().await {
+                let Ok(mut incoming) = incoming.lock() else {
+                    break;
+                };
+                incoming.value = Some(feedback);
+                incoming.count += 1;
+            }
+
+            let result = stream.result.await;
+            panel
+                .update(cx, |panel, cx| {
+                    match result {
+                        Ok(Ok(value)) => {
+                            let mut incoming = panel.incoming.lock().expect("incoming mutex");
+                            incoming.value = Some(value);
+                            incoming.count += 1;
+                        }
+                        Ok(Err(error)) => panel.failed(error, cx),
+                        // The sender was dropped: the goal was cancelled, or the
+                        // transport went away. Neither is worth an error banner.
+                        Err(_) => {}
+                    }
+                    panel.activity = Activity::Idle;
+                    panel._repaint = None;
+                    cx.notify();
+                })
+                .ok();
+
+            pipeline.forget_action_goal(&goal_id).await;
+        })
+        .detach();
+    }
+
+    // ── the payload form ───────────────────────────────────────────────────────
+
+    /// The schema name the target implies, from discovery.
+    ///
+    /// Discovery is the only place that knows which schema a name carries, and
+    /// the request stores it so a saved request still shows its form before the
+    /// robot is reachable.
+    fn payload_schema_name(&self, cx: &App) -> Option<String> {
+        let target = self.draft.target.trim();
+        if target.is_empty() {
+            return self.draft.schema.as_ref().map(|schema| schema.name.clone());
+        }
+
+        let discovered = self.draft.connection_id.and_then(|id| {
+            let sessions = self.sessions.read(cx);
+            let discovery = sessions.discovery(id)?;
+            let named = |entries: &[rw_transport::TargetDescriptor]| {
+                entries
+                    .iter()
+                    .find(|entry| entry.name == target)
+                    .map(|entry| entry.schema_name.clone())
+            };
+            match self.draft.kind {
+                RequestKind::Topic => discovery
+                    .topics
+                    .iter()
+                    .find(|topic| topic.name == target)
+                    .map(|topic| topic.schema_name.clone()),
+                RequestKind::Service => named(&discovery.services),
+                RequestKind::Action => named(&discovery.actions),
+            }
+        });
+
+        discovered.or_else(|| self.draft.schema.as_ref().map(|schema| schema.name.clone()))
+    }
+
+    /// Rebuilds the form when the schema behind the target changes.
+    ///
+    /// Called from `render` because the schema depends on discovery, the target
+    /// text and the kind, and keeping three separate places in step with it was
+    /// exactly the bug the derived offer list already had.
+    fn sync_payload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.draft.kind, RequestKind::Service | RequestKind::Action) {
+            self.payload.clear();
+            self.payload_schema = None;
+            return;
+        }
+
+        let wanted = self.payload_schema_name(cx);
+        if wanted == self.payload_schema {
+            return;
+        }
+
+        let fields = wanted
+            .as_deref()
+            .and_then(|name| self.message_for(name, cx))
+            .unwrap_or_default();
+
+        // Existing text survives a rebuild when the leaf is still there, so
+        // reconnecting to a robot does not clear a half-filled form.
+        let filled: Vec<(String, String)> = self
+            .payload
+            .iter()
+            .map(|(field, input)| (field.path.clone(), input.read(cx).value().to_string()))
+            .collect();
+
+        self.payload = fields
+            .into_iter()
+            .map(|field| {
+                let existing = filled
+                    .iter()
+                    .find(|(path, _)| *path == field.path)
+                    .map(|(_, text)| text.clone())
+                    .or_else(|| form::text_at(&self.draft.input, &field.path, field.editor));
+                let placeholder = field.editor.placeholder();
+                let input = cx.new(|cx| {
+                    let state = InputState::new(window, cx).placeholder(placeholder);
+                    match existing {
+                        Some(text) => state.default_value(text),
+                        None => state,
+                    }
+                });
+                (field, input)
+            })
+            .collect();
+        self.payload_schema = wanted;
+    }
+
+    /// The message definition a form should be built from: a service's request
+    /// or an action's goal.
+    fn message_for(&self, name: &str, cx: &App) -> Option<Vec<Field>> {
+        let pipeline = self.sessions.read(cx).pipeline();
+        let registry = pipeline.schema_registry()?.clone();
+        let definition = registry.get_by_name(name).into_iter().next()?;
+
+        let message = match &definition.parsed {
+            rw_core::schema::ParsedSchema::Service { request, .. } => request,
+            rw_core::schema::ParsedSchema::Action { goal, .. } => goal,
+            rw_core::schema::ParsedSchema::Message(message) => message,
+        };
+
+        let lookup = move |type_name: &str| {
+            registry
+                .get_by_name(type_name)
+                .into_iter()
+                .next()
+                .map(|definition| definition.parsed.primary().clone())
+        };
+        Some(form::fields(message, &lookup))
+    }
+
+    /// The payload the form currently describes.
+    ///
+    /// Topics carry nothing, so they get an empty message rather than a special
+    /// case at every call site.
+    fn payload_value(&self, cx: &App) -> Result<Value, String> {
+        if matches!(self.draft.kind, RequestKind::Topic) {
+            return Ok(Value::empty_struct());
+        }
+
+        let mut leaves = Vec::new();
+        for (field, input) in &self.payload {
+            match form::parse(field.editor, &input.read(cx).value()) {
+                Ok(Some(value)) => leaves.push((field.path.clone(), value)),
+                Ok(None) => {}
+                Err(reason) => return Err(format!("{}: {reason}", field.path)),
+            }
+        }
+        Ok(form::assemble(leaves))
+    }
+
+    fn failed(&mut self, error: impl std::fmt::Display, cx: &mut Context<Self>) {
+        self.problem = Some(Problem::new(error.to_string()));
+        cx.notify();
     }
 
     /// Distinguishes "no environment chosen" from "chosen but not connected",
@@ -443,39 +757,53 @@ impl RequestPanel {
             }
         }));
     }
-
+    /// Stops whatever is in flight. A call in progress cannot be stopped — the
+    /// service will answer or the transport will fail — so it is left alone.
     fn stop(&mut self, cx: &mut Context<Self>) {
-        let Some(subscription) = self.subscription.take() else {
-            return;
-        };
-        self._repaint = None;
         let pipeline = self.sessions.read(cx).pipeline();
 
-        cx.spawn(async move |panel, cx| {
-            let outcome = pipeline.unsubscribe(&subscription).await;
-            panel
-                .update(cx, |panel, cx| {
-                    if let Err(error) = outcome {
-                        panel.problem = Some(Problem::new(error.to_string()));
-                    }
-                    cx.notify();
-                })
-                .ok();
-        })
-        .detach();
+        let task = match std::mem::take(&mut self.activity) {
+            Activity::Subscribed(subscription) => cx.spawn(async move |panel, cx| {
+                let outcome = pipeline.unsubscribe(&subscription).await;
+                panel
+                    .update(cx, |panel, cx| {
+                        if let Err(error) = outcome {
+                            panel.failed(error, cx);
+                        }
+                    })
+                    .ok();
+            }),
+            Activity::Goal(goal_id) => cx.spawn(async move |panel, cx| {
+                let outcome = pipeline.cancel_action_goal(&goal_id).await;
+                panel
+                    .update(cx, |panel, cx| {
+                        if let Err(error) = outcome {
+                            panel.failed(error, cx);
+                        }
+                    })
+                    .ok();
+            }),
+            other => {
+                // Nothing to stop; put back what was there.
+                self.activity = other;
+                return;
+            }
+        };
+
+        self._repaint = None;
+        task.detach();
+        cx.notify();
     }
 
     // ── chrome ─────────────────────────────────────────────────────────────────
 
     fn header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let kind = self.draft.kind;
         let dirty = self.dirty();
 
         h_flex()
             .w_full()
             .items_center()
             .gap_3()
-            .child(tokens::kind_tag(kind, cx).child(tokens::kind_label(kind)))
             .child(
                 div()
                     .flex_1()
@@ -520,7 +848,7 @@ impl RequestPanel {
         let running = self.running();
         let kind_colour = tokens::kind_color(kind, cx);
 
-        let environment = self
+        let connection = self
             .draft
             .connection_id
             .and_then(|id| {
@@ -529,9 +857,9 @@ impl RequestPanel {
                     .connection(id)
                     .map(|connection| connection.name.clone())
             })
-            .unwrap_or_else(|| "Environment".to_string());
+            .unwrap_or_else(|| "Connection".to_string());
 
-        let environments: Vec<_> = self
+        let connections: Vec<_> = self
             .workspace
             .read(cx)
             .connections()
@@ -604,7 +932,7 @@ impl RequestPanel {
                     .child(Input::new(&self.target).appearance(false)),
             )
             .child(
-                Button::new("environment")
+                Button::new("connection")
                     .ghost()
                     .small()
                     .child(
@@ -615,18 +943,18 @@ impl RequestPanel {
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(environment),
+                                    .child(connection),
                             )
                             .child(Icon::new(IconName::ChevronDown).xsmall()),
                     )
                     .dropdown_menu(move |mut menu, _window, _cx| {
-                        if environments.is_empty() {
+                        if connections.is_empty() {
                             return menu.menu(
-                                "No environments yet",
-                                Box::new(crate::actions::NewConnection),
+                                "Add a connection…",
+                                Box::new(crate::actions::ManageConnections),
                             );
                         }
-                        for (id, name) in &environments {
+                        for (id, name) in &connections {
                             menu = menu.menu_with_check(
                                 name.clone(),
                                 chosen == Some(*id),
@@ -639,7 +967,11 @@ impl RequestPanel {
             .child(
                 Button::new("send")
                     .when(running, |button| {
-                        button.danger().icon(IconName::Pause).label("Stop")
+                        button
+                            .danger()
+                            .icon(IconName::Pause)
+                            .label(self.activity.stop_label())
+                            .disabled(matches!(self.activity, Activity::Calling))
                     })
                     .when(!running, |button| {
                         button.primary().icon(IconName::Play).label(match kind {
@@ -721,25 +1053,88 @@ impl RequestPanel {
         )
         .into_any_element()
     }
-
+    /// The schema-driven form for a service request or an action goal.
     fn payload(&self, cx: &mut Context<Self>) -> AnyElement {
-        tokens::card(cx)
-            .flex_shrink_0()
-            .child(tokens::card_header(cx).child(tokens::section_label(
-                match self.draft.kind {
-                    RequestKind::Service => "Request",
-                    _ => "Goal",
-                },
-                cx,
-            )))
-            .child(
-                tokens::card_body().child(
+        let title = match self.draft.kind {
+            RequestKind::Service => "Request",
+            _ => "Goal",
+        };
+        let schema = self.payload_schema.clone();
+
+        let body = if self.payload.is_empty() {
+            tokens::card_body()
+                .child(
                     div()
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
-                        .child("The schema-driven form arrives with the next milestone."),
-                ),
+                        .child(match &schema {
+                            // A schema with no fields is a real thing —
+                            // `std_srvs/Trigger` takes nothing — and saying so
+                            // is better than an empty box.
+                            Some(_) => "This one takes no arguments.",
+                            None => "Pick a target to see what it takes.",
+                        }),
+                )
+                .into_any_element()
+        } else {
+            v_flex()
+                .id("payload-form")
+                .max_h(px(280.))
+                .overflow_y_scroll()
+                .p_3()
+                .gap_2()
+                .children(
+                    self.payload
+                        .iter()
+                        .map(|(field, input)| self.row(field, input, cx)),
+                )
+                .into_any_element()
+        };
+
+        tokens::card(cx)
+            .flex_shrink_0()
+            .child(
+                tokens::card_header(cx)
+                    .child(tokens::section_label(title, cx))
+                    .when_some(schema, |header, schema| {
+                        header.child(tokens::meta("Schema", schema, cx))
+                    }),
             )
+            .child(body)
+            .into_any_element()
+    }
+
+    /// One leaf of the form: its name, its type, and its editor.
+    ///
+    /// The label carries the full dotted path rather than only the leaf name.
+    /// Flattening `geometry_msgs/PoseStamped` produces two fields called `x` and
+    /// three called `sec`, and a column of those is unreadable.
+    fn row(&self, field: &Field, input: &Entity<InputState>, cx: &App) -> AnyElement {
+        h_flex()
+            .w_full()
+            .gap_3()
+            .items_center()
+            .child(
+                v_flex()
+                    .w(px(220.))
+                    .flex_shrink_0()
+                    .gap_0p5()
+                    .child(
+                        tokens::mono(cx)
+                            .text_xs()
+                            .text_color(cx.theme().foreground)
+                            .truncate()
+                            .child(field.path.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .truncate()
+                            .child(field.type_name.clone()),
+                    ),
+            )
+            .child(div().flex_1().min_w_0().child(Input::new(input).small()))
             .into_any_element()
     }
 
@@ -880,13 +1275,32 @@ impl Panel for RequestPanel {
         "Request"
     }
 
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        RequestPanel::title(self)
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .gap_2()
+            .items_center()
+            .child(tokens::status_dot(tokens::kind_color(self.draft.kind, cx)))
+            .child(RequestPanel::title(self))
+    }
+
+    fn title_suffix(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
+        self.dirty().then(|| {
+            div()
+                .size(px(5.))
+                .rounded_full()
+                .bg(cx.theme().warning)
+                .into_any_element()
+        })
     }
 }
 
 impl Render for RequestPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_payload(window, cx);
         let header = self.header(cx);
         let bar = self.request_bar(cx);
         let payload = matches!(self.draft.kind, RequestKind::Service | RequestKind::Action)

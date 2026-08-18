@@ -1,4 +1,4 @@
-# Discovery offers on the target field: the connections tree's replacement.
+# Calling a service: the schema-driven form, and the response.
 #
 # Coordinates are relative to the app window, which GPUI opens at 1440x900.
 
@@ -21,25 +21,33 @@ wait 1500
 click 200 750
 wait 900
 
-# A request, pointed at the new connection by default.
+# A request, switched to a service.
 # The list's + button, which is there whether or not the list is empty.
 click 261 81
 wait 1400
-
-# Clicking the target field shows everything the system advertises.
-click 700 133
-wait 900
-shot 01-all-offers
-
-# Typing narrows it, prefix matches first.
-type /dummy/w
-wait 800
-shot 02-narrowed
-
-# Down highlights the next row; Enter takes it.
-key Down
-wait 400
-shot 03-highlighted
-key Return
+click 330 133
 wait 600
-shot 04-accepted
+click 350 189
+wait 800
+shot 01-service-kind
+
+# Pick the Dummy service from the offers.
+click 700 133
+wait 800
+shot 02-service-offers
+key Return
+wait 1000
+shot 03-form
+
+# Fill both arguments and call. The inputs start at x=535; clicking at 700
+# lands in the label column, which is a quiet way to fill in nothing.
+click 975 251
+type 20
+wait 300
+click 975 293
+type 22
+wait 300
+shot 04-filled
+click 1364 133
+wait 1500
+shot 05-response

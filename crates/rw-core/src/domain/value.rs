@@ -32,6 +32,60 @@ impl Value {
     }
 }
 
+/// [`Value`] and [`rw_canonical::CanonicalValue`] are the same shape in two
+/// crates: the stored one and the wire one. Requests are edited and saved as
+/// `Value` and sent as `CanonicalValue`, so the two have to meet somewhere, and
+/// `rw-core` is the crate that already knows about both.
+impl From<Value> for rw_canonical::CanonicalValue {
+    fn from(value: Value) -> Self {
+        use rw_canonical::CanonicalValue as Canonical;
+        match value {
+            Value::Null => Canonical::Null,
+            Value::Bool(inner) => Canonical::Bool(inner),
+            Value::Int(inner) => Canonical::Int(inner),
+            Value::Uint(inner) => Canonical::Uint(inner),
+            Value::F32(inner) => Canonical::F32(inner),
+            Value::F64(inner) => Canonical::F64(inner),
+            Value::String(inner) => Canonical::String(inner),
+            Value::Bytes(inner) => Canonical::Bytes(inner),
+            Value::Array(items) => Canonical::Array(items.into_iter().map(Into::into).collect()),
+            Value::Struct(fields) => Canonical::Struct(
+                fields
+                    .into_iter()
+                    .map(|(name, field)| (name, field.into()))
+                    .collect(),
+            ),
+            Value::Time { sec, nanosec } => Canonical::Time { sec, nanosec },
+            Value::Duration { sec, nanosec } => Canonical::Duration { sec, nanosec },
+        }
+    }
+}
+
+impl From<rw_canonical::CanonicalValue> for Value {
+    fn from(value: rw_canonical::CanonicalValue) -> Self {
+        use rw_canonical::CanonicalValue as Canonical;
+        match value {
+            Canonical::Null => Value::Null,
+            Canonical::Bool(inner) => Value::Bool(inner),
+            Canonical::Int(inner) => Value::Int(inner),
+            Canonical::Uint(inner) => Value::Uint(inner),
+            Canonical::F32(inner) => Value::F32(inner),
+            Canonical::F64(inner) => Value::F64(inner),
+            Canonical::String(inner) => Value::String(inner),
+            Canonical::Bytes(inner) => Value::Bytes(inner),
+            Canonical::Array(items) => Value::Array(items.into_iter().map(Into::into).collect()),
+            Canonical::Struct(fields) => Value::Struct(
+                fields
+                    .into_iter()
+                    .map(|(name, field)| (name, field.into()))
+                    .collect(),
+            ),
+            Canonical::Time { sec, nanosec } => Value::Time { sec, nanosec },
+            Canonical::Duration { sec, nanosec } => Value::Duration { sec, nanosec },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,6 +182,14 @@ mod tests {
             let json = serde_json::to_string(&value).unwrap();
             let decoded: Value = serde_json::from_str(&json).unwrap();
             prop_assert_eq!(decoded, value);
+        }
+
+        /// The two enums are maintained separately, so a variant added to one
+        /// and not the other has to fail somewhere. This is that somewhere.
+        #[test]
+        fn arbitrary_value_round_trips_through_the_canonical_form(value in value_strategy()) {
+            let canonical: rw_canonical::CanonicalValue = value.clone().into();
+            prop_assert_eq!(Value::from(canonical), value);
         }
     }
 }

@@ -13,7 +13,7 @@ use gpui::{
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{
-    ActiveTheme as _, IconName, Sizable as _, StyledExt as _,
+    ActiveTheme as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -198,8 +198,14 @@ impl Panel for CollectionsPanel {
         "Collections"
     }
 
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        "Requests"
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let total = self.workspace.read(cx).requests().len();
+        h_flex().gap_1p5().items_baseline().child("Requests").child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(total.to_string()),
+        )
     }
 
     fn closable(&self, _cx: &App) -> bool {
@@ -210,7 +216,6 @@ impl Panel for CollectionsPanel {
 impl Render for CollectionsPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let requests = self.matches(cx);
-        let total = self.workspace.read(cx).requests().len();
         let rows: Vec<_> = requests
             .iter()
             .map(|request| self.row(request, cx))
@@ -232,44 +237,27 @@ impl Render for CollectionsPanel {
                 cx.emit(CollectionsEvent::Delete(action.0));
             }))
             .child(
-                // Header: title, count, and the primary create action.
-                v_flex()
-                    .p_3()
-                    .gap_3()
+                h_flex()
+                    .flex_shrink_0()
+                    .p_2()
+                    .gap_2()
+                    .items_center()
                     .child(
-                        h_flex()
-                            .items_center()
-                            .justify_between()
-                            .child(
-                                h_flex()
-                                    .gap_2()
-                                    .items_baseline()
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .font_semibold()
-                                            .text_color(cx.theme().foreground)
-                                            .child("Requests"),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(format!("{total}")),
-                                    ),
-                            )
-                            .child(
-                                Button::new("new-request")
-                                    .ghost()
-                                    .small()
-                                    .icon(IconName::Plus)
-                                    .tooltip("New request")
-                                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                                        cx.emit(CollectionsEvent::New);
-                                    })),
-                            ),
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Input::new(&self.search).small().cleanable(true)),
                     )
-                    .child(Input::new(&self.search).small().cleanable(true)),
+                    .child(
+                        Button::new("new-request")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Plus)
+                            .tooltip("New request")
+                            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                                cx.emit(CollectionsEvent::New);
+                            })),
+                    ),
             )
             .child(tokens::hairline(cx))
             .child(if rows.is_empty() && !searching {

@@ -10,16 +10,18 @@ use serde::Deserialize;
 actions!(
     robot_whisperer,
     [
+        /// Search every command, request and connection from one field.
+        CommandPalette,
         /// Create a request and open it.
         NewRequest,
-        /// Add an environment to connect to.
-        NewConnection,
-        /// Show or hide the requests sidebar.
+        /// Add, edit, connect and disconnect ROS systems.
+        ManageConnections,
+        /// Application settings: theme, and what else accumulates.
+        OpenSettings,
+        /// Show or hide the request list.
         ToggleSidebar,
         /// Show or hide the console.
         ToggleConsole,
-        /// Switch between the fixed and docked layouts.
-        ResetLayout,
         /// Save the active request.
         SaveRequest,
     ]
@@ -45,10 +47,16 @@ pub struct Disconnect(pub i64);
 /// panels behave like the rest of the gpui-component ecosystem.
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
+        KeyBinding::new("cmd-k", CommandPalette, None),
+        KeyBinding::new("ctrl-k", CommandPalette, None),
+        KeyBinding::new("cmd-p", CommandPalette, None),
+        KeyBinding::new("ctrl-p", CommandPalette, None),
         KeyBinding::new("cmd-n", NewRequest, None),
         KeyBinding::new("ctrl-n", NewRequest, None),
-        KeyBinding::new("cmd-shift-n", NewConnection, None),
-        KeyBinding::new("ctrl-shift-n", NewConnection, None),
+        KeyBinding::new("cmd-shift-c", ManageConnections, None),
+        KeyBinding::new("ctrl-shift-c", ManageConnections, None),
+        KeyBinding::new("cmd-,", OpenSettings, None),
+        KeyBinding::new("ctrl-,", OpenSettings, None),
         KeyBinding::new("cmd-s", SaveRequest, None),
         KeyBinding::new("ctrl-s", SaveRequest, None),
         KeyBinding::new("cmd-b", ToggleSidebar, None),

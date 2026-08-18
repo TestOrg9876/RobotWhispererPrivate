@@ -37,7 +37,7 @@ const APP_BINARY: &str = "target/debug/robot-whisperer";
 /// How long to wait for the app to map a window before giving up.
 const WINDOW_TIMEOUT: Duration = Duration::from_secs(60);
 /// Settling time after the window appears, for fonts, storage and first layout.
-const FIRST_PAINT: Duration = Duration::from_millis(2500);
+const FIRST_PAINT: Duration = Duration::from_millis(4000);
 
 pub struct Options {
     /// X display number to claim, e.g. `99`.
@@ -90,9 +90,13 @@ fn with_app(scenario: &Scenario, options: &Options, display: &str) -> Result<Vec
             "  window {} at {}x{}",
             window.id, window.width, window.height
         );
-        // The nudge that makes GPUI paint its first frame.
+        // The nudge that makes GPUI paint its first frame. Twice, from
+        // different points: the window can map before it is ready to draw, and
+        // a single motion event delivered too early buys nothing.
         xdotool(display, &["mousemove", "10", "10"])?;
-        std::thread::sleep(FIRST_PAINT);
+        std::thread::sleep(FIRST_PAINT / 2);
+        xdotool(display, &["mousemove", "40", "40"])?;
+        std::thread::sleep(FIRST_PAINT / 2);
         play(scenario, options, display, &window)
     })();
 

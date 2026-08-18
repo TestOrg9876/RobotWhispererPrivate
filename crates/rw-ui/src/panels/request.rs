@@ -9,8 +9,9 @@ use std::sync::{Arc, Mutex};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, px,
+    Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window,
+    deferred, div, px,
 };
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::{
@@ -25,6 +26,7 @@ use gpui_component::{
 use rw_canonical::CanonicalValue;
 use rw_core::domain::{Request, RequestKind};
 
+use crate::discovery::{self, Suggestion};
 use crate::session::{RobotWhisperer, Sessions};
 use crate::tokens;
 use crate::value;
@@ -133,6 +135,13 @@ pub struct RequestPanel {
     name: Entity<InputState>,
     target: Entity<InputState>,
 
+    /// Whether the target field's offer list is showing, and which row the
+    /// keyboard is on. The offers themselves are derived rather than stored —
+    /// discovery arrives asynchronously, and a cached list was simply empty
+    /// whenever it landed after the field was focused.
+    highlighted: usize,
+    offers_open: bool,
+
     incoming: Arc<Mutex<Incoming>>,
     subscription: Option<String>,
     tab: ResponseTab,
@@ -168,12 +177,33 @@ impl RequestPanel {
                     cx.notify();
                 }
             }),
-            cx.subscribe(&target, |this, state, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    this.draft.target = state.read(cx).value().to_string();
-                    cx.notify();
-                }
-            }),
+            cx.subscribe_in(
+                &target,
+                window,
+                |this, state, event: &InputEvent, window, cx| match event {
+                    InputEvent::Change => {
+                        this.draft.target = state.read(cx).value().to_string();
+                        this.offers_open = true;
+                        cx.notify();
+                    }
+                    InputEvent::Focus => {
+                        this.offers_open = true;
+                        cx.notify();
+                    }
+                    InputEvent::Blur => {
+                        this.offers_open = false;
+                        cx.notify();
+                    }
+                    InputEvent::PressEnter { .. } => {
+                        // Enter takes the highlighted offer while the list is
+                        // showing, and otherwise means "run this request" — one
+                        // key doing the obvious thing in both states.
+                        if !this.accept_offer(window, cx) {
+                            this.start(cx);
+                        }
+                    }
+                },
+            ),
         ];
 
         Self {
@@ -184,6 +214,8 @@ impl RequestPanel {
             draft: request.clone(),
             name,
             target,
+            highlighted: 0,
+            offers_open: false,
             incoming: Arc::new(Mutex::new(Incoming::default())),
             subscription: None,
             tab: ResponseTab::Raw,
@@ -226,6 +258,78 @@ impl RequestPanel {
             || self.draft.kind != self.saved.kind
             || self.draft.connection_id != self.saved.connection_id
             || self.draft.input != self.saved.input
+    }
+
+    // ── discovery offers ───────────────────────────────────────────────────────
+
+    /// How many offers fit without the list swallowing the response.
+    const MAX_OFFERS: usize = 8;
+
+    /// What discovery has to offer for the target as it currently reads.
+    ///
+    /// Discovery replaces the connections tree: rather than browsing a robot's
+    /// topics somewhere else and copying a name across, the field that needs the
+    /// name offers it.
+    ///
+    /// Derived rather than stored. Discovery arrives asynchronously, so a cached
+    /// list was empty whenever it landed after the field was focused, and every
+    /// edit to the request became another place that had to remember to refresh
+    /// it.
+    fn offers(&self, cx: &App) -> Vec<Suggestion> {
+        if !self.offers_open {
+            return Vec::new();
+        }
+        self.draft
+            .connection_id
+            .and_then(|id| {
+                self.sessions.read(cx).discovery(id).map(|discovery| {
+                    discovery::suggestions(
+                        discovery,
+                        self.draft.kind,
+                        &self.draft.target,
+                        Self::MAX_OFFERS,
+                    )
+                })
+            })
+            .unwrap_or_default()
+    }
+
+    /// The row the keyboard is on, clamped to what is actually offered — the
+    /// list changes under the highlight as the query is typed.
+    fn highlighted(&self, offers: &[Suggestion]) -> usize {
+        self.highlighted.min(offers.len().saturating_sub(1))
+    }
+
+    /// Takes the highlighted offer. Returns false when there was nothing to take,
+    /// so the caller can fall back to whatever the key normally does.
+    fn accept_offer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let offers = self.offers(cx);
+        let Some(offer) = offers.get(self.highlighted(&offers)).cloned() else {
+            return false;
+        };
+        self.set_target(&offer.name, window, cx);
+        true
+    }
+
+    fn set_target(&mut self, target: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.draft.target = target.to_string();
+        self.offers_open = false;
+        self.highlighted = 0;
+
+        let value = target.to_string();
+        self.target
+            .update(cx, |state, cx| state.set_value(value, window, cx));
+        cx.notify();
+    }
+
+    fn move_highlight(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let offers = self.offers(cx);
+        if offers.is_empty() {
+            return;
+        }
+        let from = self.highlighted(&offers) as isize;
+        self.highlighted = (from + delta).rem_euclid(offers.len() as isize) as usize;
+        cx.notify();
     }
 
     fn running(&self) -> bool {
@@ -411,6 +515,7 @@ impl RequestPanel {
 
     /// The prominent row: kind, target, environment, primary action.
     fn request_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let offers = self.offers(cx);
         let kind = self.draft.kind;
         let running = self.running();
         let kind_colour = tokens::kind_color(kind, cx);
@@ -436,6 +541,7 @@ impl RequestPanel {
         let chosen = self.draft.connection_id;
 
         h_flex()
+            .relative()
             .h(px(tokens::REQUEST_BAR_HEIGHT))
             .w_full()
             .items_center()
@@ -480,8 +586,21 @@ impl RequestPanel {
             .child(div().w(px(1.)).h_5().bg(cx.theme().border))
             .child(
                 div()
+                    .id("target")
                     .flex_1()
                     .min_w_0()
+                    // Clicking the field shows what the robot advertises, which
+                    // is the whole replacement for browsing a connections tree.
+                    // Focus alone is not enough to hang this on: GPUI only
+                    // reports focus while the window is active, and a window
+                    // manager is not something an app can assume.
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.offers_open = true;
+                            cx.notify();
+                        }),
+                    )
                     .child(Input::new(&self.target).appearance(false)),
             )
             .child(
@@ -537,7 +656,70 @@ impl RequestPanel {
                         }
                     })),
             )
+            .when(!offers.is_empty(), |bar| {
+                bar.child(self.offer_list(&offers, cx))
+            })
             .into_any_element()
+    }
+
+    /// The offers, floating under the request bar.
+    ///
+    /// Deferred so it paints above the response card rather than being clipped
+    /// by it, and absolutely positioned so opening it does not push the layout
+    /// down — the same shape a browser's address bar uses.
+    fn offer_list(&self, offers: &[Suggestion], cx: &mut Context<Self>) -> AnyElement {
+        let highlighted = self.highlighted(offers);
+
+        let rows = offers.iter().enumerate().map(|(index, offer)| {
+            let name = offer.name.clone();
+            h_flex()
+                .id(("offer", index))
+                .h(px(tokens::CONTROL_HEIGHT))
+                .w_full()
+                .px_3()
+                .gap_3()
+                .items_center()
+                .justify_between()
+                .rounded(cx.theme().radius)
+                .when(index == highlighted, |row| row.bg(cx.theme().list_active))
+                .when(index != highlighted, |row| {
+                    row.hover(|row| row.bg(cx.theme().list_hover))
+                })
+                .child(
+                    tokens::mono(cx)
+                        .flex_1()
+                        .min_w_0()
+                        .text_sm()
+                        .text_color(cx.theme().foreground)
+                        .truncate()
+                        .child(offer.name.clone()),
+                )
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(offer.schema.clone()),
+                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.set_target(&name, window, cx)
+                }))
+        });
+
+        deferred(
+            div().absolute().top_full().left_0().right_0().pt_1().child(
+                v_flex()
+                    .p_1()
+                    .gap_0p5()
+                    .bg(cx.theme().popover)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .rounded(cx.theme().radius_lg)
+                    .shadow_lg()
+                    .children(rows),
+            ),
+        )
+        .into_any_element()
     }
 
     fn payload(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -725,6 +907,24 @@ impl Render for RequestPanel {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::actions::SaveRequest, _, cx| this.save(cx)))
+            // A single-line input ignores the arrow keys and Escape, so the panel
+            // takes them for the offer list rather than binding actions that
+            // would collide with the rest of the app.
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                if this.offers(cx).is_empty() {
+                    return;
+                }
+                match event.keystroke.key.as_str() {
+                    "down" => this.move_highlight(1, cx),
+                    "up" => this.move_highlight(-1, cx),
+                    "escape" => {
+                        this.offers_open = false;
+                        cx.notify();
+                    }
+                    _ => return,
+                }
+                cx.stop_propagation();
+            }))
             // The head is fixed: name, kind and target stay put while the
             // response scrolls, which is the whole point of a request bar. It
             // also sits on the panel surface, continuing the tab strip above it,

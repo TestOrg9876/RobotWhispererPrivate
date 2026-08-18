@@ -1,0 +1,29 @@
+# Discovery offers on the target field: the connections tree's replacement.
+#
+# Coordinates are relative to the app window, which GPUI opens at 1440x900.
+
+wait 800
+
+# An environment, then a request pointed at it.
+click 926 529
+wait 1000
+click 775 529
+wait 1200
+
+# Focusing the empty target field offers everything the robot advertises.
+click 700 133
+wait 900
+shot 01-all-offers
+
+# Typing narrows it, prefix matches first.
+type /dummy/w
+wait 800
+shot 02-narrowed
+
+# Down highlights the next row; Enter takes it.
+key Down
+wait 400
+shot 03-highlighted
+key Return
+wait 600
+shot 04-accepted

@@ -13,6 +13,11 @@
 //! - **Pin lavapipe.** The image ships several Vulkan ICDs and only the software
 //!   one works on a host with no GPU.
 //! - **`XDG_RUNTIME_DIR` must exist**, or Vulkan initialisation complains.
+//! - **The window is never *active*.** With no window manager nothing sets input
+//!   focus on it, so GPUI reports no focused element even though keystrokes are
+//!   delivered and land in whichever input holds focus internally. Anything
+//!   gated on focus — a blinking caret, `InputEvent::Focus` — will not happen
+//!   here, and a feature that depends on it cannot be verified by this harness.
 //!
 //! The run is hermetic: `XDG_CONFIG_HOME` and `XDG_DATA_HOME` point into a fresh
 //! directory, so a scenario always starts from an empty workspace and cannot be

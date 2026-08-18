@@ -31,4 +31,5 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros", "time"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
+web-sys = { version = "0.3", features = ["Window", "Storage"] }
 tokio = { workspace = true, features = ["sync", "macros"] }

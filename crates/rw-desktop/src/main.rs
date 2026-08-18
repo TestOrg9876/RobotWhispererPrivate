@@ -44,7 +44,7 @@ fn main() -> Result<()> {
     gpui_platform::application()
         .with_assets(rw_ui::assets::Assets)
         .run(move |cx| {
-            if let Err(error) = rw_ui::init(storage_dyn, pipeline, None, cx) {
+            if let Err(error) = rw_ui::init(storage_dyn, pipeline, cx) {
                 tracing::error!("initialisation failed: {error:#}");
                 cx.quit();
                 return;

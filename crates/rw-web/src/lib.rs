@@ -43,7 +43,7 @@ pub async fn run() -> Result<(), JsValue> {
     let pipeline = Arc::new(CanonicalPipeline::with_schema_registry(registry));
 
     app.run(move |cx| {
-        if let Err(error) = rw_ui::init(storage_dyn, pipeline, None, cx) {
+        if let Err(error) = rw_ui::init(storage_dyn, pipeline, cx) {
             tracing::error!("initialisation failed: {error:#}");
             return;
         }

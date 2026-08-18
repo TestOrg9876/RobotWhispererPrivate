@@ -7,8 +7,10 @@
 pub mod actions;
 pub mod assets;
 pub mod panels;
+pub mod prefs;
 pub mod session;
 pub mod theme;
+pub mod tokens;
 pub mod value;
 pub mod workspace;
 pub mod workspace_view;
@@ -24,15 +26,9 @@ pub use session::{RobotWhisperer, Sessions};
 pub use workspace::{SharedStorage, Workspace};
 
 /// Registers themes, key bindings and global state.
-pub fn init(
-    storage: SharedStorage,
-    pipeline: Arc<CanonicalPipeline>,
-    theme_name: Option<&str>,
-    cx: &mut App,
-) -> Result<()> {
+pub fn init(storage: SharedStorage, pipeline: Arc<CanonicalPipeline>, cx: &mut App) -> Result<()> {
     gpui_component::init(cx);
     theme::register(cx)?;
-    theme::apply(theme_name.unwrap_or(theme::DEFAULT_THEME), cx);
     actions::bind_keys(cx);
 
     let workspace = cx.new(|_| Workspace::new(storage));
@@ -42,7 +38,6 @@ pub fn init(
         sessions,
     });
 
-    cx.on_action(|action: &actions::SetTheme, cx| theme::apply(&action.0, cx));
     Ok(())
 }
 
@@ -55,8 +50,13 @@ pub fn open_window(cx: &mut App) -> Result<()> {
         ..Default::default()
     };
 
+    // The theme preference is applied here rather than in `init` because
+    // `Preference::System` reads the window appearance, which needs a window.
+    let prefs = prefs::Prefs::load();
+    theme::apply(&prefs.theme(), cx);
+
     cx.open_window(options, |window, cx| {
-        let view = cx.new(|cx| workspace_view::WorkspaceView::new(window, cx));
+        let view = cx.new(|cx| workspace_view::WorkspaceView::new(prefs, window, cx));
         cx.new(|cx| Root::new(view, window, cx))
     })?;
 

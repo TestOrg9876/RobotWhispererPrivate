@@ -183,6 +183,73 @@ impl Workspace {
         })
     }
 
+    /// Writes an edited request back to storage and to the in-memory list.
+    pub fn save_request(&mut self, request: Request, cx: &mut Context<Self>) -> Task<()> {
+        let storage = self.storage();
+        // Update optimistically so the sidebar renames immediately; a failure
+        // surfaces in `error` rather than silently reverting under the cursor.
+        if let Some(existing) = self
+            .requests
+            .iter_mut()
+            .find(|entry| entry.id == request.id)
+        {
+            *existing = request.clone();
+        }
+        cx.notify();
+
+        cx.spawn(async move |workspace, cx| {
+            let outcome = storage.update_request(&request).await;
+            workspace
+                .update(cx, |workspace, cx| {
+                    if let Err(error) = outcome {
+                        workspace.error = Some(format!("save request: {error}"));
+                        cx.notify();
+                    }
+                })
+                .ok();
+        })
+    }
+
+    /// Copies a request under a new name, which is how you keep several calls to
+    /// the same service with different payloads.
+    pub fn duplicate_request(&mut self, id: i64, cx: &mut Context<Self>) -> Task<Option<Request>> {
+        let storage = self.storage();
+        let Some(source) = self.request(id).cloned() else {
+            return Task::ready(None);
+        };
+
+        let draft = NewRequest {
+            name: format!("{} copy", source.name),
+            kind: source.kind,
+            target: source.target.clone(),
+            collection_id: source.collection_id,
+            connection_id: source.connection_id,
+            schema: source.schema.clone(),
+            input: source.input.clone(),
+            visualization: source.visualization.clone(),
+        };
+
+        cx.spawn(async move |workspace, cx| {
+            let created = storage.create_request(draft).await;
+            workspace
+                .update(cx, |workspace, cx| {
+                    cx.notify();
+                    match created {
+                        Ok(request) => {
+                            workspace.requests.push(request.clone());
+                            Some(request)
+                        }
+                        Err(error) => {
+                            workspace.error = Some(format!("duplicate request: {error}"));
+                            None
+                        }
+                    }
+                })
+                .ok()
+                .flatten()
+        })
+    }
+
     pub fn delete_request(&mut self, id: i64, cx: &mut Context<Self>) -> Task<()> {
         let storage = self.storage();
         cx.spawn(async move |workspace, cx| {

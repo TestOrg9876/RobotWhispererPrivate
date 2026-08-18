@@ -6153,6 +6153,7 @@ dependencies = [
  "smol",
  "tokio",
  "tracing",
+ "web-sys",
 ]
 
 [[package]]
@@ -9112,6 +9113,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,10 +1,12 @@
-//! Dock panels. Each is an `Entity<T: Panel>`, so the dock can tab, drag, zoom
-//! and serialise it without knowing what it shows.
+//! The application's panels.
+//!
+//! Each is an `Entity<T: Panel>`, so the fixed shell and the dock host the very
+//! same entities and switching between them costs nothing.
 
+mod collections;
 mod console;
-mod explorer;
 mod request;
 
+pub use collections::{CollectionsEvent, CollectionsPanel};
 pub use console::ConsolePanel;
-pub use explorer::{ExplorerEvent, ExplorerPanel};
 pub use request::RequestPanel;

@@ -6138,7 +6138,6 @@ name = "rw-ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chrono",
  "futures-util",
  "gpui",
  "gpui-component",
@@ -6149,8 +6148,6 @@ dependencies = [
  "rw-transport",
  "serde",
  "serde_json",
- "smallvec",
- "smol",
  "tokio",
  "tracing",
  "web-sys",
@@ -6191,6 +6188,7 @@ dependencies = [
  "tracing",
  "tracing-wasm",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -9113,6 +9111,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde",
  "serde_json",
 ]
 

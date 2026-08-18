@@ -11,6 +11,7 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 use gpui_component::dock::{Panel, PanelEvent};
+use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{
     ActiveTheme as _, IconName, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
@@ -22,6 +23,20 @@ use rw_core::domain::Request;
 
 use crate::tokens;
 use crate::workspace::Workspace;
+
+/// Right-click actions on a request row. Each carries the row's id, so one
+/// action serves every row rather than one action type per row.
+#[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
+pub struct OpenRequest(pub i64);
+
+#[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
+pub struct DuplicateRequest(pub i64);
+
+#[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
+pub struct DeleteRequest(pub i64);
 
 /// What the sidebar asks the shell to do.
 #[derive(Debug, Clone)]
@@ -142,6 +157,12 @@ impl CollectionsPanel {
                 cx.emit(CollectionsEvent::Open(id));
                 cx.notify();
             }))
+            .context_menu(move |menu, _window, _cx| {
+                menu.menu("Open", Box::new(OpenRequest(id)))
+                    .menu("Duplicate", Box::new(DuplicateRequest(id)))
+                    .separator()
+                    .menu("Delete", Box::new(DeleteRequest(id)))
+            })
             .into_any_element()
     }
 
@@ -199,6 +220,17 @@ impl Render for CollectionsPanel {
         v_flex()
             .size_full()
             .bg(cx.theme().sidebar)
+            .on_action(cx.listener(|this, action: &OpenRequest, _, cx| {
+                this.selected = Some(action.0);
+                cx.emit(CollectionsEvent::Open(action.0));
+                cx.notify();
+            }))
+            .on_action(cx.listener(|_, action: &DuplicateRequest, _, cx| {
+                cx.emit(CollectionsEvent::Duplicate(action.0));
+            }))
+            .on_action(cx.listener(|_, action: &DeleteRequest, _, cx| {
+                cx.emit(CollectionsEvent::Delete(action.0));
+            }))
             .child(
                 // Header: title, count, and the primary create action.
                 v_flex()

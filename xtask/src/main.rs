@@ -6,6 +6,7 @@
 
 mod native;
 mod scenario;
+mod web;
 
 use std::path::PathBuf;
 
@@ -13,12 +14,24 @@ use anyhow::{Context as _, Result, bail};
 
 use scenario::Scenario;
 
+/// The workspace root, resolved from this crate's manifest rather than the
+/// working directory, so `cargo xtask` behaves the same from anywhere.
+pub fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask lives one level below the workspace root")
+        .to_path_buf()
+}
+
 const USAGE: &str = "\
 usage: cargo xtask <task>
 
 tasks:
   screenshot-native [scenario…]   drive the native app under Xvfb and capture it
+  web [--dev] [--serve]           build the wasm bundle, optionally serving it
+  screenshot-web [scenario…]      replay the same scenarios in Chromium
   list-scenarios                  show the committed scenarios
+  wasm-bindgen-version            print the wasm-bindgen version the lockfile pins
 
 options for screenshot-native:
   --theme <name|system>   preseed the theme preference (default: the app's own)
@@ -31,6 +44,9 @@ fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("screenshot-native") => screenshot_native(args.collect()),
+        Some("web") => build_web(args.collect()),
+        Some("screenshot-web") => screenshot_web(args.collect()),
+        Some("wasm-bindgen-version") => web::print_bindgen_version(),
         Some("list-scenarios") => list_scenarios(),
         Some("--help") | Some("-h") | None => {
             print!("{USAGE}");
@@ -43,8 +59,77 @@ fn main() -> Result<()> {
     }
 }
 
+fn build_web(args: Vec<String>) -> Result<()> {
+    // Release by default: an unoptimised wasm module is over 130 MiB and the
+    // browser spends longer compiling it than any scenario takes to run.
+    let mut release = true;
+    let mut serve = false;
+    let mut port = 3000;
+    let mut rest = args.into_iter();
+
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--dev" => release = false,
+            "--serve" => serve = true,
+            "--port" => {
+                port = rest
+                    .next()
+                    .context("--port needs a value")?
+                    .parse()
+                    .context("--port needs a number")?
+            }
+            other => bail!("unknown option `{other}`"),
+        }
+    }
+
+    let dist = web::build(release)?;
+    if serve {
+        web::serve(&dist, port)?;
+    }
+    Ok(())
+}
+
+fn screenshot_web(args: Vec<String>) -> Result<()> {
+    let mut out_dir = workspace_root().join("target/screenshots/web");
+    let mut port = 3000;
+    let mut names = Vec::new();
+    let mut rest = args.into_iter();
+
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--out" => {
+                out_dir = PathBuf::from(rest.next().context("--out needs a value")?);
+            }
+            "--port" => {
+                port = rest
+                    .next()
+                    .context("--port needs a value")?
+                    .parse()
+                    .context("--port needs a number")?
+            }
+            flag if flag.starts_with('-') => bail!("unknown option `{flag}`"),
+            name => names.push(name.to_string()),
+        }
+    }
+
+    if names.is_empty() {
+        names = available()?;
+    }
+
+    for name in &names {
+        let scenario = load(name)?;
+        println!(
+            "{name}: {} steps, {} screenshots",
+            scenario.steps.len(),
+            scenario.shots().len()
+        );
+        web::screenshot(&scenario, &out_dir, port)?;
+    }
+    Ok(())
+}
+
 fn scenario_dir() -> PathBuf {
-    PathBuf::from("xtask/scenarios")
+    workspace_root().join("xtask/scenarios")
 }
 
 fn list_scenarios() -> Result<()> {

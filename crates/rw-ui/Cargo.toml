@@ -17,14 +17,15 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-smallvec = "1"
-rust-embed = "8"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
-
-# Frames arrive from tokio worker threads natively and from JS callbacks on the
-# web; both feed an async channel that a `cx.spawn` task drains. smol's channel
-# works on both targets, unlike tokio's runtime-bound primitives.
-smol = "2"
+# `include-exclude` is what makes the `#[include]` attribute compile. The
+# native build happened to get it through feature unification with another
+# crate in the graph; the wasm build, where that crate is absent, did not.
+# `include-exclude` makes the `#[include]` attribute compile — the native build
+# happened to get it through feature unification with another crate in the graph,
+# and the wasm build, where that crate is absent, did not. `debug-embed` makes
+# debug builds embed rather than read from the developer's disk, which is the
+# only behaviour that works on wasm at all.
+rust-embed = { version = "8", features = ["include-exclude", "debug-embed"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]

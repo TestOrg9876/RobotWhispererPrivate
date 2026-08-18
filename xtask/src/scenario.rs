@@ -19,28 +19,41 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
+use serde::Serialize;
 
 /// One interaction, or one capture.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serialisable because the web harness replays the very same scenarios through
+/// Playwright: the steps are handed to the browser driver as JSON, so a native
+/// and a web screenshot of the same name show the same interaction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "step", rename_all = "lowercase")]
 pub enum Step {
     /// Move the pointer to a window-relative position.
     Move { x: i32, y: i32 },
     /// Move and click the primary button.
     Click { x: i32, y: i32 },
     /// Type literal text.
-    Type(String),
+    Type { text: String },
     /// Press a named key, in `xdotool` spelling: `Return`, `ctrl+s`, `Escape`.
-    Key(String),
-    /// Scroll by `amount` wheel clicks; negative scrolls up.
-    Scroll(i32),
+    Key { key: String },
+    /// Scroll by this many wheel clicks; negative scrolls up.
+    Scroll { by: i32 },
     /// Wait, to let animations and async work settle.
-    Wait(Duration),
+    Wait {
+        #[serde(rename = "ms", serialize_with = "as_millis")]
+        duration: Duration,
+    },
     /// Capture the window to `<name>.png`.
-    Shot(String),
+    Shot { name: String },
+}
+
+fn as_millis<S: serde::Serializer>(duration: &Duration, out: S) -> Result<S::Ok, S::Error> {
+    out.serialize_u64(duration.as_millis() as u64)
 }
 
 /// A parsed scenario, with the name it was loaded under.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Scenario {
     pub name: String,
     pub steps: Vec<Step>,
@@ -72,7 +85,7 @@ impl Scenario {
         self.steps
             .iter()
             .filter_map(|step| match step {
-                Step::Shot(name) => Some(name.as_str()),
+                Step::Shot { name } => Some(name.as_str()),
                 _ => None,
             })
             .collect()
@@ -113,25 +126,31 @@ impl FromStr for Step {
                 if rest.is_empty() {
                     bail!("`type` needs some text");
                 }
-                Ok(Step::Type(rest.to_string()))
+                Ok(Step::Type {
+                    text: rest.to_string(),
+                })
             }
             "key" => {
                 if rest.is_empty() {
                     bail!("`key` needs a key name, such as `Return` or `ctrl+s`");
                 }
-                Ok(Step::Key(rest.to_string()))
+                Ok(Step::Key {
+                    key: rest.to_string(),
+                })
             }
-            "scroll" => Ok(Step::Scroll(
-                rest.parse().context("`scroll` needs a whole number")?,
-            )),
-            "wait" => Ok(Step::Wait(Duration::from_millis(
-                rest.parse().context("`wait` needs milliseconds")?,
-            ))),
+            "scroll" => Ok(Step::Scroll {
+                by: rest.parse().context("`scroll` needs a whole number")?,
+            }),
+            "wait" => Ok(Step::Wait {
+                duration: Duration::from_millis(rest.parse().context("`wait` needs milliseconds")?),
+            }),
             "shot" => {
                 if rest.is_empty() || !rest.chars().all(is_shot_char) {
                     bail!("`shot` needs a filename of letters, digits, `-` or `_`");
                 }
-                Ok(Step::Shot(rest.to_string()))
+                Ok(Step::Shot {
+                    name: rest.to_string(),
+                })
             }
             other => Err(anyhow!("unknown step `{other}`")),
         }
@@ -177,11 +196,19 @@ mod tests {
             vec![
                 Step::Move { x: 1, y: 2 },
                 Step::Click { x: 3, y: 4 },
-                Step::Type("hello".into()),
-                Step::Key("ctrl+s".into()),
-                Step::Scroll(-3),
-                Step::Wait(Duration::from_millis(250)),
-                Step::Shot("01-start".into()),
+                Step::Type {
+                    text: "hello".into()
+                },
+                Step::Key {
+                    key: "ctrl+s".into()
+                },
+                Step::Scroll { by: -3 },
+                Step::Wait {
+                    duration: Duration::from_millis(250)
+                },
+                Step::Shot {
+                    name: "01-start".into()
+                },
             ]
         );
     }
@@ -190,19 +217,34 @@ mod tests {
     fn blank_lines_and_comments_are_ignored() {
         let scenario = Scenario::parse("example", "# a comment\n\n  \nshot only # trailing\n")
             .expect("parses");
-        assert_eq!(scenario.steps, vec![Step::Shot("only".into())]);
+        assert_eq!(
+            scenario.steps,
+            vec![Step::Shot {
+                name: "only".into()
+            }]
+        );
     }
 
     #[test]
     fn a_hash_inside_typed_text_is_kept() {
         let scenario = Scenario::parse("example", "type /topic#1\n").expect("parses");
-        assert_eq!(scenario.steps, vec![Step::Type("/topic#1".into())]);
+        assert_eq!(
+            scenario.steps,
+            vec![Step::Type {
+                text: "/topic#1".into()
+            }]
+        );
     }
 
     #[test]
     fn typed_text_keeps_its_spaces() {
         let scenario = Scenario::parse("example", "type Arm home pose\n").expect("parses");
-        assert_eq!(scenario.steps, vec![Step::Type("Arm home pose".into())]);
+        assert_eq!(
+            scenario.steps,
+            vec![Step::Type {
+                text: "Arm home pose".into()
+            }]
+        );
     }
 
     #[test]
@@ -236,6 +278,31 @@ mod tests {
                 "{source:?} should be rejected"
             );
         }
+    }
+
+    /// The web driver reads these, so the shape is part of the interface.
+    #[test]
+    fn steps_serialise_in_the_shape_the_web_driver_reads() {
+        let scenario = Scenario::parse(
+            "example",
+            "click 3 4\ntype hi\nkey Return\nscroll -2\nwait 250\nshot one\nmove 1 2\n",
+        )
+        .expect("parses");
+        let json = serde_json::to_value(&scenario).expect("serialises");
+
+        assert_eq!(json["name"], "example");
+        assert_eq!(
+            json["steps"],
+            serde_json::json!([
+                { "step": "click", "x": 3, "y": 4 },
+                { "step": "type", "text": "hi" },
+                { "step": "key", "key": "Return" },
+                { "step": "scroll", "by": -2 },
+                { "step": "wait", "ms": 250 },
+                { "step": "shot", "name": "one" },
+                { "step": "move", "x": 1, "y": 2 },
+            ])
+        );
     }
 
     #[test]

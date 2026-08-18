@@ -691,6 +691,24 @@ impl WorkspaceView {
                 format!("{connected}/{environments}"),
                 cx,
             ))
+            // A storage failure used to leave the sidebar empty with no
+            // explanation, which looks exactly like a click that did nothing.
+            .when_some(workspace.error().map(str::to_owned), |bar, error| {
+                bar.child(
+                    h_flex()
+                        .gap_1p5()
+                        .items_center()
+                        .max_w(px(520.))
+                        .child(tokens::status_dot(cx.theme().danger))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().danger)
+                                .truncate()
+                                .child(error),
+                        ),
+                )
+            })
             .right(
                 Button::new("layout-mode")
                     .ghost()

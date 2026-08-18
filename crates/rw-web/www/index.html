@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Robot Whisperer</title>
+    <link rel="icon" href="data:," />
+    <style>
+      /*
+       * GPUI paints into a canvas it appends to the body and sizes from the
+       * window, so the page's only job is to get out of the way: no margins, no
+       * scrollbars, and a background matching the app's darkest surface so the
+       * gap before the first frame is not a white flash.
+       */
+      :root { color-scheme: dark light; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #08090c;
+      }
+      #loading {
+        position: fixed;
+        inset: 0;
+        /*
+         * GPUI listens for pointer events on its canvas, and this overlay sits
+         * on top of it. Without this it would silently swallow every click if it
+         * were ever left visible.
+         */
+        pointer-events: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font: 14px/1.5 system-ui, sans-serif;
+        color: #8d97a8;
+      }
+      #loading[hidden] { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="loading">Loading Robot Whisperer…</div>
+    <script type="module">
+      import init, { run } from "./robot_whisperer.js";
+
+      const loading = document.getElementById("loading");
+      try {
+        await init();
+        await run();
+        loading.hidden = true;
+      } catch (error) {
+        // Surfaced in the page as well as the console: a wasm failure otherwise
+        // leaves a blank canvas with no indication that anything went wrong.
+        loading.textContent = `Robot Whisperer failed to start: ${error}`;
+        throw error;
+      }
+    </script>
+  </body>
+</html>

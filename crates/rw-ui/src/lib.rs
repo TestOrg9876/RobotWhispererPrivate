@@ -6,6 +6,7 @@
 
 pub mod actions;
 pub mod assets;
+pub mod discovery;
 pub mod panels;
 pub mod prefs;
 pub mod session;

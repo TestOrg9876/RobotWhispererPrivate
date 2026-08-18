@@ -87,9 +87,42 @@ fn from_js<T: serde::de::DeserializeOwned>(value: JsValue) -> CoreResult<T> {
     serde_wasm_bindgen::from_value(value).map_err(|err| CoreError::Storage(err.to_string()))
 }
 
-async fn commit(tx: idb::Transaction) -> CoreResult<()> {
-    let _result = tx.commit().map_err(idb_err)?.await.map_err(idb_err)?;
-    Ok(())
+/// A transaction that is waiting to finish.
+///
+/// IndexedDB commits a transaction as soon as control returns to the event loop
+/// with no request outstanding. GPUI's executor resumes a future in a *later*
+/// task than the one the request's success event ran in, so by the time our code
+/// continues the transaction has already committed — and the explicit
+/// `IDBTransaction.commit()` this code used to call then threw
+/// `InvalidStateError`, failing every write in the browser build while the data
+/// had in fact been stored.
+///
+/// Two rules follow, and this type exists to make the first hard to get wrong:
+///
+/// 1. The `complete` handler has to be attached *before* anything is awaited, or
+///    the event fires with nobody listening and the wait never ends. Taking the
+///    transaction by value here means the call has to come before the awaits.
+/// 2. Every request in one transaction has to be **issued** before the first
+///    await. A request issued afterwards runs against a transaction that is
+///    already finished. Multi-step work therefore reads in one transaction and
+///    writes in another.
+struct Finishing(idb::TransactionFuture);
+
+/// Attaches the completion handlers. Call this after issuing every request in
+/// the transaction and before awaiting any of them.
+fn finishing(tx: idb::Transaction) -> Finishing {
+    Finishing(std::future::IntoFuture::into_future(tx))
+}
+
+impl Finishing {
+    async fn wait(self) -> CoreResult<()> {
+        match self.0.await.map_err(idb_err)? {
+            idb::TransactionResult::Committed => Ok(()),
+            idb::TransactionResult::Aborted => {
+                Err(CoreError::Storage("idb: transaction aborted".into()))
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -156,15 +189,13 @@ impl Storage for IdbStorage {
             js.unchecked_ref::<js_sys::Object>(),
             &JsValue::from_str("id"),
         );
-        let key = store
-            .add(&js, None)
-            .map_err(idb_err)?
-            .await
-            .map_err(idb_err)?;
+        let added = store.add(&js, None).map_err(idb_err)?;
+        let finishing = finishing(tx);
+        let key = added.await.map_err(idb_err)?;
         let id = key
             .as_f64()
             .ok_or_else(|| CoreError::Storage("non-numeric key".into()))? as i64;
-        commit(tx).await?;
+        finishing.wait().await?;
         Ok(Request { id, ..candidate })
     }
 
@@ -173,23 +204,21 @@ impl Storage for IdbStorage {
         updated.updated_at = chrono::Utc::now();
         let tx = self.rw(&[REQUESTS])?;
         let store = tx.object_store(REQUESTS).map_err(idb_err)?;
-        store
-            .put(&to_js(&updated)?, None)
-            .map_err(idb_err)?
-            .await
-            .map_err(idb_err)?;
-        commit(tx).await
+        let written = store.put(&to_js(&updated)?, None).map_err(idb_err)?;
+        let finishing = finishing(tx);
+        written.await.map_err(idb_err)?;
+        finishing.wait().await
     }
 
     async fn delete_request(&self, id: RequestId) -> CoreResult<()> {
         let tx = self.rw(&[REQUESTS])?;
         let store = tx.object_store(REQUESTS).map_err(idb_err)?;
-        store
+        let written = store
             .delete(idb::Query::from(JsValue::from_f64(id as f64)))
-            .map_err(idb_err)?
-            .await
             .map_err(idb_err)?;
-        commit(tx).await
+        let finishing = finishing(tx);
+        written.await.map_err(idb_err)?;
+        finishing.wait().await
     }
 
     async fn list_collections(&self) -> CoreResult<Vec<Collection>> {
@@ -222,80 +251,83 @@ impl Storage for IdbStorage {
             js.unchecked_ref::<js_sys::Object>(),
             &JsValue::from_str("id"),
         );
-        let key = store
-            .add(&js, None)
-            .map_err(idb_err)?
-            .await
-            .map_err(idb_err)?;
+        let added = store.add(&js, None).map_err(idb_err)?;
+        let finishing = finishing(tx);
+        let key = added.await.map_err(idb_err)?;
         let id = key
             .as_f64()
             .ok_or_else(|| CoreError::Storage("non-numeric key".into()))? as i64;
-        commit(tx).await?;
+        finishing.wait().await?;
         Ok(Collection { id, ..candidate })
     }
 
     async fn update_collection(&self, collection: &Collection) -> CoreResult<()> {
         let tx = self.rw(&[COLLECTIONS])?;
         let store = tx.object_store(COLLECTIONS).map_err(idb_err)?;
-        store
-            .put(&to_js(collection)?, None)
-            .map_err(idb_err)?
-            .await
-            .map_err(idb_err)?;
-        commit(tx).await
+        let written = store.put(&to_js(collection)?, None).map_err(idb_err)?;
+        let finishing = finishing(tx);
+        written.await.map_err(idb_err)?;
+        finishing.wait().await
     }
 
     async fn delete_collection(&self, id: CollectionId) -> CoreResult<()> {
-        let tx = self.rw(&[COLLECTIONS, REQUESTS])?;
-        let collections = tx.object_store(COLLECTIONS).map_err(idb_err)?;
-        let requests = tx.object_store(REQUESTS).map_err(idb_err)?;
-
-        let all_collections = collections
-            .get_all(None, None)
-            .map_err(idb_err)?
-            .await
-            .map_err(idb_err)?;
-        let mut to_delete = vec![id];
+        // Read first, in its own transaction. Working out which collections
+        // descend from this one needs the whole list, and a request issued after
+        // that read would land on a transaction the browser had already
+        // finished — see [`Finishing`].
+        let collections = self.list_collections().await?;
+        let mut doomed = vec![id];
         let mut queue = vec![id];
-        let parsed: Vec<Collection> = all_collections
-            .into_iter()
-            .map(from_js)
-            .collect::<CoreResult<_>>()?;
-        while let Some(next) = queue.pop() {
-            for c in &parsed {
-                if c.parent_id == Some(next) && !to_delete.contains(&c.id) {
-                    to_delete.push(c.id);
-                    queue.push(c.id);
+        while let Some(parent) = queue.pop() {
+            for collection in &collections {
+                if collection.parent_id == Some(parent) && !doomed.contains(&collection.id) {
+                    doomed.push(collection.id);
+                    queue.push(collection.id);
                 }
             }
         }
 
-        let all_requests = requests
-            .get_all(None, None)
-            .map_err(idb_err)?
-            .await
-            .map_err(idb_err)?;
-        for r_js in all_requests {
-            let mut r: Request = from_js(r_js)?;
-            if let Some(cid) = r.collection_id {
-                if to_delete.contains(&cid) {
-                    r.collection_id = None;
-                    requests
-                        .put(&to_js(&r)?, None)
-                        .map_err(idb_err)?
-                        .await
-                        .map_err(idb_err)?;
-                }
-            }
+        let orphaned: Vec<Request> = self
+            .list_requests()
+            .await?
+            .into_iter()
+            .filter(|request| {
+                request
+                    .collection_id
+                    .is_some_and(|collection| doomed.contains(&collection))
+            })
+            .map(|request| Request {
+                collection_id: None,
+                ..request
+            })
+            .collect();
+
+        // Then write, issuing every request before the first await.
+        let tx = self.rw(&[COLLECTIONS, REQUESTS])?;
+        let collection_store = tx.object_store(COLLECTIONS).map_err(idb_err)?;
+        let request_store = tx.object_store(REQUESTS).map_err(idb_err)?;
+
+        let mut writes = Vec::with_capacity(orphaned.len() + doomed.len());
+        for request in &orphaned {
+            writes.push(request_store.put(&to_js(request)?, None).map_err(idb_err)?);
         }
-        for cid in to_delete {
-            collections
-                .delete(idb::Query::from(JsValue::from_f64(cid as f64)))
-                .map_err(idb_err)?
-                .await
-                .map_err(idb_err)?;
+        let mut deletes = Vec::with_capacity(doomed.len());
+        for collection in doomed {
+            deletes.push(
+                collection_store
+                    .delete(idb::Query::from(JsValue::from_f64(collection as f64)))
+                    .map_err(idb_err)?,
+            );
         }
-        commit(tx).await
+
+        let finishing = finishing(tx);
+        for write in writes {
+            write.await.map_err(idb_err)?;
+        }
+        for delete in deletes {
+            delete.await.map_err(idb_err)?;
+        }
+        finishing.wait().await
     }
 
     async fn list_connections(&self) -> CoreResult<Vec<Connection>> {
@@ -345,15 +377,13 @@ impl Storage for IdbStorage {
             js.unchecked_ref::<js_sys::Object>(),
             &JsValue::from_str("id"),
         );
-        let key = store
-            .add(&js, None)
-            .map_err(idb_err)?
-            .await
-            .map_err(idb_err)?;
+        let added = store.add(&js, None).map_err(idb_err)?;
+        let finishing = finishing(tx);
+        let key = added.await.map_err(idb_err)?;
         let id = key
             .as_f64()
             .ok_or_else(|| CoreError::Storage("non-numeric key".into()))? as i64;
-        commit(tx).await?;
+        finishing.wait().await?;
         Ok(Connection { id, ..candidate })
     }
 
@@ -362,51 +392,52 @@ impl Storage for IdbStorage {
         updated.updated_at = chrono::Utc::now();
         let tx = self.rw(&[CONNECTIONS])?;
         let store = tx.object_store(CONNECTIONS).map_err(idb_err)?;
-        store
-            .put(&to_js(&updated)?, None)
-            .map_err(idb_err)?
-            .await
-            .map_err(idb_err)?;
-        commit(tx).await
+        let written = store.put(&to_js(&updated)?, None).map_err(idb_err)?;
+        let finishing = finishing(tx);
+        written.await.map_err(idb_err)?;
+        finishing.wait().await
     }
 
     async fn delete_connection(&self, id: ConnectionId) -> CoreResult<()> {
+        // Read, then write: see [`Finishing`] and `delete_collection`.
+        let detached: Vec<Request> = self
+            .list_requests()
+            .await?
+            .into_iter()
+            .filter(|request| request.connection_id == Some(id))
+            .map(|request| Request {
+                connection_id: None,
+                ..request
+            })
+            .collect();
+
         let tx = self.rw(&[CONNECTIONS, REQUESTS])?;
-        let connections = tx.object_store(CONNECTIONS).map_err(idb_err)?;
-        let requests = tx.object_store(REQUESTS).map_err(idb_err)?;
-        let all_requests = requests
-            .get_all(None, None)
-            .map_err(idb_err)?
-            .await
-            .map_err(idb_err)?;
-        for r_js in all_requests {
-            let mut r: Request = from_js(r_js)?;
-            if r.connection_id == Some(id) {
-                r.connection_id = None;
-                requests
-                    .put(&to_js(&r)?, None)
-                    .map_err(idb_err)?
-                    .await
-                    .map_err(idb_err)?;
-            }
+        let connection_store = tx.object_store(CONNECTIONS).map_err(idb_err)?;
+        let request_store = tx.object_store(REQUESTS).map_err(idb_err)?;
+
+        let mut writes = Vec::with_capacity(detached.len());
+        for request in &detached {
+            writes.push(request_store.put(&to_js(request)?, None).map_err(idb_err)?);
         }
-        connections
+        let removed = connection_store
             .delete(idb::Query::from(JsValue::from_f64(id as f64)))
-            .map_err(idb_err)?
-            .await
             .map_err(idb_err)?;
-        commit(tx).await
+
+        let finishing = finishing(tx);
+        for write in writes {
+            write.await.map_err(idb_err)?;
+        }
+        removed.await.map_err(idb_err)?;
+        finishing.wait().await
     }
 
     async fn put_schema(&self, definition: &SchemaDefinition) -> CoreResult<()> {
         let tx = self.rw(&[SCHEMAS])?;
         let store = tx.object_store(SCHEMAS).map_err(idb_err)?;
-        store
-            .put(&to_js(definition)?, None)
-            .map_err(idb_err)?
-            .await
-            .map_err(idb_err)?;
-        commit(tx).await
+        let written = store.put(&to_js(definition)?, None).map_err(idb_err)?;
+        let finishing = finishing(tx);
+        written.await.map_err(idb_err)?;
+        finishing.wait().await
     }
 
     async fn get_schema(&self, hash: &str) -> CoreResult<Option<SchemaDefinition>> {
@@ -440,15 +471,21 @@ impl Storage for IdbStorage {
 
     async fn clear_all(&self) -> CoreResult<()> {
         let tx = self.rw(&[REQUESTS, COLLECTIONS, CONNECTIONS, SCHEMAS])?;
+        let mut clears = Vec::new();
         for store_name in [REQUESTS, COLLECTIONS, CONNECTIONS, SCHEMAS] {
-            tx.object_store(store_name)
-                .map_err(idb_err)?
-                .clear()
-                .map_err(idb_err)?
-                .await
-                .map_err(idb_err)?;
+            clears.push(
+                tx.object_store(store_name)
+                    .map_err(idb_err)?
+                    .clear()
+                    .map_err(idb_err)?,
+            );
         }
-        commit(tx).await
+
+        let finishing = finishing(tx);
+        for clear in clears {
+            clear.await.map_err(idb_err)?;
+        }
+        finishing.wait().await
     }
 }
 

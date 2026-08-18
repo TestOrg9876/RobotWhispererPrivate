@@ -119,23 +119,23 @@ fn play(
                 // GPUI processes input on its own tick; give it one.
                 std::thread::sleep(Duration::from_millis(250));
             }
-            Step::Type(text) => {
+            Step::Type { text } => {
                 xdotool(display, &["type", "--delay", "40", text])?;
                 std::thread::sleep(Duration::from_millis(250));
             }
-            Step::Key(key) => {
+            Step::Key { key } => {
                 xdotool(display, &["key", key])?;
                 std::thread::sleep(Duration::from_millis(250));
             }
-            Step::Scroll(amount) => {
-                let button = if *amount < 0 { "4" } else { "5" };
-                for _ in 0..amount.abs() {
+            Step::Scroll { by } => {
+                let button = if *by < 0 { "4" } else { "5" };
+                for _ in 0..by.abs() {
                     xdotool(display, &["click", button])?;
                 }
                 std::thread::sleep(Duration::from_millis(250));
             }
-            Step::Wait(duration) => std::thread::sleep(*duration),
-            Step::Shot(name) => {
+            Step::Wait { duration } => std::thread::sleep(*duration),
+            Step::Shot { name } => {
                 let path = options.out_dir.join(format!("{name}.png"));
                 capture(display, &window.id, &path)?;
                 println!("  {}", path.display());
@@ -214,6 +214,7 @@ fn spawn_xvfb(options: &Options, display: &str) -> Result<Child> {
 pub fn build() -> Result<()> {
     let status = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
         .args(["build", "-p", "rw-desktop"])
+        .current_dir(crate::workspace_root())
         .status()
         .context("running cargo build")?;
     if !status.success() {
@@ -224,7 +225,7 @@ pub fn build() -> Result<()> {
 
 fn spawn_app(display: &str, home: &Path, log: std::fs::File) -> Result<Child> {
     // The crate is `rw-desktop`; the binary it installs is `robot-whisperer`.
-    let binary = Path::new(APP_BINARY);
+    let binary = crate::workspace_root().join(APP_BINARY);
     if !binary.exists() {
         bail!("{} is missing", binary.display());
     }

@@ -36,4 +36,11 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --target wasm32-unknown-unknown -p rw-web
+      # Release, and through xtask, so CI builds exactly what the screenshot
+      # harness serves — including the wasm-bindgen version check.
+      # The CLI and the crate must be the same version — the bindgen format is
+      # unstable — so the version comes from the lockfile rather than a literal
+      # that would drift the next time dependencies move.
+      - run: cargo install wasm-bindgen-cli --locked
+             --version "$(cargo run -q -p xtask -- wasm-bindgen-version)"
+      - run: cargo run -p xtask -- web

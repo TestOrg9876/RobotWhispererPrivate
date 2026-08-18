@@ -63,6 +63,18 @@ impl Workspace {
         self.error.as_deref()
     }
 
+    /// Records a failure and logs it.
+    ///
+    /// Storage failures used to be recorded and never seen — the sidebar simply
+    /// stayed empty and the app looked like it had ignored the click. Every
+    /// write path goes through here, so a failure always reaches both the log
+    /// and the status bar.
+    fn fail(&mut self, doing: &str, error: impl std::fmt::Display) {
+        let message = format!("{doing}: {error}");
+        tracing::error!("{message}");
+        self.error = Some(message);
+    }
+
     pub fn connection(&self, id: i64) -> Option<&Connection> {
         self.connections.iter().find(|entry| entry.id == id)
     }
@@ -98,7 +110,9 @@ impl Workspace {
                     }
 
                     workspace.loaded = true;
-                    workspace.error = (!failures.is_empty()).then(|| failures.join("; "));
+                    if !failures.is_empty() {
+                        workspace.fail("loading the workspace", failures.join("; "));
+                    }
                     cx.notify();
                 })
                 .ok();
@@ -130,7 +144,7 @@ impl Workspace {
                             Some(request)
                         }
                         Err(error) => {
-                            workspace.error = Some(format!("create request: {error}"));
+                            workspace.fail("create request", error);
                             None
                         }
                     }
@@ -173,7 +187,7 @@ impl Workspace {
                             Some(connection)
                         }
                         Err(error) => {
-                            workspace.error = Some(format!("create connection: {error}"));
+                            workspace.fail("create connection", error);
                             None
                         }
                     }
@@ -202,7 +216,7 @@ impl Workspace {
             workspace
                 .update(cx, |workspace, cx| {
                     if let Err(error) = outcome {
-                        workspace.error = Some(format!("save request: {error}"));
+                        workspace.fail("save request", error);
                         cx.notify();
                     }
                 })
@@ -240,7 +254,7 @@ impl Workspace {
                             Some(request)
                         }
                         Err(error) => {
-                            workspace.error = Some(format!("duplicate request: {error}"));
+                            workspace.fail("duplicate request", error);
                             None
                         }
                     }
@@ -258,7 +272,7 @@ impl Workspace {
                 .update(cx, |workspace, cx| {
                     match outcome {
                         Ok(()) => workspace.requests.retain(|entry| entry.id != id),
-                        Err(error) => workspace.error = Some(format!("delete request: {error}")),
+                        Err(error) => workspace.fail("delete request", error),
                     }
                     cx.notify();
                 })

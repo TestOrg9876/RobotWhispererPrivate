@@ -18,12 +18,14 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 smallvec = "1"
+rust-embed = "8"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 # Frames arrive from tokio worker threads natively and from JS callbacks on the
 # web; both feed an async channel that a `cx.spawn` task drains. smol's channel
 # works on both targets, unlike tokio's runtime-bound primitives.
 smol = "2"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros", "time"] }

@@ -3,7 +3,9 @@
 
 use std::sync::Arc;
 
-use rw_core::storage::IdbStorage;
+use rw_core::schema::SchemaRegistry;
+use rw_core::storage::{IdbStorage, Storage};
+use rw_pipeline::CanonicalPipeline;
 use wasm_bindgen::prelude::*;
 
 /// Entry point invoked by the host page once the wasm module is instantiated.
@@ -28,10 +30,20 @@ pub async fn run() -> Result<(), JsValue> {
         gpui_web::WebBackendPreference::WebGl,
     ));
     let http_client = Arc::new(platform.fetch_http_client());
-    let app = gpui::Application::with_platform(platform).with_http_client(http_client);
+    let app = gpui::Application::with_platform(platform)
+        .with_http_client(http_client)
+        .with_assets(rw_ui::assets::Assets);
+
+    let storage_dyn: Arc<dyn Storage> = storage.clone();
+    let registry = Arc::new(
+        SchemaRegistry::new(storage_dyn.clone())
+            .await
+            .map_err(|error| JsValue::from_str(&format!("schema registry: {error}")))?,
+    );
+    let pipeline = Arc::new(CanonicalPipeline::with_schema_registry(registry));
 
     app.run(move |cx| {
-        if let Err(error) = rw_ui::init(storage, None, cx) {
+        if let Err(error) = rw_ui::init(storage_dyn, pipeline, None, cx) {
             tracing::error!("initialisation failed: {error:#}");
             return;
         }

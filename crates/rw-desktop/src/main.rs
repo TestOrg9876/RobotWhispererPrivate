@@ -3,8 +3,10 @@
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
-use rw_core::storage::SqliteStorage;
+use rw_core::schema::SchemaRegistry;
+use rw_core::storage::{SqliteStorage, Storage};
 use rw_core::util::SystemClock;
+use rw_pipeline::CanonicalPipeline;
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -29,17 +31,29 @@ fn main() -> Result<()> {
             .context("opening the workspace database")?,
     );
 
-    gpui_platform::application().run(move |cx| {
-        if let Err(error) = rw_ui::init(storage, None, cx) {
-            tracing::error!("initialisation failed: {error:#}");
-            cx.quit();
-            return;
-        }
-        if let Err(error) = rw_ui::open_window(cx) {
-            tracing::error!("could not open a window: {error:#}");
-            cx.quit();
-        }
-    });
+    // The schema registry is async to build and both the pipeline and the UI
+    // need it, so it is created before the app loop rather than inside it.
+    let storage_dyn: Arc<dyn Storage> = storage.clone();
+    let registry = Arc::new(
+        runtime
+            .block_on(SchemaRegistry::new(storage_dyn.clone()))
+            .context("loading the schema registry")?,
+    );
+    let pipeline = Arc::new(CanonicalPipeline::with_schema_registry(registry));
+
+    gpui_platform::application()
+        .with_assets(rw_ui::assets::Assets)
+        .run(move |cx| {
+            if let Err(error) = rw_ui::init(storage_dyn, pipeline, None, cx) {
+                tracing::error!("initialisation failed: {error:#}");
+                cx.quit();
+                return;
+            }
+            if let Err(error) = rw_ui::open_window(cx) {
+                tracing::error!("could not open a window: {error:#}");
+                cx.quit();
+            }
+        });
 
     Ok(())
 }

@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 rw-ui.workspace = true
 rw-core.workspace = true
+rw-pipeline.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 anyhow.workspace = true

@@ -1,0 +1,49 @@
+# The command palette and settings, and two ROS systems connected at once.
+#
+# Coordinates are relative to the app window, which GPUI opens at 1440x900.
+
+wait 900
+
+# Two Dummy systems, to show they are concurrent rather than exclusive.
+click 789 484
+wait 900
+click 1403 81
+wait 700
+click 1384 158
+wait 500
+click 1269 211
+type Simulator
+wait 500
+click 1395 242
+wait 1400
+
+click 1403 81
+wait 700
+click 1384 158
+wait 500
+click 1269 211
+type Bag replay
+wait 500
+click 1395 242
+wait 1600
+shot 01-two-connections
+
+# The palette finds commands, requests and connections in one list. Opened from
+# the menu here: the keyboard route needs a focused element, and nothing is
+# focused under a bare X server with no window manager.
+click 1327 16
+wait 700
+click 1265 45
+wait 900
+shot 02-palette
+shot 03-palette-filtered
+
+# Settings, chosen from the palette.
+click 700 264
+wait 900
+shot 04-settings
+
+# Choosing a theme applies it immediately — it is a preview, not a form.
+click 700 280
+wait 900
+shot 05-theme-applied

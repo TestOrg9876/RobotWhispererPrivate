@@ -10,8 +10,9 @@ use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, Styled as _, Subscription, Window, div, px,
+    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _, Subscription,
+    Window, div, px,
 };
 use gpui_component::dock::{DockArea, DockItem, DockPlacement, PanelView};
 use gpui_component::menu::DropdownMenu as _;
@@ -43,6 +44,13 @@ use crate::workspace::Workspace;
 const LAYOUT_VERSION: usize = 3;
 
 pub struct WorkspaceView {
+    /// Held so the shell is always somewhere in the focus chain.
+    ///
+    /// Actions dispatch from the focused element upwards. With nothing focused
+    /// — which is the state right after the window opens, and the permanent
+    /// state under a bare X server with no window manager — a keyboard shortcut
+    /// bound here never reaches its handler.
+    focus_handle: FocusHandle,
     workspace: Entity<Workspace>,
     sessions: Entity<Sessions>,
     dock: Entity<DockArea>,
@@ -99,6 +107,7 @@ impl WorkspaceView {
             .detach();
 
         Self {
+            focus_handle: cx.focus_handle(),
             workspace,
             sessions,
             dock,
@@ -644,6 +653,12 @@ pub fn status_colour(status: &Status, cx: &App) -> gpui::Hsla {
     }
 }
 
+impl Focusable for WorkspaceView {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
 impl Render for WorkspaceView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let connections = self.connections_button(cx);
@@ -657,6 +672,8 @@ impl Render for WorkspaceView {
 
         v_flex()
             .size_full()
+            .track_focus(&self.focus_handle)
+            .key_context("Workspace")
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .on_action(cx.listener(Self::on_command_palette))

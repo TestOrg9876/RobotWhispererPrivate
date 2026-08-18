@@ -21,7 +21,7 @@ pub mod workspace_view;
 use std::sync::Arc;
 
 use anyhow::Result;
-use gpui::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
+use gpui::{App, AppContext as _, Bounds, Focusable as _, WindowBounds, WindowOptions, px, size};
 use gpui_component::{Root, TitleBar};
 use rw_pipeline::CanonicalPipeline;
 
@@ -60,6 +60,11 @@ pub fn open_window(cx: &mut App) -> Result<()> {
 
     cx.open_window(options, |window, cx| {
         let view = cx.new(|cx| workspace_view::WorkspaceView::new(prefs, window, cx));
+        // Focused up front: an action dispatches from the focused element
+        // upwards, so a shortcut pressed before anything has been clicked would
+        // otherwise reach nothing.
+        let handle = view.focus_handle(cx);
+        window.focus(&handle, cx);
         cx.new(|cx| Root::new(view, window, cx))
     })?;
 

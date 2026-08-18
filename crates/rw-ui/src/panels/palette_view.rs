@@ -65,9 +65,12 @@ impl PaletteView {
     }
 
     /// Focuses the field, so the palette is typed into the moment it opens.
+    ///
+    /// Through the input's own `focus` rather than the window's: it also starts
+    /// the caret blinking, which is the difference between a field that looks
+    /// ready and one that looks inert.
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let handle = self.query.read(cx).focus_handle(cx);
-        window.focus(&handle, cx);
+        self.query.update(cx, |state, cx| state.focus(window, cx));
     }
 
     fn matches(&self, cx: &App) -> Vec<Entry> {

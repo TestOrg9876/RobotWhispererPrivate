@@ -73,3 +73,16 @@ pub fn close(
     tabs.update(cx, |tabs, cx| tabs.remove_panel(panel, window, cx));
     true
 }
+
+/// Panels rebuilt while a saved layout is being restored.
+///
+/// A panel deserializer is a bare closure registered once at start-up, with no
+/// route back to the shell that will own what it builds. It leaves its work
+/// here instead, and the shell claims it the moment the load returns.
+#[derive(Default)]
+pub struct Restored {
+    pub requests: Vec<(i64, gpui::Entity<crate::panels::RequestPanel>)>,
+    pub welcome: Option<gpui::Entity<crate::panels::WelcomePanel>>,
+}
+
+impl gpui::Global for Restored {}

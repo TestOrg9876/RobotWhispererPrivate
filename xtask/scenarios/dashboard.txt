@@ -28,6 +28,8 @@ key Return
 wait 600
 click 1266 131
 wait 1200
+key ctrl+s
+wait 500
 
 # The counter topic, subscribed, in a second tab.
 click 244 49
@@ -39,7 +41,9 @@ wait 700
 key Return
 wait 600
 click 1266 131
-wait 1500
+wait 1200
+key ctrl+s
+wait 500
 shot 01-two-tabs
 
 # Drag the second tab to the right edge, which splits the pane.
@@ -58,3 +62,9 @@ shot 02-split
 click 105 134
 wait 800
 shot 03-reveal-after-split
+
+# The arrangement must survive a restart. Nothing is reconnected on launch, so
+# the panes come back empty of data — the layout is what is being checked.
+restart
+wait 2500
+shot 04-restored

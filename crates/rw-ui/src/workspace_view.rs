@@ -5,7 +5,7 @@
 //! inside it, which is what gives tabs that drag, reorder, split and restore
 //! without this file implementing any of it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder as _;
@@ -14,7 +14,9 @@ use gpui::{
     InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _, Subscription,
     Window, div, px,
 };
-use gpui_component::dock::{DockArea, DockItem, DockPlacement, PanelView};
+use gpui_component::dock::{
+    DockArea, DockAreaState, DockEvent, DockItem, DockPlacement, PanelState, PanelView,
+};
 use gpui_component::menu::DropdownMenu as _;
 use gpui_component::{
     ActiveTheme as _, IconName, Root, Sizable as _, TitleBar, WindowExt as _,
@@ -28,7 +30,8 @@ use crate::actions::{
     CommandPalette, Connect, Disconnect, ExportWorkspace, ImportWorkspace, ManageConnections,
     NewRequest, OpenSettings, ToggleConsole, ToggleSidebar,
 };
-use crate::docking;
+use crate::docking::{self, Restored};
+use crate::layout;
 use crate::palette::{Choice, Entry};
 use crate::panels::{
     CollectionsEvent, CollectionsPanel, ConnectionsPanel, ConsolePanel, PaletteEvent, PaletteView,
@@ -42,7 +45,7 @@ use crate::workspace::Workspace;
 
 /// Bumped when the default dock arrangement changes, so stale saved layouts get
 /// rebuilt rather than loaded into a shape that no longer exists.
-const LAYOUT_VERSION: usize = 3;
+const LAYOUT_VERSION: usize = 4;
 
 pub struct WorkspaceView {
     /// Held so the shell is always somewhere in the focus chain.
@@ -66,6 +69,9 @@ pub struct WorkspaceView {
     /// request arrives. A panel rather than a special case in `render`, so the
     /// dock stays the only thing that decides what the centre looks like.
     welcome: Option<Entity<WelcomePanel>>,
+    /// Kept apart from the rest because restoring a layout replaces the welcome
+    /// panel with a rebuilt one, and the old subscription has to go with it.
+    _welcome: Option<Subscription>,
     prefs: Prefs,
     _subscriptions: Vec<Subscription>,
 }
@@ -109,12 +115,23 @@ impl WorkspaceView {
             cx.observe(&workspace, |_, _, cx| cx.notify()),
             cx.observe(&sessions, |_, _, cx| cx.notify()),
             cx.subscribe_in(&collections, window, Self::on_collections_event),
-            cx.subscribe_in(&welcome, window, Self::on_welcome_event),
+            // The dock reports every move, drag and resize. Writing the
+            // arrangement out each time is cheap enough — it is one small tree
+            // and one file — and it means a crash never loses the layout.
+            cx.subscribe_in(&dock, window, |this, _, _: &DockEvent, _, cx| {
+                this.save_layout(cx)
+            }),
         ];
 
-        workspace
-            .update(cx, |workspace, cx| workspace.load(cx))
-            .detach();
+        // The saved arrangement names requests by id, so it cannot be rebuilt
+        // until storage has said which ones still exist.
+        let loaded = workspace.update(cx, |workspace, cx| workspace.load(cx));
+        cx.spawn_in(window, async move |view, cx| {
+            loaded.await;
+            view.update_in(cx, |view, window, cx| view.restore_layout(window, cx))
+                .ok();
+        })
+        .detach();
 
         Self {
             focus_handle: cx.focus_handle(),
@@ -124,10 +141,71 @@ impl WorkspaceView {
             collections,
             open: HashMap::new(),
             connections: None,
-            welcome: Some(welcome),
+            welcome: Some(welcome.clone()),
             prefs,
+            _welcome: Some(cx.subscribe_in(&welcome, window, Self::on_welcome_event)),
             _subscriptions: subscriptions,
         }
+    }
+
+    // ── layout ─────────────────────────────────────────────────────────────────
+
+    /// Writes the centre arrangement out, so the next launch opens where this
+    /// one left off.
+    fn save_layout(&mut self, cx: &mut Context<Self>) {
+        let centre = self.dock.read(cx).dump(cx).center;
+        match serde_json::to_value(centre) {
+            Ok(centre) => self.prefs.set_layout(LAYOUT_VERSION, centre),
+            Err(error) => tracing::warn!("could not serialise the layout: {error}"),
+        }
+    }
+
+    /// Rebuilds the saved arrangement, minus anything that no longer exists.
+    fn restore_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(saved) = self.prefs.layout(LAYOUT_VERSION).cloned() else {
+            return;
+        };
+        let Ok(saved) = serde_json::from_value::<PanelState>(saved) else {
+            tracing::warn!("the saved layout is not readable; keeping the default");
+            return;
+        };
+        let live: HashSet<i64> = self
+            .workspace
+            .read(cx)
+            .requests()
+            .iter()
+            .map(|request| request.id)
+            .collect();
+        let Some(centre) = layout::prune(&saved, &|id| live.contains(&id)) else {
+            return;
+        };
+
+        cx.set_global(Restored::default());
+        let state = DockAreaState {
+            version: Some(LAYOUT_VERSION),
+            center: layout::rooted(centre),
+            // The sidebar and console are chrome this shell just built. Leaving
+            // them out means `load` keeps them rather than rebuilding panels
+            // nothing is subscribed to.
+            left_dock: None,
+            right_dock: None,
+            bottom_dock: None,
+        };
+        if let Err(error) = self
+            .dock
+            .update(cx, |dock, cx| dock.load(state, window, cx))
+        {
+            tracing::warn!("could not restore the layout: {error}");
+            return;
+        }
+
+        let restored = std::mem::take(cx.global_mut::<Restored>());
+        self.open = restored.requests.into_iter().collect();
+        self.welcome = restored.welcome.clone();
+        self._welcome = restored
+            .welcome
+            .map(|welcome| cx.subscribe_in(&welcome, window, Self::on_welcome_event));
+        cx.notify();
     }
 
     // ── requests ───────────────────────────────────────────────────────────────

@@ -1567,6 +1567,14 @@ impl Panel for RequestPanel {
         self.home.moved_to(tab_panel);
     }
 
+    /// Saved as an id and nothing more: everything else about the request is
+    /// already in storage, and a stale copy here would only contradict it.
+    fn dump(&self, _cx: &App) -> gpui_component::dock::PanelState {
+        let mut state = gpui_component::dock::PanelState::new(self);
+        state.info = crate::layout::request_panel(self.saved.id);
+        state
+    }
+
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
             .gap_2()

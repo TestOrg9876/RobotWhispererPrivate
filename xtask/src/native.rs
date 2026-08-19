@@ -93,7 +93,9 @@ fn with_app(scenario: &Scenario, options: &Options, display: &str) -> Result<Vec
             window.id, window.width, window.height
         );
         await_first_paint(display, &window)?;
-        play(scenario, options, display, &window)
+        play(
+            scenario, options, display, &home, &log_path, &mut app, window,
+        )
     })();
 
     let _ = app.kill();
@@ -105,37 +107,41 @@ fn with_app(scenario: &Scenario, options: &Options, display: &str) -> Result<Vec
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn play(
     scenario: &Scenario,
     options: &Options,
     display: &str,
-    window: &WindowGeometry,
+    home: &Path,
+    log_path: &Path,
+    app: &mut Child,
+    mut window: WindowGeometry,
 ) -> Result<Vec<PathBuf>> {
     let mut shots = Vec::new();
 
     for step in &scenario.steps {
         match step {
             Step::Move { x, y } => {
-                point_at(display, window, *x, *y)?;
+                point_at(display, &window, *x, *y)?;
             }
             Step::Click { x, y } => {
-                point_at(display, window, *x, *y)?;
+                point_at(display, &window, *x, *y)?;
                 xdotool(display, &["click", "1"])?;
                 // GPUI processes input on its own tick; give it one.
                 std::thread::sleep(Duration::from_millis(250));
             }
             Step::RightClick { x, y } => {
-                point_at(display, window, *x, *y)?;
+                point_at(display, &window, *x, *y)?;
                 xdotool(display, &["click", "3"])?;
                 std::thread::sleep(Duration::from_millis(250));
             }
             Step::Drag { from, to } => {
-                drag_to(display, window, *from, *to)?;
+                drag_to(display, &window, *from, *to)?;
                 xdotool(display, &["mouseup", "1"])?;
                 std::thread::sleep(Duration::from_millis(400));
             }
             Step::DragOver { from, to } => {
-                drag_to(display, window, *from, *to)?;
+                drag_to(display, &window, *from, *to)?;
                 // Left held, so the next step can photograph the target.
                 std::thread::sleep(Duration::from_millis(250));
             }
@@ -159,6 +165,19 @@ fn play(
                 std::thread::sleep(Duration::from_millis(250));
             }
             Step::Wait { duration } => std::thread::sleep(*duration),
+            Step::Restart => {
+                let _ = app.kill();
+                let _ = app.wait();
+                // The window id is gone with the process, and the new one has
+                // to be found before anything can be pointed at or captured.
+                let log = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(log_path)
+                    .with_context(|| format!("reopening {}", log_path.display()))?;
+                *app = spawn_app(display, home, log)?;
+                window = wait_for_window(display, app)?;
+                await_first_paint(display, &window)?;
+            }
             Step::Shot { name } => {
                 let path = options.out_dir.join(format!("{name}.png"));
                 capture(display, &window.id, &path)?;

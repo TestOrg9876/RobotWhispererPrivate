@@ -61,6 +61,11 @@ pub enum Step {
     },
     /// Capture the window to `<name>.png`.
     Shot { name: String },
+    /// Close the app and start it again against the same config and data.
+    ///
+    /// The only way to verify that anything was persisted: everything else a
+    /// scenario does is still in memory.
+    Restart,
 }
 
 fn as_millis<S: serde::Serializer>(duration: &Duration, out: S) -> Result<S::Ok, S::Error> {
@@ -178,6 +183,12 @@ impl FromStr for Step {
                 Ok(Step::Shot {
                     name: rest.to_string(),
                 })
+            }
+            "restart" => {
+                if !rest.is_empty() {
+                    bail!("`restart` takes no arguments");
+                }
+                Ok(Step::Restart)
             }
             other => Err(anyhow!("unknown step `{other}`")),
         }

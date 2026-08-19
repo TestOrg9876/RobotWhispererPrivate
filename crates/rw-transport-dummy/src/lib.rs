@@ -358,10 +358,15 @@ impl Transport for DummyTransport {
         })
     }
 
-    async fn publish(&self, _topic: &str, _value: CanonicalValue) -> TransportResult<()> {
-        Err(TransportError::Other(
-            "dummy transport: publish is not supported".into(),
-        ))
+    /// Accepts a publish and delivers it straight back to that topic's
+    /// subscribers.
+    ///
+    /// A loopback rather than a no-op: publishing into a system with no robot in
+    /// it should still be something you can watch happen, and it makes the whole
+    /// publish path testable without one.
+    async fn publish(&self, topic: &str, value: CanonicalValue) -> TransportResult<()> {
+        publish_one(&self.inner, topic, value).await;
+        Ok(())
     }
 
     async fn call_service(

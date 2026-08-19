@@ -1,0 +1,41 @@
+# Publishing to a topic, and watching it arrive on the same request.
+
+wait 900
+click 105 888
+wait 900
+click 1403 81
+wait 700
+click 1384 158
+wait 500
+click 1269 211
+type Simulator
+wait 500
+click 1395 242
+wait 1500
+click 1327 16
+wait 600
+click 1272 102
+wait 900
+
+# A topic request, subscribed, so anything published shows up below.
+click 244 49
+wait 1400
+click 700 133
+wait 700
+type /dummy/wave
+wait 700
+key Return
+wait 600
+# Subscribe sits at 1266 now that Publish shares the bar.
+click 1266 131
+wait 1500
+shot 01-subscribed
+
+# The message form is there for a topic now. Fill it and publish.
+click 975 249
+type 42
+wait 400
+shot 02-message
+click 1372 131
+wait 1800
+shot 03-published

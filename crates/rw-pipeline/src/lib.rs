@@ -269,6 +269,17 @@ impl CanonicalPipeline {
         })
     }
 
+    /// Publishes one message to a topic.
+    pub async fn publish(
+        &self,
+        connection_id: ConnectionId,
+        topic: &str,
+        value: CanonicalValue,
+    ) -> TransportResult<()> {
+        let transport = self.transport(connection_id).await?;
+        transport.publish(topic, value).await
+    }
+
     pub async fn call_service(
         &self,
         connection_id: ConnectionId,

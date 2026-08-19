@@ -399,7 +399,7 @@ impl RequestPanel {
     ///
     /// Called from the one place `activity` changes rather than beside each
     /// assignment, so the two cannot drift apart.
-    fn publish(&mut self, cx: &mut Context<Self>) {
+    fn publish_state(&mut self, cx: &mut Context<Self>) {
         let state = match (&self.activity, &self.problem) {
             (_, Some(problem)) => RunState::Failed(problem.message.clone()),
             (activity, None) if !activity.is_idle() => RunState::Live,
@@ -412,7 +412,7 @@ impl RequestPanel {
     /// Sets the activity and publishes it in one step.
     fn set_activity(&mut self, activity: Activity, cx: &mut Context<Self>) {
         self.activity = activity;
-        self.publish(cx);
+        self.publish_state(cx);
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
@@ -464,7 +464,7 @@ impl RequestPanel {
         };
 
         self.problem = None;
-        self.publish(cx);
+        self.publish_state(cx);
         *self.incoming.lock().expect("incoming mutex") = Incoming::default();
         self.start_repaint(cx);
 
@@ -474,6 +474,57 @@ impl RequestPanel {
             RequestKind::Action => self.send_goal(session, target, payload, cx),
         }
         cx.notify();
+    }
+
+    /// Sends the payload to the topic, once.
+    ///
+    /// Separate from `start`, because publishing is not a thing you stop: it
+    /// happens and it is over, and a request can be subscribed while it does.
+    fn publish(&mut self, cx: &mut Context<Self>) {
+        let target = self.draft.target.trim().to_string();
+        if target.is_empty() {
+            self.problem = Some(Problem::new("Enter a target first"));
+            cx.notify();
+            return;
+        }
+        let Some(session) = self.session(cx) else {
+            self.problem = Some(self.why_not_connected(cx));
+            cx.notify();
+            return;
+        };
+        let message = match self.payload_value(cx) {
+            Ok(message) => message,
+            Err(error) => {
+                self.problem = Some(Problem::new(error));
+                cx.notify();
+                return;
+            }
+        };
+
+        self.problem = None;
+        self.publish_state(cx);
+        let pipeline = self.sessions.read(cx).pipeline();
+
+        cx.spawn(async move |panel, cx| {
+            let outcome = pipeline.publish(session, &target, message.into()).await;
+            panel
+                .update(cx, |panel, cx| {
+                    match outcome {
+                        Ok(()) => panel.say(format!("published to {target}"), cx),
+                        Err(error) => panel.failed(error, cx),
+                    }
+                    cx.notify();
+                })
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Puts a line in the console, which is where this app says things.
+    fn say(&self, message: impl Into<String>, cx: &mut Context<Self>) {
+        self.sessions.update(cx, |sessions, cx| {
+            sessions.announce(crate::session::Notice::Info(message.into()), cx)
+        });
     }
 
     fn subscribe(&mut self, session: ConnectionId, target: String, cx: &mut Context<Self>) {
@@ -666,12 +717,6 @@ impl RequestPanel {
     /// text and the kind, and keeping three separate places in step with it was
     /// exactly the bug the derived offer list already had.
     fn sync_payload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !matches!(self.draft.kind, RequestKind::Service | RequestKind::Action) {
-            self.payload.clear();
-            self.payload_schema = None;
-            return;
-        }
-
         let wanted = self.payload_schema_name(cx);
         if wanted == self.payload_schema {
             return;
@@ -740,10 +785,6 @@ impl RequestPanel {
     /// Topics carry nothing, so they get an empty message rather than a special
     /// case at every call site.
     fn payload_value(&self, cx: &App) -> Result<Value, String> {
-        if matches!(self.draft.kind, RequestKind::Topic) {
-            return Ok(Value::empty_struct());
-        }
-
         let mut leaves = Vec::new();
         for (field, input) in &self.payload {
             match form::parse(field.editor, &input.read(cx).value()) {
@@ -757,7 +798,7 @@ impl RequestPanel {
 
     fn failed(&mut self, error: impl std::fmt::Display, cx: &mut Context<Self>) {
         self.problem = Some(Problem::new(error.to_string()));
-        self.publish(cx);
+        self.publish_state(cx);
         cx.notify();
     }
 
@@ -834,7 +875,7 @@ impl RequestPanel {
         };
 
         self._repaint = None;
-        self.publish(cx);
+        self.publish_state(cx);
         task.detach();
         cx.notify();
     }
@@ -1032,6 +1073,19 @@ impl RequestPanel {
                         }
                     })),
             )
+            // Publishing sits beside subscribing rather than replacing it: the
+            // same saved request is how you watch a topic *and* how you drive
+            // it, and needing two requests for one topic would be silly.
+            .when(matches!(kind, RequestKind::Topic), |bar| {
+                bar.child(
+                    Button::new("publish")
+                        .outline()
+                        .icon(IconName::ArrowUp)
+                        .label("Publish")
+                        .tooltip("Send the message above to this topic, once")
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.publish(cx))),
+                )
+            })
             .when(!offers.is_empty(), |bar| {
                 bar.child(self.offer_list(&offers, cx))
             })
@@ -1097,11 +1151,13 @@ impl RequestPanel {
         )
         .into_any_element()
     }
-    /// The schema-driven form for a service request or an action goal.
+    /// The schema-driven form: a message to publish, a service's request, or an
+    /// action's goal.
     fn payload(&self, cx: &mut Context<Self>) -> AnyElement {
         let title = match self.draft.kind {
+            RequestKind::Topic => "Message",
             RequestKind::Service => "Request",
-            _ => "Goal",
+            RequestKind::Action => "Goal",
         };
         let schema = self.payload_schema.clone();
 
@@ -1519,8 +1575,9 @@ impl Render for RequestPanel {
         self.sync_payload(window, cx);
         let header = self.header(cx);
         let bar = self.request_bar(cx);
-        let payload = matches!(self.draft.kind, RequestKind::Service | RequestKind::Action)
-            .then(|| self.payload(cx));
+        // Shown for topics too: a topic request that can only be watched is half
+        // a request, and the message you publish is the same form.
+        let payload = Some(self.payload(cx));
         let response = self.response(cx);
         let problem = self.problem(cx);
 

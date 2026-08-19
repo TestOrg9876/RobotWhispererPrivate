@@ -8,6 +8,7 @@ mod connections;
 mod console;
 mod palette_view;
 mod request;
+mod robot;
 mod settings_view;
 mod welcome;
 
@@ -16,5 +17,6 @@ pub use connections::ConnectionsPanel;
 pub use console::ConsolePanel;
 pub use palette_view::{PaletteEvent, PaletteView};
 pub use request::RequestPanel;
+pub use robot::RobotPanel;
 pub use settings_view::{SettingsEvent, SettingsView};
 pub use welcome::{WelcomeEvent, WelcomePanel};

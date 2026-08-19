@@ -30,6 +30,32 @@ impl Default for Grid {
     }
 }
 
+impl Grid {
+    /// A grid sized for something this big across.
+    ///
+    /// A one-metre grid under a ten-centimetre hand is a single square, and a
+    /// ten-metre one is a thicket of lines behind it — the spacing has to follow
+    /// the subject. The step is snapped to a 1-2-5 progression so the numbers
+    /// stay ones a person would have chosen.
+    pub fn for_size(size: f32) -> Self {
+        let target = (size.max(0.001) / 8.).max(0.001);
+        let magnitude = 10f32.powf(target.log10().floor());
+        let step = match target / magnitude {
+            ratio if ratio < 1.5 => magnitude,
+            ratio if ratio < 3.5 => 2. * magnitude,
+            ratio if ratio < 7.5 => 5. * magnitude,
+            _ => 10. * magnitude,
+        };
+        Self {
+            step,
+            // Enough to reach comfortably past the subject without becoming a
+            // haze at the horizon.
+            extent: ((size / step).ceil() as i32).clamp(4, 20),
+            ..Self::default()
+        }
+    }
+}
+
 /// How points are coloured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Coloring {
@@ -266,6 +292,49 @@ mod tests {
                 "corner {corner:?} is missing"
             );
         }
+    }
+
+    #[test]
+    fn a_grid_follows_the_size_of_what_it_sits_under() {
+        // A 10 cm hand and a 2 m arm must not get the same spacing.
+        let hand = Grid::for_size(0.1);
+        let arm = Grid::for_size(2.);
+        assert!(hand.step < arm.step, "{} vs {}", hand.step, arm.step);
+        for size in [0.05f32, 0.5, 2., 30.] {
+            let grid = Grid::for_size(size);
+            let reach = grid.step * grid.extent as f32;
+            assert!(
+                reach >= size * 0.9,
+                "a grid for {size} m only reached {reach} m"
+            );
+            assert!(
+                (4..=20).contains(&grid.extent),
+                "{size} m gave {} lines",
+                grid.extent
+            );
+        }
+    }
+
+    #[test]
+    fn grid_spacing_snaps_to_numbers_a_person_would_choose() {
+        for size in [0.08f32, 0.8, 8., 80.] {
+            let step = Grid::for_size(size).step;
+            let magnitude = 10f32.powf(step.log10().round());
+            let ratio = step / magnitude;
+            assert!(
+                [0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0]
+                    .iter()
+                    .any(|nice| (ratio - nice).abs() < 1e-3),
+                "{size} m gave a step of {step}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_degenerate_size_still_yields_a_usable_grid() {
+        let grid = Grid::for_size(0.);
+        assert!(grid.step > 0. && grid.step.is_finite());
+        assert!(grid.extent >= 4);
     }
 
     #[test]

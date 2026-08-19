@@ -1,0 +1,24 @@
+# The robot viewer: a model from the catalog, posed with its joint sliders.
+
+wait 900
+click 1327 16
+wait 600
+click 1272 175
+wait 5000
+shot 01-robot
+
+# Orbit the camera round the model.
+drag 700 500 -> 900 420
+wait 900
+shot 02-orbited
+
+# Drive the first joint by dragging its slider to the right.
+drag 1310 168 -> 1400 168
+wait 1200
+shot 03-posed
+
+# A different robot from the catalog: the UR10e, which is a whole arm rather
+# than a hand, so the ground grid has to resize with it.
+click 920 82
+wait 6000
+shot 04-second-robot

@@ -17,7 +17,7 @@ use gpui::{
 };
 use gpui_component::{ActiveTheme as _, IconName, h_flex, v_flex};
 use image_crate::{Frame, RgbaImage};
-use rw_render::{Camera, Coloring, Points, Scene};
+use rw_render::{Camera, Coloring, Grid, Points, Scene, Solid};
 
 use crate::gpu::Gpu;
 use crate::session::RobotWhisperer;
@@ -71,14 +71,42 @@ impl SceneView {
         if self.scene.points.available().contains(&wanted) {
             self.scene.points.coloring = wanted;
         }
-        if !self.framed && !self.scene.points.positions.is_empty() {
-            if let Some((min, max)) = bounds_of(&self.scene.points) {
-                self.scene.camera.frame(min, max);
-            }
-            self.framed = true;
+        if !self.framed
+            && let Some((min, max)) = bounds_of(&self.scene.points)
+        {
+            self.frame(min, max, cx);
         }
         self.dirty = true;
         cx.notify();
+    }
+
+    /// Replaces the lit surfaces the pane draws.
+    pub fn set_solids(&mut self, solids: Vec<Solid>, cx: &mut Context<Self>) {
+        self.scene.solids = solids;
+        self.dirty = true;
+        cx.notify();
+    }
+
+    /// Points the camera at a box, and sizes the ground grid to match.
+    ///
+    /// Used when a robot finishes loading or a cloud first arrives; re-framing
+    /// on every message would take the view away from the user.
+    pub fn frame(&mut self, min: [f32; 3], max: [f32; 3], cx: &mut Context<Self>) {
+        self.scene.camera.frame(min, max);
+        let widest = (0..3)
+            .map(|axis| max[axis] - min[axis])
+            .fold(0f32, f32::max);
+        self.scene.grid = Some(Grid::for_size(widest));
+        self.framed = true;
+        self.dirty = true;
+        cx.notify();
+    }
+
+    /// Releases geometry the pane will not draw again.
+    pub fn forget(&self, keys: &[u64], cx: &App) {
+        if let Some(renderer) = self.gpu.read(cx).renderer() {
+            renderer.forget(keys);
+        }
     }
 
     pub fn coloring(&self) -> Coloring {
@@ -95,11 +123,16 @@ impl SceneView {
         cx.notify();
     }
 
-    /// Points the camera back at the data.
+    /// Points the camera back at whatever the pane is showing.
     pub fn reset(&mut self, cx: &mut Context<Self>) {
         self.scene.camera = Camera::default();
-        if let Some((min, max)) = bounds_of(&self.scene.points) {
-            self.scene.camera.frame(min, max);
+        if let Some((min, max)) =
+            bounds_of(&self.scene.points).or_else(|| solid_bounds(&self.scene))
+        {
+            // Through `frame`, so the ground grid is resized too: a grid left at
+            // its ten-metre default with the camera a metre away puts lines
+            // behind the near plane, which rasterise as wedges across the pane.
+            self.frame(min, max, cx);
         }
         self.dirty = true;
         cx.notify();
@@ -163,6 +196,24 @@ impl SceneView {
                 .ok();
         }
     }
+}
+
+/// The box the pane's lit surfaces occupy, in world space.
+fn solid_bounds(scene: &Scene) -> Option<([f32; 3], [f32; 3])> {
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    let mut any = false;
+    for solid in &scene.solids {
+        for vertex in solid.vertices.iter() {
+            any = true;
+            let point = rw_render::transform_point(solid.transform, vertex.position);
+            for axis in 0..3 {
+                min[axis] = min[axis].min(point[axis]);
+                max[axis] = max[axis].max(point[axis]);
+            }
+        }
+    }
+    any.then_some((min, max))
 }
 
 fn bounds_of(points: &Points) -> Option<([f32; 3], [f32; 3])> {
@@ -253,32 +304,36 @@ pub fn controls(view: &Entity<SceneView>, cx: &App) -> impl IntoElement + use<> 
     h_flex()
         .gap_2()
         .items_center()
-        .child(
-            h_flex()
-                .gap_1()
-                .children(available.into_iter().map(|coloring| {
-                    let view = view.clone();
-                    div()
-                        .id(coloring.label())
-                        .px_2()
-                        .py_0p5()
-                        .rounded(cx.theme().radius)
-                        .text_xs()
-                        .cursor_pointer()
-                        .when(coloring == active, |this| {
-                            this.bg(cx.theme().accent)
-                                .text_color(cx.theme().accent_foreground)
-                        })
-                        .when(coloring != active, |this| {
-                            this.text_color(cx.theme().muted_foreground)
-                        })
-                        .child(coloring.label())
-                        .on_mouse_down(gpui::MouseButton::Left, move |_, _, cx| {
-                            view.update(cx, |view, cx| view.set_coloring(coloring, cx));
-                        })
-                })),
-        )
-        .child(tokens::meta("Points", count.to_string(), cx))
+        // A pane showing a robot has nothing to colour and no points to count,
+        // so it gets the view controls and nothing else.
+        .when(count > 0, |row| {
+            row.child(
+                h_flex()
+                    .gap_1()
+                    .children(available.into_iter().map(|coloring| {
+                        let view = view.clone();
+                        div()
+                            .id(coloring.label())
+                            .px_2()
+                            .py_0p5()
+                            .rounded(cx.theme().radius)
+                            .text_xs()
+                            .cursor_pointer()
+                            .when(coloring == active, |this| {
+                                this.bg(cx.theme().accent)
+                                    .text_color(cx.theme().accent_foreground)
+                            })
+                            .when(coloring != active, |this| {
+                                this.text_color(cx.theme().muted_foreground)
+                            })
+                            .child(coloring.label())
+                            .on_mouse_down(gpui::MouseButton::Left, move |_, _, cx| {
+                                view.update(cx, |view, cx| view.set_coloring(coloring, cx));
+                            })
+                    })),
+            )
+            .child(tokens::meta("Points", count.to_string(), cx))
+        })
         .child({
             let view = view.clone();
             div()

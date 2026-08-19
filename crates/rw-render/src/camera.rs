@@ -133,6 +133,18 @@ pub fn perspective(fov: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
     ]
 }
 
+/// Applies a transform to a point.
+pub fn transform_point(matrix: Mat4, point: [f32; 3]) -> [f32; 3] {
+    let mut out = [0.; 3];
+    for (row, slot) in out.iter_mut().enumerate() {
+        *slot = matrix[0][row] * point[0]
+            + matrix[1][row] * point[1]
+            + matrix[2][row] * point[2]
+            + matrix[3][row];
+    }
+    out
+}
+
 pub fn multiply(a: Mat4, b: Mat4) -> Mat4 {
     let mut out = [[0.; 4]; 4];
     for (column, source) in b.iter().enumerate() {

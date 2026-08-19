@@ -16,7 +16,7 @@ mod solid;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-pub use camera::{Camera, IDENTITY, Mat4};
+pub use camera::{Camera, IDENTITY, Mat4, transform_point};
 pub use scene::{Coloring, Grid, Points, Scene};
 pub use solid::{MeshVertex, Solid};
 

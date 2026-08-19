@@ -19,6 +19,7 @@ gpui-component.workspace = true
 rw-core.workspace = true
 rw-canonical.workspace = true
 rw-pipeline.workspace = true
+rw-assets.workspace = true
 rw-render.workspace = true
 rw-transport.workspace = true
 
@@ -53,3 +54,6 @@ gloo-timers = { version = "0.3", features = ["futures"] }
 instant = { version = "0.1", features = ["wasm-bindgen"] }
 web-sys = { version = "0.3", features = ["Window", "Storage"] }
 tokio = { workspace = true, features = ["sync", "macros"] }
+
+[dev-dependencies]
+pollster = "0.4"

@@ -28,14 +28,14 @@ use gpui_component::{
 
 use crate::actions::{
     CommandPalette, Connect, Disconnect, ExportWorkspace, ImportWorkspace, ManageConnections,
-    NewRequest, OpenSettings, ToggleConsole, ToggleSidebar,
+    NewRequest, OpenSettings, ShowRobot, ToggleConsole, ToggleSidebar,
 };
 use crate::docking::{self, Restored};
 use crate::layout;
 use crate::palette::{Choice, Entry};
 use crate::panels::{
     CollectionsEvent, CollectionsPanel, ConnectionsPanel, ConsolePanel, PaletteEvent, PaletteView,
-    RequestPanel, SettingsEvent, SettingsView, WelcomeEvent, WelcomePanel,
+    RequestPanel, RobotPanel, SettingsEvent, SettingsView, WelcomeEvent, WelcomePanel,
 };
 use crate::prefs::Prefs;
 use crate::session::{Notice, RobotWhisperer, Sessions, Status};
@@ -72,6 +72,8 @@ pub struct WorkspaceView {
     /// Kept apart from the rest because restoring a layout replaces the welcome
     /// panel with a rebuilt one, and the old subscription has to go with it.
     _welcome: Option<Subscription>,
+    /// The robot viewer, if it has been opened.
+    robot: Option<Entity<RobotPanel>>,
     prefs: Prefs,
     _subscriptions: Vec<Subscription>,
 }
@@ -142,6 +144,7 @@ impl WorkspaceView {
             open: HashMap::new(),
             connections: None,
             welcome: Some(welcome.clone()),
+            robot: None,
             prefs,
             _welcome: Some(cx.subscribe_in(&welcome, window, Self::on_welcome_event)),
             _subscriptions: subscriptions,
@@ -259,6 +262,37 @@ impl WorkspaceView {
                 dock.remove_panel(panel, DockPlacement::Center, window, cx)
             });
         }
+        cx.notify();
+    }
+
+    /// Opens the robot viewer, or brings it to the front if it is already open.
+    ///
+    /// One instance: the models are tens of megabytes, and a second pane
+    /// showing the same arm is a second copy of them.
+    fn open_robot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(existing) = self.robot.clone() {
+            let home = existing.read(cx).home();
+            let panel = Arc::new(existing) as Arc<dyn PanelView>;
+            if !docking::reveal(home, panel.clone(), window, cx) {
+                self.dock.update(cx, |dock, cx| {
+                    dock.add_panel(panel, DockPlacement::Center, None, window, cx)
+                });
+            }
+            return;
+        }
+
+        let panel = RobotPanel::view(cx);
+        self.robot = Some(panel.clone());
+        self.dock.update(cx, |dock, cx| {
+            dock.add_panel(
+                Arc::new(panel) as Arc<dyn PanelView>,
+                DockPlacement::Center,
+                None,
+                window,
+                cx,
+            )
+        });
+        self.dismiss_welcome(window, cx);
         cx.notify();
     }
 
@@ -406,6 +440,7 @@ impl WorkspaceView {
                     .menu("Manage connections…", Box::new(ManageConnections))
                     .separator()
                     .menu("Toggle request list", Box::new(ToggleSidebar))
+                    .menu("Robot viewer", Box::new(ShowRobot))
                     .menu("Toggle console", Box::new(ToggleConsole))
                     .separator()
                     .menu("Import workspace…", Box::new(ImportWorkspace))
@@ -505,6 +540,7 @@ impl WorkspaceView {
                 "Toggle console",
                 Choice::Command("ToggleConsole"),
             ),
+            Entry::new("Command", "Robot viewer", Choice::Command("ShowRobot")),
         ];
 
         let workspace = self.workspace.read(cx);
@@ -540,6 +576,7 @@ impl WorkspaceView {
             Choice::Command("OpenSettings") => self.open_settings(window, cx),
             Choice::Command("ToggleSidebar") => self.on_toggle_sidebar(&ToggleSidebar, window, cx),
             Choice::Command("ToggleConsole") => self.on_toggle_console(&ToggleConsole, window, cx),
+            Choice::Command("ShowRobot") => self.open_robot(window, cx),
             Choice::Command(unknown) => tracing::warn!("palette has no handler for {unknown}"),
         }
     }
@@ -738,6 +775,10 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    fn on_show_robot(&mut self, _: &ShowRobot, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_robot(window, cx);
+    }
+
     /// The footer: what is happening right now.
     ///
     /// Live state only. A count of saved requests is already the request list's
@@ -888,6 +929,7 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(Self::on_disconnect))
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_toggle_console))
+            .on_action(cx.listener(Self::on_show_robot))
             .child(
                 TitleBar::new()
                     .child(div().flex_1())

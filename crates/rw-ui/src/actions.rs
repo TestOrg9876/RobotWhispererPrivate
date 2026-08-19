@@ -22,6 +22,8 @@ actions!(
         ToggleSidebar,
         /// Show or hide the console.
         ToggleConsole,
+        /// Open the robot viewer.
+        ShowRobot,
         /// Save the active request.
         SaveRequest,
         /// Write the workspace to a file that can be shared or committed.

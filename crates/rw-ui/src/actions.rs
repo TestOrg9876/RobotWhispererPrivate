@@ -24,6 +24,15 @@ actions!(
         ToggleConsole,
         /// Open the robot viewer.
         ShowRobot,
+        /// Start capturing every subscribed topic, or stop and keep what was
+        /// captured.
+        ToggleRecording,
+        /// Write the last recording to a file.
+        SaveRecording,
+        /// Open a recording as a connection and play it back.
+        OpenRecording,
+        /// Play the recording just captured, without a trip through the disk.
+        ReplayRecording,
         /// Save the active request.
         SaveRequest,
         /// Write the workspace to a file that can be shared or committed.

@@ -9,6 +9,7 @@ pub enum TransportKind {
     Rosbridge,
     NativeRos2,
     Dummy,
+    Replay,
 }
 
 impl TransportKind {
@@ -18,6 +19,7 @@ impl TransportKind {
             TransportKind::Rosbridge => "rosbridge",
             TransportKind::NativeRos2 => "native_ros2",
             TransportKind::Dummy => "dummy",
+            TransportKind::Replay => "replay",
         }
     }
 
@@ -27,6 +29,7 @@ impl TransportKind {
             "rosbridge" => Some(TransportKind::Rosbridge),
             "native_ros2" => Some(TransportKind::NativeRos2),
             "dummy" => Some(TransportKind::Dummy),
+            "replay" => Some(TransportKind::Replay),
             _ => None,
         }
     }
@@ -47,6 +50,13 @@ pub enum TransportConfig {
         domain_id: u32,
     },
     Dummy {},
+    /// A recorded session, played back as if it were live.
+    Replay {
+        /// The recording itself, kept inline rather than as a path: a workspace
+        /// export that named a file on someone else's disk would open to
+        /// nothing on yours.
+        recording: String,
+    },
 }
 
 impl TransportConfig {
@@ -56,6 +66,7 @@ impl TransportConfig {
             TransportConfig::Rosbridge { .. } => TransportKind::Rosbridge,
             TransportConfig::NativeRos2 { .. } => TransportKind::NativeRos2,
             TransportConfig::Dummy {} => TransportKind::Dummy,
+            TransportConfig::Replay { .. } => TransportKind::Replay,
         }
     }
 }

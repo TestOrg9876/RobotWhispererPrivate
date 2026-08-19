@@ -28,7 +28,8 @@ use gpui_component::{
 
 use crate::actions::{
     CommandPalette, Connect, Disconnect, ExportWorkspace, ImportWorkspace, ManageConnections,
-    NewRequest, OpenSettings, ShowRobot, ToggleConsole, ToggleSidebar,
+    NewRequest, OpenRecording, OpenSettings, ReplayRecording, SaveRecording, ShowRobot,
+    ToggleConsole, ToggleRecording, ToggleSidebar,
 };
 use crate::docking::{self, Restored};
 use crate::layout;
@@ -441,6 +442,10 @@ impl WorkspaceView {
                     .separator()
                     .menu("Toggle request list", Box::new(ToggleSidebar))
                     .menu("Robot viewer", Box::new(ShowRobot))
+                    .menu("Start or stop recording", Box::new(ToggleRecording))
+                    .menu("Replay last recording", Box::new(ReplayRecording))
+                    .menu("Save recording…", Box::new(SaveRecording))
+                    .menu("Open recording…", Box::new(OpenRecording))
                     .menu("Toggle console", Box::new(ToggleConsole))
                     .separator()
                     .menu("Import workspace…", Box::new(ImportWorkspace))
@@ -541,6 +546,26 @@ impl WorkspaceView {
                 Choice::Command("ToggleConsole"),
             ),
             Entry::new("Command", "Robot viewer", Choice::Command("ShowRobot")),
+            Entry::new(
+                "Command",
+                "Start or stop recording",
+                Choice::Command("ToggleRecording"),
+            ),
+            Entry::new(
+                "Command",
+                "Replay last recording",
+                Choice::Command("ReplayRecording"),
+            ),
+            Entry::new(
+                "Command",
+                "Save recording",
+                Choice::Command("SaveRecording"),
+            ),
+            Entry::new(
+                "Command",
+                "Open recording",
+                Choice::Command("OpenRecording"),
+            ),
         ];
 
         let workspace = self.workspace.read(cx);
@@ -577,8 +602,203 @@ impl WorkspaceView {
             Choice::Command("ToggleSidebar") => self.on_toggle_sidebar(&ToggleSidebar, window, cx),
             Choice::Command("ToggleConsole") => self.on_toggle_console(&ToggleConsole, window, cx),
             Choice::Command("ShowRobot") => self.open_robot(window, cx),
+            Choice::Command("ToggleRecording") => self.toggle_recording(cx),
+            Choice::Command("ReplayRecording") => self.replay_recording(cx),
+            Choice::Command("SaveRecording") => self.save_recording(cx),
+            Choice::Command("OpenRecording") => self.open_recording(cx),
             Choice::Command(unknown) => tracing::warn!("palette has no handler for {unknown}"),
         }
+    }
+
+    // ── record and replay ──────────────────────────────────────────────────────
+
+    /// Starts capturing every subscribed topic, or stops and keeps the result.
+    fn toggle_recording(&mut self, cx: &mut Context<Self>) {
+        let recorder = RobotWhisperer::global(cx).recorder.clone();
+        let recording = recorder.read(cx).is_recording();
+        if recording {
+            let (captured, count, seconds, full) = recorder.update(cx, |recorder, cx| {
+                let captured = recorder.stop(cx);
+                (
+                    captured,
+                    recorder.count(),
+                    recorder.seconds(),
+                    recorder.is_full(),
+                )
+            });
+            if captured {
+                self.say(
+                    format!("recorded {count} messages over {seconds:.1}s — save or replay it"),
+                    cx,
+                );
+                if full {
+                    self.complain("recording stopped: it reached its message limit", cx);
+                }
+            } else {
+                self.say("recording stopped; nothing had arrived", cx);
+            }
+        } else {
+            let name = format!("recording {}", chrono::Local::now().format("%H:%M:%S"));
+            recorder.update(cx, |recorder, cx| recorder.start(name, cx));
+            self.say("recording every subscribed topic", cx);
+        }
+        cx.notify();
+    }
+
+    /// Plays the recording just captured, as a connection of its own.
+    ///
+    /// Without a trip through the disk: the commonest thing to do with a
+    /// recording is watch it again straight away, and a save dialog in the
+    /// middle of that is a detour.
+    fn replay_recording(&mut self, cx: &mut Context<Self>) {
+        let recording = RobotWhisperer::global(cx)
+            .recorder
+            .read(cx)
+            .finished()
+            .cloned();
+        let Some(recording) = recording else {
+            return self.complain("there is no recording to play", cx);
+        };
+        let name = if recording.name.is_empty() {
+            "recording".to_string()
+        } else {
+            recording.name.clone()
+        };
+        self.say(
+            format!(
+                "replaying {name}: {} topics, {} messages, {:.1}s",
+                recording.topics.len(),
+                recording.messages.len(),
+                recording.duration_ns() as f64 / 1e9
+            ),
+            cx,
+        );
+        self.add_replay_connection(name, recording.write(), cx);
+    }
+
+    /// Writes the last recording to a file.
+    fn save_recording(&mut self, cx: &mut Context<Self>) {
+        let Some(json) = RobotWhisperer::global(cx)
+            .recorder
+            .read(cx)
+            .finished()
+            .map(|recording| recording.write())
+        else {
+            return self.complain("there is no recording to save", cx);
+        };
+        let directory = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let picked = cx.prompt_for_new_path(&directory, Some("recording.rwrec.json"));
+
+        cx.spawn(async move |view, cx| {
+            let path = match picked.await {
+                Ok(Ok(Some(path))) => path,
+                Ok(Ok(None)) => return,
+                _ => {
+                    view.update(cx, |view, cx| {
+                        view.complain("could not open a file dialog", cx)
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            let outcome = std::fs::write(&path, json).map_err(|error| error.to_string());
+            view.update(cx, |view, cx| match outcome {
+                Ok(()) => view.say(format!("recording saved to {}", path.display()), cx),
+                Err(error) => view.complain(format!("could not save the recording: {error}"), cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Opens a recording as a connection, so requests can be pointed at it.
+    fn open_recording(&mut self, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+
+        cx.spawn(async move |view, cx| {
+            let paths = match picked.await {
+                Ok(Ok(Some(paths))) => paths,
+                Ok(Ok(None)) => return,
+                _ => {
+                    view.update(cx, |view, cx| {
+                        view.complain("could not open a file dialog", cx)
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            // Read and validated here rather than at connect time: a file that
+            // is not a recording should say so now, not leave a broken
+            // connection sitting in the list.
+            let read = std::fs::read_to_string(&path)
+                .map_err(|error| error.to_string())
+                .and_then(|json| {
+                    rw_record::Recording::read(&json)
+                        .map(|recording| (recording, json))
+                        .map_err(|error| error.to_string())
+                });
+
+            view.update(cx, |view, cx| {
+                let (recording, json) = match read {
+                    Ok(read) => read,
+                    Err(error) => {
+                        return view.complain(format!("could not open the recording: {error}"), cx);
+                    }
+                };
+                let name = if recording.name.is_empty() {
+                    path.file_stem()
+                        .map(|stem| stem.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "recording".into())
+                } else {
+                    recording.name.clone()
+                };
+                view.say(
+                    format!(
+                        "opened {name}: {} topics, {} messages, {:.1}s",
+                        recording.topics.len(),
+                        recording.messages.len(),
+                        recording.duration_ns() as f64 / 1e9
+                    ),
+                    cx,
+                );
+                view.add_replay_connection(name, json, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Stores a recording as a connection and opens it.
+    fn add_replay_connection(&mut self, name: String, json: String, cx: &mut Context<Self>) {
+        let created = self.workspace.update(cx, |workspace, cx| {
+            workspace.create_connection(
+                rw_core::storage::NewConnection {
+                    name,
+                    config: rw_core::domain::TransportConfig::Replay { recording: json },
+                    color: None,
+                    // Never on its own: a recording that starts playing at
+                    // launch is a surprise, not a convenience.
+                    auto_connect: false,
+                },
+                cx,
+            )
+        });
+        cx.spawn(async move |view, cx| {
+            let Some(connection) = created.await else {
+                return;
+            };
+            view.update(cx, |view, cx| view.toggle_connection(connection.id, cx))
+                .ok();
+        })
+        .detach();
     }
 
     // ── import and export ──────────────────────────────────────────────────────
@@ -779,6 +999,22 @@ impl WorkspaceView {
         self.open_robot(window, cx);
     }
 
+    fn on_toggle_recording(&mut self, _: &ToggleRecording, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_recording(cx);
+    }
+
+    fn on_replay_recording(&mut self, _: &ReplayRecording, _: &mut Window, cx: &mut Context<Self>) {
+        self.replay_recording(cx);
+    }
+
+    fn on_save_recording(&mut self, _: &SaveRecording, _: &mut Window, cx: &mut Context<Self>) {
+        self.save_recording(cx);
+    }
+
+    fn on_open_recording(&mut self, _: &OpenRecording, _: &mut Window, cx: &mut Context<Self>) {
+        self.open_recording(cx);
+    }
+
     /// The footer: what is happening right now.
     ///
     /// Live state only. A count of saved requests is already the request list's
@@ -819,6 +1055,10 @@ impl WorkspaceView {
             })
             .collect();
         let nothing_connected = chips.is_empty();
+        let (recording, captured) = {
+            let recorder = RobotWhisperer::global(cx).recorder.read(cx);
+            (recorder.is_recording(), recorder.count())
+        };
 
         StatusBar::new()
             .left(
@@ -865,6 +1105,46 @@ impl WorkspaceView {
                         })),
                 )
             })
+            // Recording is a mode, and a mode with nothing on screen to say it
+            // is on is how people end up with a fifty-thousand-message file
+            // they did not want.
+            .right(
+                Button::new("toggle-recording")
+                    .ghost()
+                    .xsmall()
+                    .tooltip(if recording {
+                        "Stop recording"
+                    } else {
+                        "Record every subscribed topic"
+                    })
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .child(tokens::status_dot(if recording {
+                                cx.theme().danger
+                            } else {
+                                cx.theme().muted_foreground
+                            }))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(if recording {
+                                        cx.theme().danger
+                                    } else {
+                                        cx.theme().muted_foreground
+                                    })
+                                    .child(if recording {
+                                        format!("Recording · {captured}")
+                                    } else if captured > 0 {
+                                        format!("Recorded {captured}")
+                                    } else {
+                                        "Record".to_string()
+                                    }),
+                            ),
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_recording(cx))),
+            )
             // A storage failure used to leave the sidebar empty with no
             // explanation, which looks exactly like a click that did nothing.
             .when_some(workspace.error().map(str::to_owned), |bar, error| {
@@ -930,6 +1210,10 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_toggle_console))
             .on_action(cx.listener(Self::on_show_robot))
+            .on_action(cx.listener(Self::on_toggle_recording))
+            .on_action(cx.listener(Self::on_replay_recording))
+            .on_action(cx.listener(Self::on_save_recording))
+            .on_action(cx.listener(Self::on_open_recording))
             .child(
                 TitleBar::new()
                     .child(div().flex_1())

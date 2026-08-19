@@ -6019,10 +6019,12 @@ dependencies = [
  "getrandom 0.2.17",
  "rw-canonical",
  "rw-core",
+ "rw-record",
  "rw-session",
  "rw-transport",
  "rw-transport-dummy",
  "rw-transport-foxglove-ws",
+ "rw-transport-replay",
  "rw-transport-rosbridge",
  "rw-wire",
  "serde",
@@ -6031,6 +6033,16 @@ dependencies = [
  "tracing",
  "uuid",
  "wasm-bindgen-futures",
+]
+
+[[package]]
+name = "rw-record"
+version = "0.1.0"
+dependencies = [
+ "rw-canonical",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -6139,6 +6151,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rw-transport-replay"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "gloo-timers",
+ "rw-canonical",
+ "rw-record",
+ "rw-schema-ros2",
+ "rw-transport",
+ "tokio",
+ "tracing",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "rw-transport-rosbridge"
 version = "0.1.0"
 dependencies = [
@@ -6172,6 +6199,7 @@ dependencies = [
  "rw-canonical",
  "rw-core",
  "rw-pipeline",
+ "rw-record",
  "rw-render",
  "rw-transport",
  "serde",

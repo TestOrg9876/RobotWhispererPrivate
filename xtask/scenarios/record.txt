@@ -1,0 +1,69 @@
+# Record a live topic, then play the recording back as its own connection.
+
+wait 900
+click 105 888
+wait 900
+click 1403 81
+wait 700
+click 1384 158
+wait 500
+click 1269 211
+type Simulator
+wait 500
+click 1395 242
+wait 1500
+click 1327 16
+wait 600
+click 1272 102
+wait 900
+
+# Watch the counter.
+click 244 49
+wait 1400
+click 700 133
+wait 700
+type /dummy/counter
+wait 700
+key Return
+wait 600
+click 1266 131
+wait 1500
+
+# Start recording from the footer, let some messages land, stop.
+click 1408 888
+wait 3000
+shot 01-recording
+click 1408 888
+wait 900
+shot 02-recorded
+
+# Replay it: the recording becomes a connection of its own, and a request
+# pointed at it streams the captured messages back.
+key ctrl+k
+wait 700
+shot 03-palette
+# Clicked rather than typed and confirmed: without a window manager the
+# palette's field never takes keystrokes (see xtask/src/native.rs).
+click 595 391
+wait 2500
+shot 03-replay-connection
+
+# A new request against the replayed system, on the topic that was captured.
+click 244 49
+wait 1400
+click 700 133
+wait 700
+type /dummy/counter
+wait 700
+key Return
+wait 600
+click 1163 139
+wait 700
+shot 04-pick-connection
+
+# Point the request at the recording rather than the live system, and run it.
+click 1206 196
+wait 700
+click 1266 139
+wait 2500
+shot 05-replaying

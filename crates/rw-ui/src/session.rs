@@ -161,6 +161,14 @@ impl Sessions {
                 TransportConfig::NativeRos2 { .. } => Err(rw_transport::TransportError::Other(
                     "native ROS 2 is not implemented yet".into(),
                 )),
+                TransportConfig::Replay { recording } => {
+                    match rw_record::Recording::read(recording) {
+                        Ok(recording) => pipeline.open_replay(recording).await,
+                        Err(error) => Err(rw_transport::TransportError::Other(format!(
+                            "could not read the recording: {error}"
+                        ))),
+                    }
+                }
             };
 
             let session = match opened {
@@ -316,6 +324,8 @@ pub struct RobotWhisperer {
     pub runs: Entity<crate::runs::Runs>,
     /// The graphics device every 3D pane draws with.
     pub gpu: Entity<crate::gpu::Gpu>,
+    /// Captures what arrives while recording is on.
+    pub recorder: Entity<crate::recorder::Recorder>,
 }
 
 impl gpui::Global for RobotWhisperer {}

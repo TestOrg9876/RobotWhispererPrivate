@@ -842,6 +842,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_recording_can_be_stored_as_a_connection() {
+        // The `transport_kind` column carries a CHECK constraint, so every new
+        // kind needs a migration — and the failure mode is a connection that
+        // simply refuses to be created.
+        let storage = make_storage(fixed_clock(2026, 1, 1));
+        let created = storage
+            .create_connection(NewConnection {
+                name: "A recording".into(),
+                config: TransportConfig::Replay {
+                    recording: "{\"version\":1,\"topics\":[],\"messages\":[]}".into(),
+                },
+                auto_connect: false,
+                color: None,
+            })
+            .await
+            .expect("a replay connection is storable");
+        let listed = storage.list_connections().await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, created.id);
+        assert!(matches!(listed[0].config, TransportConfig::Replay { .. }));
+    }
+
+    #[tokio::test]
+    async fn an_existing_database_gains_the_replay_kind_when_it_is_reopened() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ws.db");
+        {
+            let storage = SqliteStorage::open(&path, fixed_clock(2026, 1, 1)).unwrap();
+            storage
+                .create_connection(NewConnection {
+                    name: "Robot".into(),
+                    config: ws_config("ws://localhost:9090"),
+                    auto_connect: false,
+                    color: None,
+                })
+                .await
+                .unwrap();
+        }
+        let storage = SqliteStorage::open(&path, fixed_clock(2026, 1, 1)).unwrap();
+        storage
+            .create_connection(NewConnection {
+                name: "A recording".into(),
+                config: TransportConfig::Replay {
+                    recording: "{}".into(),
+                },
+                auto_connect: false,
+                color: None,
+            })
+            .await
+            .expect("the migration widened the constraint");
+        assert_eq!(storage.list_connections().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
     async fn clear_all_empties_every_table_and_preserves_migrations() {
         let clock = fixed_clock(2026, 1, 1);
         let storage = make_storage(clock);

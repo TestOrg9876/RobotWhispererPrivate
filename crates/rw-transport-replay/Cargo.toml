@@ -1,0 +1,24 @@
+[package]
+name = "rw-transport-replay"
+version = "0.1.0"
+edition.workspace = true
+description = "Plays a recording back as if it were a live ROS system"
+
+[dependencies]
+rw-canonical = { path = "../rw-canonical" }
+rw-schema-ros2 = { path = "../rw-schema-ros2" }
+rw-record = { path = "../rw-record" }
+rw-transport = { path = "../rw-transport" }
+async-trait = "0.1"
+tracing = { workspace = true }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
+wasm-bindgen-futures = "0.4"
+gloo-timers = { version = "0.3", features = ["futures"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time", "test-util"] }

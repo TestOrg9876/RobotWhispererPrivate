@@ -20,6 +20,7 @@ rw-core.workspace = true
 rw-canonical.workspace = true
 rw-pipeline.workspace = true
 rw-assets.workspace = true
+rw-record.workspace = true
 rw-render.workspace = true
 rw-transport.workspace = true
 

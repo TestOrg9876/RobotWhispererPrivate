@@ -551,10 +551,22 @@ impl RequestPanel {
     fn subscribe(&mut self, session: ConnectionId, target: String, cx: &mut Context<Self>) {
         let pipeline = self.sessions.read(cx).pipeline();
         let incoming = Arc::clone(&self.incoming);
+        // Held for the subscription's whole life rather than checked once, so
+        // recording started after a topic was already being watched still
+        // captures it.
+        let tap = RobotWhisperer::global(cx).recorder.read(cx).tap();
+        let topic = target.clone();
 
         cx.spawn(async move |panel, cx| {
             let outcome = pipeline
                 .subscribe_topic(session, &target, move |_handle, frame, _lossy| {
+                    tap.observe(
+                        &topic,
+                        &frame.schema.name,
+                        (!frame.schema.definition.is_empty())
+                            .then_some(frame.schema.definition.as_str()),
+                        &frame.value,
+                    );
                     let Ok(mut incoming) = incoming.lock() else {
                         return;
                     };

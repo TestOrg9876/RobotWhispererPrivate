@@ -12,6 +12,7 @@ use rw_transport::{
 };
 use rw_transport_dummy::DummyTransport;
 use rw_transport_foxglove_ws::{FoxgloveConfig, FoxgloveTransport};
+use rw_transport_replay::ReplayTransport;
 use rw_transport_rosbridge::{RosbridgeConfig, RosbridgeTransport};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -126,6 +127,27 @@ impl CanonicalPipeline {
 
     pub async fn open_dummy(&self) -> TransportResult<ConnectionId> {
         let transport = Arc::new(DummyTransport::new());
+        transport.connect().await?;
+        let id = ConnectionId::new();
+        let dyn_transport: Arc<dyn Transport> = transport.clone() as Arc<dyn Transport>;
+        self.inner
+            .connections
+            .lock()
+            .await
+            .insert(id, dyn_transport.clone());
+        self.spawn_schema_watcher(dyn_transport);
+        Ok(id)
+    }
+
+    /// Opens a recording as a connection.
+    ///
+    /// The recording is a transport like any other, so requests, panes and the
+    /// canonical fan-out all work on it unchanged.
+    pub async fn open_replay(
+        &self,
+        recording: rw_record::Recording,
+    ) -> TransportResult<ConnectionId> {
+        let transport = Arc::new(ReplayTransport::new(recording));
         transport.connect().await?;
         let id = ConnectionId::new();
         let dyn_transport: Arc<dyn Transport> = transport.clone() as Arc<dyn Transport>;

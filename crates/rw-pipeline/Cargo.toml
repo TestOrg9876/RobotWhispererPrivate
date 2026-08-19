@@ -13,6 +13,8 @@ rw-core = { path = "../rw-core", default-features = false }
 rw-session = { path = "../rw-session" }
 rw-transport = { path = "../rw-transport" }
 rw-transport-dummy = { path = "../rw-transport-dummy" }
+rw-transport-replay = { path = "../rw-transport-replay" }
+rw-record = { path = "../rw-record" }
 rw-transport-foxglove-ws = { path = "../rw-transport-foxglove-ws" }
 rw-transport-rosbridge = { path = "../rw-transport-rosbridge" }
 rw-wire = { path = "../rw-wire" }

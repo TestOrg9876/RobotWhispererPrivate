@@ -2,8 +2,13 @@ use rusqlite::{Connection, Transaction};
 
 use crate::{CoreError, CoreResult};
 
-const MIGRATIONS: &[fn(&Transaction<'_>) -> rusqlite::Result<()>] =
-    &[migration_1, migration_2, migration_3, migration_4];
+const MIGRATIONS: &[fn(&Transaction<'_>) -> rusqlite::Result<()>] = &[
+    migration_1,
+    migration_2,
+    migration_3,
+    migration_4,
+    migration_5,
+];
 
 pub(super) fn run(conn: &mut Connection) -> CoreResult<()> {
     conn.execute_batch(
@@ -120,5 +125,35 @@ fn migration_3(tx: &Transaction<'_>) -> rusqlite::Result<()> {
 
 fn migration_4(tx: &Transaction<'_>) -> rusqlite::Result<()> {
     tx.execute_batch("ALTER TABLE requests ADD COLUMN visualization_json TEXT;")?;
+    Ok(())
+}
+
+/// Lets a recording be stored as a connection.
+///
+/// SQLite cannot widen a `CHECK` in place, so the table is rebuilt — the same
+/// dance migration 3 did to add `dummy`. Columns are named rather than starred
+/// so a future column added between these two cannot silently transpose them.
+fn migration_5(tx: &Transaction<'_>) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        r#"
+        CREATE TABLE connections_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            transport_kind TEXT NOT NULL CHECK (transport_kind IN ('foxglove_ws','rosbridge','native_ros2','dummy','replay')),
+            config_json TEXT NOT NULL,
+            auto_connect INTEGER NOT NULL DEFAULT 0,
+            color TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        INSERT INTO connections_new
+            (id, name, transport_kind, config_json, auto_connect, color, created_at, updated_at)
+        SELECT id, name, transport_kind, config_json, auto_connect, color, created_at, updated_at
+        FROM connections;
+        DROP TABLE connections;
+        ALTER TABLE connections_new RENAME TO connections;
+        CREATE INDEX idx_connections_name ON connections(name);
+        "#,
+    )?;
     Ok(())
 }

@@ -62,9 +62,12 @@ impl Transport {
         match config {
             TransportConfig::FoxgloveWs { .. } => Self::FoxgloveWs,
             TransportConfig::Rosbridge { .. } => Self::Rosbridge,
-            // Native ROS 2 has no transport yet and cannot be created here, so
-            // it can only be reached by an imported workspace.
-            TransportConfig::NativeRos2 { .. } | TransportConfig::Dummy {} => Self::Dummy,
+            // Native ROS 2 has no transport yet, and a recording is opened from
+            // a file rather than typed in, so neither can be created here —
+            // they arrive by import or by opening a recording.
+            TransportConfig::NativeRos2 { .. }
+            | TransportConfig::Dummy {}
+            | TransportConfig::Replay { .. } => Self::Dummy,
         }
     }
 
@@ -88,6 +91,11 @@ fn url_of(config: &TransportConfig) -> String {
         TransportConfig::FoxgloveWs { url, .. } | TransportConfig::Rosbridge { url } => url.clone(),
         TransportConfig::NativeRos2 { domain_id } => format!("domain {domain_id}"),
         TransportConfig::Dummy {} => "synthetic topics, services and actions".to_string(),
+        TransportConfig::Replay { recording } => {
+            // The recording is inline, so its size is the only honest summary
+            // without parsing it again here.
+            format!("recording, {} KB", recording.len() / 1024)
+        }
     }
 }
 

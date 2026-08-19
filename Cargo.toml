@@ -7,6 +7,7 @@ members = [
     "crates/rw-codec-rosmsg",
     "crates/rw-core",
     "crates/rw-pipeline",
+    "crates/rw-record",
     "crates/rw-render",
     "crates/rw-schema-foxglove",
     "crates/rw-schema-ros1",
@@ -15,6 +16,7 @@ members = [
     "crates/rw-transport",
     "crates/rw-transport-dummy",
     "crates/rw-transport-foxglove-ws",
+    "crates/rw-transport-replay",
     "crates/rw-transport-rosbridge",
     "crates/rw-validation",
     "crates/rw-wire",
@@ -53,6 +55,7 @@ rw-core = { path = "crates/rw-core", default-features = false }
 rw-canonical = { path = "crates/rw-canonical" }
 rw-pipeline = { path = "crates/rw-pipeline" }
 rw-assets = { path = "crates/rw-assets" }
+rw-record = { path = "crates/rw-record" }
 rw-render = { path = "crates/rw-render" }
 rw-transport = { path = "crates/rw-transport" }
 rw-ui = { path = "crates/rw-ui" }

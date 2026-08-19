@@ -17,6 +17,7 @@ pub mod nesting;
 pub mod palette;
 pub mod panels;
 pub mod prefs;
+pub mod recorder;
 pub mod runs;
 pub mod scene_view;
 pub mod series;
@@ -50,12 +51,14 @@ pub fn init(storage: SharedStorage, pipeline: Arc<CanonicalPipeline>, cx: &mut A
     let sessions = cx.new(|_| Sessions::new(pipeline));
     let runs = cx.new(|_| runs::Runs::default());
     let gpu = gpu::Gpu::spawn(cx);
+    let recorder = cx.new(|_| recorder::Recorder::default());
     cx.set_global(docking::Restored::default());
     cx.set_global(RobotWhisperer {
         workspace,
         sessions,
         runs,
         gpu,
+        recorder,
     });
 
     Ok(())

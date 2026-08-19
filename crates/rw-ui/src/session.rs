@@ -311,6 +311,9 @@ impl Sessions {
 pub struct RobotWhisperer {
     pub workspace: Entity<crate::workspace::Workspace>,
     pub sessions: Entity<Sessions>,
+    /// What each request is doing, so the sidebar can show it without owning the
+    /// panels that know.
+    pub runs: Entity<crate::runs::Runs>,
 }
 
 impl gpui::Global for RobotWhisperer {}

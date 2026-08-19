@@ -88,3 +88,18 @@ wait 500
 key ctrl+s
 wait 1000
 shot 01-three-kinds
+
+# Drag a request into the collection, which opens as it accepts the drop.
+# Rows start at y=107 and are 29px apart: the collection, then the three
+# requests at 136, 165 and 194.
+drag 139 165 -> 139 107
+wait 1300
+shot 02-nested
+
+# Subscribing marks the row as live. After the drop the order is the collection,
+# the request inside it, then the two still at the root — so Wave data is at 165.
+click 139 165
+wait 1200
+click 1364 133
+wait 2000
+shot 03-live

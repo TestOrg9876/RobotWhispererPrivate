@@ -1,32 +1,37 @@
-//! Collections: the saved requests, which are this app's primary artifact.
+//! The sidebar: saved requests, arranged into collections.
 //!
-//! Postman's model. Requests are named, saved, searched and duplicated; several
-//! may target the same service under different names with different payloads.
-//! Connections do not appear here — they are environments, selected per request.
+//! Built on `gpui_component::tree`, which owns the flattening, indentation,
+//! expansion, virtualisation, keyboard navigation and scrollbar. This file
+//! supplies the row content and the rules the component cannot know — how deep
+//! collections may nest, and which drops would detach a branch.
+
+use std::collections::{HashMap, HashSet};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 use gpui_component::dock::{Panel, PanelEvent};
-use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{
-    ActiveTheme as _, IconName, Sizable as _,
+    ActiveTheme as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
+    list::ListItem,
+    tree::{Tree, TreeEvent, TreeItem, TreeState},
     v_flex,
 };
-use rw_core::domain::Request;
+use rw_core::domain::{Collection, Request, RequestKind};
 
+use crate::nesting;
+use crate::runs::{RunState, Runs};
+use crate::session::RobotWhisperer;
 use crate::tokens;
-use crate::tree;
 use crate::workspace::Workspace;
 
-/// Right-click actions on a request row. Each carries the row's id, so one
-/// action serves every row rather than one action type per row.
+/// Right-click actions. Each carries the row's id, so one action serves every row.
 #[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
 #[action(namespace = robot_whisperer, no_json)]
 pub struct OpenRequest(pub i64);
@@ -39,7 +44,6 @@ pub struct DuplicateRequest(pub i64);
 #[action(namespace = robot_whisperer, no_json)]
 pub struct DeleteRequest(pub i64);
 
-/// Create a collection inside this one.
 #[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
 #[action(namespace = robot_whisperer, no_json)]
 pub struct AddCollection(pub i64);
@@ -52,54 +56,6 @@ pub struct RenameCollection(pub i64);
 #[action(namespace = robot_whisperer, no_json)]
 pub struct DeleteCollection(pub i64);
 
-/// The height of a request row: two lines of text with room to breathe.
-///
-/// Collections are shorter, because a collection is one line and matching the
-/// two-line rows would leave it looking hollow.
-const ROW_HEIGHT: f32 = 42.;
-const COLLECTION_HEIGHT: f32 = 30.;
-
-/// What is being dragged.
-///
-/// One type for both kinds of row: a drop target accepts either, and only the
-/// collection case needs the checks that keep the tree a tree.
-#[derive(Clone)]
-pub enum Dragged {
-    Request { id: i64, name: String },
-    Collection { id: i64, name: String },
-}
-
-impl Dragged {
-    fn name(&self) -> &str {
-        match self {
-            Dragged::Request { name, .. } | Dragged::Collection { name, .. } => name,
-        }
-    }
-}
-
-/// What follows the pointer while dragging.
-///
-/// A chip with the name on it. The row itself would be as wide as the sidebar
-/// and would cover the thing being aimed at.
-struct DragPreview {
-    label: String,
-}
-
-impl Render for DragPreview {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px_2()
-            .py_1()
-            .rounded(cx.theme().radius)
-            .bg(cx.theme().popover)
-            .border_1()
-            .border_color(cx.theme().border)
-            .text_xs()
-            .text_color(cx.theme().foreground)
-            .child(self.label.clone())
-    }
-}
-
 /// What the sidebar asks the shell to do.
 #[derive(Debug, Clone)]
 pub enum CollectionsEvent {
@@ -111,19 +67,121 @@ pub enum CollectionsEvent {
     Complain(String),
 }
 
+/// Which row a tree entry stands for.
+///
+/// The component keys entries by string, so the two kinds of row are told apart
+/// by a prefix. One place encodes it and one decodes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Row {
+    Collection(i64),
+    Request(i64),
+}
+
+impl Row {
+    fn id(self) -> SharedString {
+        match self {
+            Row::Collection(id) => format!("c{id}").into(),
+            Row::Request(id) => format!("r{id}").into(),
+        }
+    }
+
+    fn parse(id: &str) -> Option<Self> {
+        let (tag, rest) = id.split_at_checked(1)?;
+        let value = rest.parse().ok()?;
+        match tag {
+            "c" => Some(Row::Collection(value)),
+            "r" => Some(Row::Request(value)),
+            _ => None,
+        }
+    }
+}
+
+/// Everything a row needs to draw itself.
+///
+/// Snapshotted before the tree renders rather than read back out of the panel:
+/// the component builds its rows while the panel is still mid-render, and
+/// reaching into the panel from there is a borrow waiting to fail.
+#[derive(Clone)]
+struct RowData {
+    name: SharedString,
+    /// `None` for a collection. This is also what tells the two kinds of row
+    /// apart when drawing one, so the renderer needs no second flag.
+    kind: Option<RequestKind>,
+    state: RunState,
+    renaming: bool,
+}
+
+impl RowData {
+    fn dragged(&self, row: Row) -> Dragged {
+        match row {
+            Row::Request(id) => Dragged::Request {
+                id,
+                name: self.name.clone(),
+            },
+            Row::Collection(id) => Dragged::Collection {
+                id,
+                name: self.name.clone(),
+            },
+        }
+    }
+}
+
+/// What is being dragged.
+#[derive(Clone)]
+pub enum Dragged {
+    Request { id: i64, name: SharedString },
+    Collection { id: i64, name: SharedString },
+}
+
+impl Dragged {
+    fn name(&self) -> SharedString {
+        match self {
+            Dragged::Request { name, .. } | Dragged::Collection { name, .. } => name.clone(),
+        }
+    }
+}
+
+/// What follows the pointer while dragging: the name on a chip, because the row
+/// itself would be as wide as the sidebar and cover the target.
+struct DragPreview {
+    label: SharedString,
+}
+
+impl Render for DragPreview {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_0p5()
+            .rounded(cx.theme().radius)
+            .bg(cx.theme().popover)
+            .border_1()
+            .border_color(cx.theme().border)
+            .text_xs()
+            .child(self.label.clone())
+    }
+}
+
 pub struct CollectionsPanel {
     focus_handle: FocusHandle,
     workspace: Entity<Workspace>,
+    runs: Entity<Runs>,
     search: Entity<InputState>,
-    /// Which request is highlighted, so the row reads as selected.
+    tree: Entity<TreeState>,
+
+    /// Which collections are open. Kept here rather than read back off the tree
+    /// because the items are rebuilt whenever the workspace changes, and an
+    /// expansion that lives only on a rebuilt item does not survive.
+    expanded: HashSet<i64>,
+    /// What the tree was last built from, so it is rebuilt when that changes and
+    /// not on every frame — rebuilding resets the component's selection.
+    built_from: String,
+    /// The request the shell has open, so the row reads as current.
     selected: Option<i64>,
-    /// Collections the user has collapsed. Collapsed rather than expanded is
-    /// stored so a newly created collection starts open, which is what you want
-    /// having just made it.
-    collapsed: std::collections::HashSet<i64>,
+
     /// The collection being renamed, and the field holding the new name.
     renaming: Option<i64>,
     collection_name: Entity<InputState>,
+
     _subscriptions: Vec<Subscription>,
 }
 
@@ -132,12 +190,15 @@ impl EventEmitter<PanelEvent> for CollectionsPanel {}
 
 impl CollectionsPanel {
     pub fn new(workspace: Entity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let runs = RobotWhisperer::global(cx).runs.clone();
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search requests"));
         let collection_name =
             cx.new(|cx| InputState::new(window, cx).placeholder("Collection name"));
+        let tree = cx.new(|cx| TreeState::new(cx));
 
         let subscriptions = vec![
             cx.observe(&workspace, |_, _, cx| cx.notify()),
+            cx.observe(&runs, |_, _, cx| cx.notify()),
             cx.subscribe(&search, |_, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     cx.notify();
@@ -145,23 +206,33 @@ impl CollectionsPanel {
             }),
             // Enter commits the name; clicking away commits it too, because
             // losing a name by clicking elsewhere would be its own small
-            // betrayal. Escape is not special here — there is nothing to go back
-            // to for a collection that was just created.
-            cx.subscribe(
-                &collection_name,
-                |this, _, event: &InputEvent, cx| match event {
-                    InputEvent::PressEnter { .. } | InputEvent::Blur => this.commit_rename(cx),
-                    _ => {}
-                },
-            ),
+            // betrayal.
+            cx.subscribe(&collection_name, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    this.commit_rename(cx);
+                }
+            }),
+            cx.subscribe(&tree, |this, _, event: &TreeEvent, cx| {
+                let (TreeEvent::Expanded(id) | TreeEvent::Collapsed(id)) = event;
+                if let Some(Row::Collection(collection)) = Row::parse(id) {
+                    match event {
+                        TreeEvent::Expanded(_) => this.expanded.insert(collection),
+                        TreeEvent::Collapsed(_) => this.expanded.remove(&collection),
+                    };
+                    cx.notify();
+                }
+            }),
         ];
 
         Self {
             focus_handle: cx.focus_handle(),
             workspace,
+            runs,
             search,
+            tree,
+            expanded: HashSet::new(),
+            built_from: String::new(),
             selected: None,
-            collapsed: std::collections::HashSet::new(),
             renaming: None,
             collection_name,
             _subscriptions: subscriptions,
@@ -172,21 +243,151 @@ impl CollectionsPanel {
         cx.new(|cx| Self::new(workspace, window, cx))
     }
 
-    /// Marks a request as the selected row. The shell calls this when a request
-    /// is opened from anywhere, so the sidebar stays in step.
+    /// Marks a request as current. The shell calls this when one is opened from
+    /// anywhere, so the sidebar stays in step.
     pub fn select(&mut self, request: Option<i64>, cx: &mut Context<Self>) {
         self.selected = request;
         cx.notify();
     }
 
-    // ── collections ────────────────────────────────────────────────────────────
+    // ── building the tree ──────────────────────────────────────────────────────
 
-    fn toggle_collection(&mut self, id: i64, cx: &mut Context<Self>) {
-        if !self.collapsed.remove(&id) {
-            self.collapsed.insert(id);
+    /// Rebuilds the component's items when what they are built from has changed.
+    ///
+    /// Cheap to call every frame, and it has to be: the alternative is rebuilding
+    /// unconditionally, which resets the component's own selection and scroll.
+    fn sync(&mut self, cx: &mut Context<Self>) {
+        let query = self.search.read(cx).value().trim().to_lowercase();
+        let workspace = self.workspace.read(cx);
+        let collections = workspace.collections().to_vec();
+        let requests: Vec<Request> = workspace
+            .requests()
+            .iter()
+            .filter(|request| {
+                query.is_empty()
+                    || request.name.to_lowercase().contains(&query)
+                    || request.target.to_lowercase().contains(&query)
+            })
+            .cloned()
+            .collect();
+
+        // Searching opens everything: a match behind a closed collection makes
+        // the search look as though it found nothing.
+        let searching = !query.is_empty();
+        let signature = format!(
+            "{query}|{:?}|{:?}|{:?}",
+            collections
+                .iter()
+                .map(|c| (c.id, c.parent_id, &c.name))
+                .collect::<Vec<_>>(),
+            requests
+                .iter()
+                .map(|r| (r.id, r.collection_id, &r.name, r.kind))
+                .collect::<Vec<_>>(),
+            self.expanded,
+        );
+        if signature == self.built_from {
+            return;
         }
-        cx.notify();
+        self.built_from = signature;
+
+        let items = self.items(&collections, &requests, None, 0, searching);
+        self.tree.update(cx, |tree, cx| tree.set_items(items, cx));
     }
+
+    /// The items under `parent`, collections first — the convention every file
+    /// tree follows.
+    fn items(
+        &self,
+        collections: &[Collection],
+        requests: &[Request],
+        parent: Option<i64>,
+        depth: usize,
+        searching: bool,
+    ) -> Vec<TreeItem> {
+        if depth >= nesting::MAX_DEPTH {
+            return Vec::new();
+        }
+
+        let mut items: Vec<TreeItem> = collections
+            .iter()
+            .filter(|collection| collection.parent_id == parent)
+            .map(|collection| {
+                let children = self.items(
+                    collections,
+                    requests,
+                    Some(collection.id),
+                    depth + 1,
+                    searching,
+                );
+                let open = searching || self.expanded.contains(&collection.id);
+                TreeItem::new(Row::Collection(collection.id).id(), collection.name.clone())
+                    .children(children)
+                    .expanded(open)
+            })
+            .collect();
+
+        items.extend(
+            requests
+                .iter()
+                .filter(|request| request.collection_id == parent)
+                .map(|request| TreeItem::new(Row::Request(request.id).id(), request.name.clone())),
+        );
+
+        // Requests whose collection is missing, deleted, or unreachable would
+        // otherwise vanish with it. At the root, where they can be found.
+        if parent.is_none() {
+            let reachable = |id: Option<i64>| {
+                id.is_none_or(|id| collections.iter().any(|entry| entry.id == id))
+            };
+            items.extend(
+                requests
+                    .iter()
+                    .filter(|request| !reachable(request.collection_id))
+                    .map(|request| {
+                        TreeItem::new(Row::Request(request.id).id(), request.name.clone())
+                    }),
+            );
+        }
+
+        items
+    }
+
+    // ── rows ───────────────────────────────────────────────────────────────────
+
+    /// What every row needs, keyed by the id the tree uses.
+    fn snapshot(&self, cx: &App) -> HashMap<SharedString, RowData> {
+        let workspace = self.workspace.read(cx);
+        let runs = self.runs.read(cx);
+
+        let collections = workspace.collections().iter().map(|collection| {
+            (
+                Row::Collection(collection.id).id(),
+                RowData {
+                    name: collection.name.clone().into(),
+                    kind: None,
+                    state: RunState::Idle,
+                    renaming: self.renaming == Some(collection.id),
+                },
+            )
+        });
+
+        let requests = workspace.requests().iter().map(|request| {
+            (
+                Row::Request(request.id).id(),
+                RowData {
+                    name: request.name.clone().into(),
+                    kind: Some(request.kind),
+                    state: runs.get(request.id),
+                    renaming: false,
+                },
+            )
+        });
+
+        collections.chain(requests).collect()
+    }
+
+    // ── collections ────────────────────────────────────────────────────────────
 
     fn start_rename(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
         let name = self
@@ -226,11 +427,16 @@ impl CollectionsPanel {
 
     fn add_collection(&mut self, parent: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
         let collections = self.workspace.read(cx).collections().to_vec();
-        if !tree::can_nest_inside(&collections, parent) {
+        if !nesting::can_nest_inside(&collections, parent) {
             return self.complain(
-                format!("Collections nest {} deep at most.", tree::MAX_DEPTH),
+                format!("Collections nest {} deep at most.", nesting::MAX_DEPTH),
                 cx,
             );
+        }
+
+        // Open the parent, or the new one appears nowhere.
+        if let Some(parent) = parent {
+            self.expanded.insert(parent);
         }
 
         let creating = self.workspace.update(cx, |workspace, cx| {
@@ -247,8 +453,8 @@ impl CollectionsPanel {
                         .update(cx, |panel, cx| {
                             // Straight into a rename: a collection called "New
                             // collection" is not what anybody wanted, and making
-                            // them find the rename command is a second step for
-                            // no reason.
+                            // them find the rename command is a step with no
+                            // decision in it.
                             panel.start_rename(collection.id, window, cx)
                         })
                         .ok();
@@ -258,13 +464,16 @@ impl CollectionsPanel {
         .detach();
     }
 
-    /// Applies a drop. The tree decides whether it is allowed; this reports why
-    /// when it is not, because a drop that silently does nothing is the worst of
-    /// the three outcomes.
+    /// Applies a drop. The nesting rules decide whether it is allowed; this
+    /// reports why when it is not, because a drop that silently does nothing is
+    /// the worst of the three outcomes.
     fn accept_drop(&mut self, dragged: &Dragged, onto: Option<i64>, cx: &mut Context<Self>) {
         match dragged {
             Dragged::Request { id, .. } => {
                 let id = *id;
+                if let Some(collection) = onto {
+                    self.expanded.insert(collection);
+                }
                 self.workspace
                     .update(cx, |workspace, cx| workspace.move_request(id, onto, cx))
                     .detach();
@@ -272,16 +481,20 @@ impl CollectionsPanel {
             Dragged::Collection { id, .. } => {
                 let id = *id;
                 let collections = self.workspace.read(cx).collections().to_vec();
-                match tree::check_move(&collections, id, onto) {
-                    Ok(()) => self
-                        .workspace
-                        .update(cx, |workspace, cx| workspace.move_collection(id, onto, cx))
-                        .detach(),
-                    Err(tree::Refusal::WouldDetachItself) => {
+                match nesting::check_move(&collections, id, onto) {
+                    Ok(()) => {
+                        if let Some(collection) = onto {
+                            self.expanded.insert(collection);
+                        }
+                        self.workspace
+                            .update(cx, |workspace, cx| workspace.move_collection(id, onto, cx))
+                            .detach();
+                    }
+                    Err(nesting::Refusal::WouldDetachItself) => {
                         self.complain("A collection cannot go inside itself.", cx)
                     }
-                    Err(tree::Refusal::TooDeep) => self.complain(
-                        format!("That would nest deeper than {}.", tree::MAX_DEPTH),
+                    Err(nesting::Refusal::TooDeep) => self.complain(
+                        format!("That would nest deeper than {}.", nesting::MAX_DEPTH),
                         cx,
                     ),
                 }
@@ -293,240 +506,99 @@ impl CollectionsPanel {
     fn complain(&self, message: impl Into<String>, cx: &mut Context<Self>) {
         cx.emit(CollectionsEvent::Complain(message.into()));
     }
+}
 
-    #[allow(clippy::too_many_arguments)]
-    fn collection_row(
-        &self,
-        id: i64,
-        name: &str,
-        depth: usize,
-        total: usize,
-        expanded: bool,
-        can_nest: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        if self.renaming == Some(id) {
-            return h_flex()
+/// One row, in the shape a file manager uses: a single line, indented by its
+/// depth, with the disclosure arrow only where there is something to disclose.
+fn render_row(
+    index: usize,
+    data: &RowData,
+    depth: usize,
+    expanded: bool,
+    rename_field: &Entity<InputState>,
+    cx: &App,
+) -> ListItem {
+    let indent = px(tokens::INDENT * depth as f32);
+
+    if data.renaming {
+        return ListItem::new(index).child(
+            h_flex()
                 .w_full()
-                .h(px(COLLECTION_HEIGHT))
-                .items_center()
-                .child(tokens::rails(depth, cx))
+                .pl(indent)
+                .child(Input::new(rename_field).xsmall()),
+        );
+    }
+
+    let mut row = h_flex().w_full().gap_1p5().items_center().pl(indent);
+    match data.kind {
+        // A collection: the disclosure arrow, then the folder itself.
+        None => {
+            row = row
                 .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .pl_1()
-                        .pr_2()
-                        .child(Input::new(&self.collection_name).xsmall()),
+                    Icon::new(IconName::ChevronRight)
+                        .size_3()
+                        .text_color(cx.theme().muted_foreground)
+                        .when(expanded, |icon| icon.rotate(gpui::percentage(0.25))),
                 )
-                .into_any_element();
+                .child(
+                    Icon::new(if expanded {
+                        IconName::FolderOpen
+                    } else {
+                        IconName::Folder
+                    })
+                    .size_3p5()
+                    .text_color(cx.theme().muted_foreground),
+                );
         }
-
-        let collections = self.workspace.read(cx).collections().to_vec();
-
-        h_flex()
-            .id(("collection", id as usize))
-            .w_full()
-            .h(px(COLLECTION_HEIGHT))
-            .items_center()
-            .rounded(cx.theme().radius)
-            .hover(|row| row.bg(cx.theme().sidebar_accent.opacity(0.6)))
-            // The target lights up only for a drop it would accept, so an
-            // impossible move looks impossible before it is attempted.
-            .drag_over::<Dragged>(move |style, dragged: &Dragged, _, cx| {
-                let allowed = match dragged {
-                    Dragged::Request { .. } => true,
-                    Dragged::Collection { id: dragged, .. } => {
-                        tree::can_move(&collections, *dragged, Some(id))
-                    }
-                };
-                if allowed {
-                    style
-                        .bg(cx.theme().sidebar_accent)
-                        .border_1()
-                        .border_color(cx.theme().ring)
-                } else {
-                    style
-                }
-            })
-            .on_drop(cx.listener(move |this, dragged: &Dragged, _, cx| {
-                this.accept_drop(dragged, Some(id), cx)
-            }))
-            .on_drag(
-                Dragged::Collection {
-                    id,
-                    name: name.to_string(),
-                },
-                |dragged, _, _, cx| {
-                    let label = dragged.name().to_string();
-                    cx.new(|_| DragPreview { label })
-                },
-            )
-            .child(tokens::rails(depth, cx))
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .pl_1()
-                    .pr_2()
-                    .gap_1p5()
-                    .items_center()
-                    // Rotated rather than swapped: the caret turning is what
-                    // reads as opening, and it is how the library's own menus
-                    // behave.
-                    .child(
-                        gpui_component::Icon::new(IconName::ChevronRight)
-                            .size_3()
-                            .text_color(cx.theme().muted_foreground)
-                            .when(expanded, |icon| icon.rotate(gpui::percentage(0.25))),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_sm()
-                            .text_color(cx.theme().sidebar_foreground)
-                            .truncate()
-                            .child(name.to_string()),
-                    )
-                    .when(total > 0, |row| {
-                        row.child(
-                            div()
-                                .flex_none()
-                                .px_1p5()
-                                .rounded_full()
-                                .bg(cx.theme().sidebar_accent)
-                                .text_size(px(10.))
-                                .text_color(cx.theme().muted_foreground)
-                                .child(total.to_string()),
-                        )
-                    }),
-            )
-            .on_click(
-                cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_collection(id, cx)),
-            )
-            .context_menu(move |mut menu, _window, _cx| {
-                // Offered only where it is possible: a menu item that explains
-                // itself by failing is worse than one that is not there.
-                if can_nest {
-                    menu = menu.menu("New collection inside", Box::new(AddCollection(id)));
-                }
-                menu.menu("Rename", Box::new(RenameCollection(id)))
-                    .separator()
-                    .menu("Delete collection", Box::new(DeleteCollection(id)))
-            })
-            .into_any_element()
+        // A request: a space where the arrow would be, so names line up whether
+        // or not the row above can be opened.
+        Some(kind) => {
+            row = row.child(div().w(px(12.)).flex_none()).child(
+                Icon::new(kind_icon(kind))
+                    .size_3p5()
+                    .text_color(tokens::kind_color(kind, cx)),
+            );
+        }
     }
 
-    fn row(&self, request: &Request, depth: usize, cx: &mut Context<Self>) -> AnyElement {
-        let id = request.id;
-        let selected = self.selected == Some(id);
-        let target = request.target.clone();
-        let kind = request.kind;
-        let colour = tokens::kind_color(kind, cx);
+    ListItem::new(index).child(
+        row.child(div().flex_1().min_w_0().truncate().child(data.name.clone()))
+            .when_some(state_dot(&data.state, cx), |row, dot| row.child(dot)),
+    )
+}
 
-        h_flex()
-            .id(("request", id as usize))
-            .w_full()
-            .h(px(ROW_HEIGHT))
-            .items_center()
-            .rounded(cx.theme().radius)
-            .when(selected, |row| {
-                row.bg(cx.theme().sidebar_accent)
-                    .text_color(cx.theme().sidebar_accent_foreground)
-            })
-            .when(!selected, |row| {
-                row.hover(|row| row.bg(cx.theme().sidebar_accent.opacity(0.6)))
-            })
-            .child(tokens::rails(depth, cx))
-            // A bar in the kind's colour on the selected row: the one place the
-            // colour appears at full strength, so the eye finds the current
-            // request without the list having to shout anywhere else.
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(2.))
-                    .h(px(ROW_HEIGHT - 12.))
-                    .rounded_full()
-                    .when(selected, |bar| bar.bg(colour)),
-            )
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .pl_2()
-                    .pr_2()
-                    .gap_2()
-                    .items_center()
-                    .child(tokens::kind_badge(kind, cx))
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap(px(1.))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(if selected {
-                                        cx.theme().sidebar_accent_foreground
-                                    } else {
-                                        cx.theme().sidebar_foreground
-                                    })
-                                    .truncate()
-                                    .child(request.name.clone()),
-                            )
-                            .when(!target.is_empty(), |stack| {
-                                stack.child(
-                                    tokens::mono(cx)
-                                        .text_size(px(10.))
-                                        .text_color(cx.theme().muted_foreground)
-                                        .truncate()
-                                        .child(target.clone()),
-                                )
-                            }),
-                    ),
-            )
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.selected = Some(id);
-                cx.emit(CollectionsEvent::Open(id));
-                cx.notify();
-            }))
-            // Dragged, not moved through a submenu: a list of every collection in
-            // a menu is a workaround for not being able to point at one.
-            .on_drag(
-                Dragged::Request {
-                    id,
-                    name: request.name.clone(),
-                },
-                |dragged, _, _, cx| {
-                    let label = dragged.name().to_string();
-                    cx.new(|_| DragPreview { label })
-                },
-            )
-            .context_menu(move |menu, _window, _cx| {
-                menu.menu("Open", Box::new(OpenRequest(id)))
-                    .menu("Duplicate", Box::new(DuplicateRequest(id)))
-                    .separator()
-                    .menu("Delete", Box::new(DeleteRequest(id)))
-            })
-            .into_any_element()
+/// The icon that stands for a request's kind.
+///
+/// Icons rather than a badge: a file manager identifies a row's type with a glyph
+/// beside its name, and a coloured chip in a list of thirty rows is thirty chips.
+fn kind_icon(kind: RequestKind) -> IconName {
+    match kind {
+        // Pub/sub, a request answered once, and a goal that runs.
+        RequestKind::Topic => IconName::Network,
+        RequestKind::Service => IconName::Replace,
+        RequestKind::Action => IconName::Play,
     }
+}
 
-    /// No button here on purpose.
-    ///
-    /// The + above this is two centimetres away and the welcome screen offers
-    /// the same action; a third copy of it just makes the reader work out
-    /// whether the three do different things.
-    fn empty_state(&self, cx: &mut Context<Self>) -> AnyElement {
-        tokens::empty_state(
-            IconName::Inbox,
-            "No requests yet",
-            "Save a topic, service or action call to reuse it later.",
-            cx,
-        )
-        .into_any_element()
-    }
+/// A dot on the row's right, and only when there is something to say.
+///
+/// Idle is the overwhelming majority of rows, and marking it would mean marking
+/// everything.
+fn state_dot(state: &RunState, cx: &App) -> Option<gpui::AnyElement> {
+    let colour = match state {
+        RunState::Idle => return None,
+        RunState::Live => cx.theme().success,
+        RunState::Failed(_) => cx.theme().danger,
+    };
+    Some(
+        div()
+            .flex_none()
+            .mr_1()
+            .size(px(6.))
+            .rounded_full()
+            .bg(colour)
+            .into_any_element(),
+    )
 }
 
 impl Focusable for CollectionsPanel {
@@ -555,9 +627,6 @@ impl Panel for CollectionsPanel {
     }
 
     /// The panel's own actions, drawn by the dock beside its tab.
-    ///
-    /// This is the slot a dock provides for exactly this, and using it leaves the
-    /// panel's own header free to do one thing: search.
     fn toolbar_buttons(
         &mut self,
         _window: &mut Window,
@@ -586,48 +655,119 @@ impl Panel for CollectionsPanel {
 
 impl Render for CollectionsPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let query = self.search.read(cx).value().trim().to_lowercase();
-        let searching = !query.is_empty();
+        self.sync(cx);
 
-        let workspace = self.workspace.read(cx);
-        let collections = workspace.collections().to_vec();
-        let requests = workspace.requests().to_vec();
+        let selected = self.selected;
+        let collections = self.workspace.read(cx).collections().to_vec();
+        let empty = self.workspace.read(cx).requests().is_empty()
+            && collections.is_empty()
+            && self.search.read(cx).value().trim().is_empty();
 
-        // Searching opens every folder: hiding a match behind a collapsed folder
-        // makes the search look as though it found nothing.
-        let collapsed = self.collapsed.clone();
-        let plan = tree::rows(
-            &collections,
-            &requests,
-            |request| {
-                query.is_empty()
-                    || request.name.to_lowercase().contains(&query)
-                    || request.target.to_lowercase().contains(&query)
-            },
-            |folder| searching || !collapsed.contains(&folder),
-            searching,
-        );
+        // Everything the rows need, gathered before the tree renders. The
+        // component builds its rows while this panel is still mid-render, so
+        // reaching back into the panel from there is a borrow waiting to fail.
+        let rows: HashMap<SharedString, RowData> = self.snapshot(cx);
+        let rename_field = self.collection_name.clone();
 
-        let by_id: std::collections::HashMap<i64, &Request> = requests
-            .iter()
-            .map(|request| (request.id, request))
-            .collect();
-        let rows: Vec<_> = plan
-            .iter()
-            .filter_map(|row| match row {
-                tree::Row::Collection {
-                    id,
-                    name,
-                    depth,
-                    total,
-                    expanded,
-                    can_nest,
-                } => Some(self.collection_row(*id, name, *depth, *total, *expanded, *can_nest, cx)),
-                tree::Row::Request { id, depth } => {
-                    by_id.get(id).map(|request| self.row(request, *depth, cx))
+        let tree = Tree::new(&self.tree, {
+            let rows = rows.clone();
+            let rename_field = rename_field.clone();
+            let panel = cx.entity();
+            let collections = collections.clone();
+            move |index, entry, _selected, _window, cx| {
+                let id = entry.item().id.clone();
+                let Some((row, data)) = Row::parse(&id).zip(rows.get(&id)) else {
+                    return ListItem::new(index);
+                };
+                let item = render_row(
+                    index,
+                    data,
+                    entry.depth(),
+                    entry.is_expanded(),
+                    &rename_field,
+                    cx,
+                );
+                let dragged = data.dragged(row);
+
+                match row {
+                    Row::Request(id) => item
+                        .selected(selected == Some(id))
+                        .on_click({
+                            let panel = panel.clone();
+                            move |_, _, cx| {
+                                panel.update(cx, |panel, cx| {
+                                    panel.selected = Some(id);
+                                    cx.emit(CollectionsEvent::Open(id));
+                                    cx.notify();
+                                });
+                            }
+                        })
+                        .on_drag(dragged, |dragged, _, _, cx| {
+                            let label = dragged.name();
+                            cx.new(|_| DragPreview { label })
+                        }),
+                    Row::Collection(id) => {
+                        let collections = collections.clone();
+                        item.drag_over::<Dragged>(move |style, dragged: &Dragged, _, cx| {
+                            // Lit only for a drop it would accept, so an
+                            // impossible move looks impossible before it is
+                            // attempted.
+                            let allowed = match dragged {
+                                Dragged::Request { .. } => true,
+                                Dragged::Collection { id: moving, .. } => {
+                                    nesting::can_move(&collections, *moving, Some(id))
+                                }
+                            };
+                            if allowed {
+                                style.bg(cx.theme().sidebar_accent)
+                            } else {
+                                style
+                            }
+                        })
+                        .on_drop({
+                            let panel = panel.clone();
+                            move |dragged: &Dragged, _, cx| {
+                                let dragged = dragged.clone();
+                                panel.update(cx, |panel, cx| {
+                                    panel.accept_drop(&dragged, Some(id), cx)
+                                });
+                            }
+                        })
+                        .on_drag(dragged, |dragged, _, _, cx| {
+                            let label = dragged.name();
+                            cx.new(|_| DragPreview { label })
+                        })
+                    }
                 }
-            })
-            .collect();
+            }
+        })
+        .context_menu({
+            let collections = collections.clone();
+            move |_index, entry, menu, _window, _cx| {
+                let Some(row) = Row::parse(&entry.item().id) else {
+                    return menu;
+                };
+                match row {
+                    Row::Request(id) => menu
+                        .menu("Open", Box::new(OpenRequest(id)))
+                        .menu("Duplicate", Box::new(DuplicateRequest(id)))
+                        .separator()
+                        .menu("Delete", Box::new(DeleteRequest(id))),
+                    Row::Collection(id) => {
+                        let mut menu = menu;
+                        // Offered only where it is possible: a menu item that
+                        // explains itself by failing is worse than one that is
+                        // not there.
+                        if nesting::can_nest_inside(&collections, Some(id)) {
+                            menu = menu.menu("New collection", Box::new(AddCollection(id)));
+                        }
+                        menu.menu("Rename", Box::new(RenameCollection(id)))
+                            .separator()
+                            .menu("Delete", Box::new(DeleteCollection(id)))
+                    }
+                }
+            }
+        });
 
         v_flex()
             .size_full()
@@ -651,51 +791,40 @@ impl Render for CollectionsPanel {
             }))
             .on_action(cx.listener(|this, action: &DeleteCollection, _, cx| {
                 let id = action.0;
-                this.collapsed.remove(&id);
+                this.expanded.remove(&id);
                 this.workspace
                     .update(cx, |workspace, cx| workspace.delete_collection(id, cx))
                     .detach();
             }))
             .child(
-                // Search alone. The two actions moved to the dock's own toolbar,
-                // beside the panel's tab, which is where a dock puts a panel's
-                // controls — and it leaves this row to do one thing.
                 div().flex_shrink_0().px_2().pt_2().pb_1p5().child(
                     Input::new(&self.search).xsmall().cleanable(true).prefix(
-                        gpui_component::Icon::new(IconName::Search)
+                        Icon::new(IconName::Search)
                             .size_3()
                             .text_color(cx.theme().muted_foreground),
                     ),
                 ),
             )
-            .child(if rows.is_empty() && !searching {
-                self.empty_state(cx)
+            .child(if empty {
+                tokens::empty_state(
+                    IconName::Inbox,
+                    "No requests yet",
+                    "Save a topic, service or action call to reuse it later.",
+                    cx,
+                )
+                .into_any_element()
             } else {
-                v_flex()
-                    .id("request-list")
+                div()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .px_1p5()
-                    .pb_2()
-                    .gap(px(1.))
-                    // The list's own background is the root, so dragging
-                    // something out of a collection is the same gesture as
-                    // dragging it in — there is no "move to top level" command to
-                    // find.
-                    .drag_over::<Dragged>(|style, _, _, cx| style.bg(cx.theme().list_hover))
+                    .px_1()
+                    // The root drop target, so dragging something out of a
+                    // collection is the same gesture as dragging it in.
+                    .drag_over::<Dragged>(|style, _, _, cx| style.bg(cx.theme().sidebar_accent))
                     .on_drop(cx.listener(|this, dragged: &Dragged, _, cx| {
                         this.accept_drop(dragged, None, cx)
                     }))
-                    .children(rows)
-                    .when(requests.is_empty() && searching, |list| {
-                        list.child(tokens::empty_state(
-                            IconName::Search,
-                            "No matches",
-                            "No request's name or target contains that text.",
-                            cx,
-                        ))
-                    })
+                    .child(tree)
                     .into_any_element()
             })
     }

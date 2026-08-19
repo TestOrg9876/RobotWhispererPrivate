@@ -9,15 +9,16 @@ pub mod assets;
 pub mod discovery;
 pub mod form;
 pub mod image;
+pub mod nesting;
 pub mod palette;
 pub mod panels;
 pub mod prefs;
+pub mod runs;
 pub mod series;
 pub mod session;
 pub mod theme;
 pub mod tick;
 pub mod tokens;
-pub mod tree;
 pub mod value;
 pub mod workspace;
 pub mod workspace_view;
@@ -40,9 +41,11 @@ pub fn init(storage: SharedStorage, pipeline: Arc<CanonicalPipeline>, cx: &mut A
 
     let workspace = cx.new(|_| Workspace::new(storage));
     let sessions = cx.new(|_| Sessions::new(pipeline));
+    let runs = cx.new(|_| runs::Runs::default());
     cx.set_global(RobotWhisperer {
         workspace,
         sessions,
+        runs,
     });
 
     Ok(())

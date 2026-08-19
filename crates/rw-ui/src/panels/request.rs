@@ -31,6 +31,7 @@ use rw_transport::ConnectionId;
 use crate::discovery::{self, Suggestion};
 use crate::form::{self, Field};
 use crate::image;
+use crate::runs::{RunState, Runs};
 use crate::series::{History, Series};
 use crate::session::{RobotWhisperer, Sessions};
 use crate::tokens;
@@ -192,6 +193,8 @@ pub struct RequestPanel {
 
     incoming: Arc<Mutex<Incoming>>,
     activity: Activity,
+    /// Shared, so the sidebar can show what this request is doing.
+    runs: Entity<Runs>,
     tab: ResponseTab,
     problem: Option<Problem>,
     _repaint: Option<Task<()>>,
@@ -202,9 +205,14 @@ impl EventEmitter<PanelEvent> for RequestPanel {}
 
 impl RequestPanel {
     pub fn new(request: &Request, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let global = RobotWhisperer::global(cx);
-        let workspace = global.workspace.clone();
-        let sessions = global.sessions.clone();
+        let (workspace, sessions, runs) = {
+            let global = RobotWhisperer::global(cx);
+            (
+                global.workspace.clone(),
+                global.sessions.clone(),
+                global.runs.clone(),
+            )
+        };
 
         let name = cx.new(|cx| {
             InputState::new(window, cx)
@@ -268,6 +276,7 @@ impl RequestPanel {
             payload_schema: None,
             incoming: Arc::new(Mutex::new(Incoming::default())),
             activity: Activity::default(),
+            runs,
             tab: ResponseTab::Raw,
             problem: None,
             _repaint: None,
@@ -386,6 +395,26 @@ impl RequestPanel {
         !self.activity.is_idle()
     }
 
+    /// Records what this request is doing where the sidebar can see it.
+    ///
+    /// Called from the one place `activity` changes rather than beside each
+    /// assignment, so the two cannot drift apart.
+    fn publish(&mut self, cx: &mut Context<Self>) {
+        let state = match (&self.activity, &self.problem) {
+            (_, Some(problem)) => RunState::Failed(problem.message.clone()),
+            (activity, None) if !activity.is_idle() => RunState::Live,
+            _ => RunState::Idle,
+        };
+        let id = self.saved.id;
+        self.runs.update(cx, |runs, cx| runs.set(id, state, cx));
+    }
+
+    /// Sets the activity and publishes it in one step.
+    fn set_activity(&mut self, activity: Activity, cx: &mut Context<Self>) {
+        self.activity = activity;
+        self.publish(cx);
+    }
+
     fn save(&mut self, cx: &mut Context<Self>) {
         // The form is the truth for the payload, so it is collected before the
         // comparison rather than tracked field by field.
@@ -435,6 +464,7 @@ impl RequestPanel {
         };
 
         self.problem = None;
+        self.publish(cx);
         *self.incoming.lock().expect("incoming mutex") = Incoming::default();
         self.start_repaint(cx);
 
@@ -466,7 +496,9 @@ impl RequestPanel {
             panel
                 .update(cx, |panel, cx| {
                     match outcome {
-                        Ok(result) => panel.activity = Activity::Subscribed(result.subscription_id),
+                        Ok(result) => {
+                            panel.set_activity(Activity::Subscribed(result.subscription_id), cx)
+                        }
                         Err(error) => panel.failed(error, cx),
                     }
                     cx.notify();
@@ -484,7 +516,7 @@ impl RequestPanel {
         cx: &mut Context<Self>,
     ) {
         let pipeline = self.sessions.read(cx).pipeline();
-        self.activity = Activity::Calling;
+        self.set_activity(Activity::Calling, cx);
 
         cx.spawn(async move |panel, cx| {
             let outcome = pipeline
@@ -504,7 +536,7 @@ impl RequestPanel {
                     }
                     // A call is over the moment it answers; there is nothing to
                     // stop afterwards.
-                    panel.activity = Activity::Idle;
+                    panel.set_activity(Activity::Idle, cx);
                     panel._repaint = None;
                     cx.notify();
                 })
@@ -535,7 +567,7 @@ impl RequestPanel {
                     panel
                         .update(cx, |panel, cx| {
                             panel.failed(error, cx);
-                            panel.activity = Activity::Idle;
+                            panel.set_activity(Activity::Idle, cx);
                             cx.notify();
                         })
                         .ok();
@@ -546,7 +578,7 @@ impl RequestPanel {
             let goal_id = stream.cancel_token.goal_id.clone();
             if panel
                 .update(cx, |panel, cx| {
-                    panel.activity = Activity::Goal(goal_id.clone());
+                    panel.set_activity(Activity::Goal(goal_id.clone()), cx);
                     cx.notify();
                 })
                 .is_err()
@@ -581,7 +613,7 @@ impl RequestPanel {
                         // transport went away. Neither is worth an error banner.
                         Err(_) => {}
                     }
-                    panel.activity = Activity::Idle;
+                    panel.set_activity(Activity::Idle, cx);
                     panel._repaint = None;
                     cx.notify();
                 })
@@ -725,6 +757,7 @@ impl RequestPanel {
 
     fn failed(&mut self, error: impl std::fmt::Display, cx: &mut Context<Self>) {
         self.problem = Some(Problem::new(error.to_string()));
+        self.publish(cx);
         cx.notify();
     }
 
@@ -801,6 +834,7 @@ impl RequestPanel {
         };
 
         self._repaint = None;
+        self.publish(cx);
         task.detach();
         cx.notify();
     }

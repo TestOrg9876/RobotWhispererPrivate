@@ -23,6 +23,23 @@ use crate::gpu::Gpu;
 use crate::session::RobotWhisperer;
 use crate::tokens;
 
+/// Text and backdrop for the chips floating over a scene.
+///
+/// Fixed rather than themed: the viewport is dark whichever theme is on, so
+/// these are chosen against it and not against the window.
+const OVERLAY_TEXT: gpui::Hsla = gpui::Hsla {
+    h: 0.,
+    s: 0.,
+    l: 0.82,
+    a: 1.,
+};
+const OVERLAY_BACKDROP: gpui::Hsla = gpui::Hsla {
+    h: 0.,
+    s: 0.,
+    l: 0.,
+    a: 0.35,
+};
+
 /// How far the camera turns per pixel dragged. A full window's width is a bit
 /// more than half a turn, which is what feels like "grabbing" the scene.
 const ORBIT_PER_PIXEL: f32 = 0.008;
@@ -159,6 +176,62 @@ impl SceneView {
         cx.notify();
     }
 
+    /// The chips floating in the corner of the picture.
+    ///
+    /// Colouring, when the data offers a choice, and a way back to the default
+    /// view. No count and no "drag to orbit" hint — a line of instructions
+    /// teaches once and then costs part of the picture forever.
+    fn overlay(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let active = self.scene.points.coloring;
+        // One entry is not a choice, so it is not offered.
+        let available = self.scene.points.available();
+        let choices = if available.len() > 1 {
+            available
+        } else {
+            Vec::new()
+        };
+        // Styled for the scene's own dark ground rather than the theme's, since
+        // a viewport is dark under every theme and muted grey on it is
+        // unreadable.
+        let chip = |label: &'static str, on: bool, cx: &App| {
+            div()
+                .id(label)
+                .px_1p5()
+                .rounded(cx.theme().radius)
+                .text_xs()
+                .cursor_pointer()
+                .when(on, |this| {
+                    this.bg(cx.theme().accent)
+                        .text_color(cx.theme().accent_foreground)
+                })
+                .when(!on, |this| this.text_color(OVERLAY_TEXT))
+                .child(label)
+        };
+
+        h_flex()
+            .gap_1()
+            .items_center()
+            .px_1()
+            .py_0p5()
+            .rounded(cx.theme().radius)
+            .bg(OVERLAY_BACKDROP)
+            .children(
+                choices
+                    .into_iter()
+                    .map(|coloring| {
+                        chip(coloring.label(), coloring == active, cx).on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |view, _, _, cx| view.set_coloring(coloring, cx)),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .child(chip("Reset", false, cx).on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|view, _, _, cx| view.reset(cx)),
+            ))
+    }
+
     /// Draws the scene into the atlas and paints it, if anything has changed.
     fn paint(&mut self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         let scale = window.scale_factor();
@@ -290,58 +363,27 @@ impl Render for SceneView {
                 )
                 .size_full(),
             )
+            // Over the picture rather than in a strip above it. A row of chips
+            // costs the same height whether or not anyone is looking at them,
+            // and every 3D viewer worth using floats its controls.
+            .child(div().absolute().top_1().left_1().child(self.overlay(cx)))
             .into_any_element()
     }
 }
 
-/// The controls a host pane puts beside a scene.
-///
-/// Deliberately tiny: colouring, when the data offers a choice, and a way back
-/// to the default view. No count and no "drag to orbit" hint — a line of
-/// instructions teaches once and then costs a row of the picture forever, and
-/// this pane is often small.
-pub fn controls(view: &Entity<SceneView>, cx: &App) -> impl IntoElement + use<> {
-    let scene = view.read(cx);
-    let active = scene.coloring();
-    // One entry is not a choice, so it is not offered.
-    let available = scene.available();
-    let choices = if available.len() > 1 {
-        available
-    } else {
-        Vec::new()
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let chip = |label: &'static str, on: bool, cx: &App| {
-        div()
-            .id(label)
-            .px_1p5()
-            .rounded(cx.theme().radius)
-            .text_xs()
-            .cursor_pointer()
-            .when(on, |this| {
-                this.bg(cx.theme().accent)
-                    .text_color(cx.theme().accent_foreground)
-            })
-            .when(!on, |this| this.text_color(cx.theme().muted_foreground))
-            .child(label)
-    };
-
-    h_flex()
-        .gap_1()
-        .items_center()
-        .children(choices.into_iter().map(|coloring| {
-            let view = view.clone();
-            chip(coloring.label(), coloring == active, cx).on_mouse_down(
-                gpui::MouseButton::Left,
-                move |_, _, cx| {
-                    view.update(cx, |view, cx| view.set_coloring(coloring, cx));
-                },
-            )
-        }))
-        .child({
-            let view = view.clone();
-            chip("Reset", false, cx).on_mouse_down(gpui::MouseButton::Left, move |_, _, cx| {
-                view.update(cx, |view, cx| view.reset(cx));
-            })
-        })
+    #[test]
+    fn a_cloud_with_one_colouring_offers_no_choice() {
+        // The chips are only worth their pixels when there is something to
+        // choose between; height is always available, so one entry is not a
+        // choice.
+        let points = Points {
+            positions: vec![[0., 0., 0.]],
+            ..Points::default()
+        };
+        assert_eq!(points.available().len(), 1);
+    }
 }

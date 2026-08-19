@@ -16,7 +16,7 @@ use gpui_component::chart::LineChart;
 use gpui_component::{ActiveTheme as _, IconName, h_flex, v_flex};
 use rw_canonical::CanonicalValue;
 
-use crate::scene_view::{self, SceneView};
+use crate::scene_view::SceneView;
 use crate::series::{History, Series};
 use crate::{image, tokens, value};
 
@@ -90,13 +90,13 @@ pub fn visualize(
         return picture(frame, cx);
     }
 
+    // The scene draws its own controls over itself, so it needs nothing around
+    // it but the space.
     if let Some(scene) = scene.filter(|scene| scene.read(cx).point_count() > 0) {
-        return v_flex()
+        return div()
             .size_full()
             .min_h_0()
-            .gap_2()
-            .child(scene_view::controls(scene, cx))
-            .child(div().flex_1().min_h_0().child(scene.clone()))
+            .child(scene.clone())
             .into_any_element();
     }
 
@@ -155,9 +155,14 @@ fn picture(frame: image::Frame, cx: &App) -> AnyElement {
         .items_center()
         .justify_center()
         .child(
+            // Sized to the space rather than capped by it. `max_*` alone leaves
+            // a small frame at its own pixel size — a 96×64 camera image
+            // marooned in the middle of a pane — and the default `Contain` fit
+            // keeps the aspect ratio while it grows.
             gpui::img(frame.source)
-                .max_w_full()
-                .max_h_full()
+                .flex_1()
+                .min_h_0()
+                .w_full()
                 .rounded(cx.theme().radius),
         )
         .child(
@@ -224,11 +229,17 @@ fn series_row(
         .map(|(index, sample)| (SharedString::from(index.to_string()), *sample))
         .collect();
 
+    // Shares the height with its siblings rather than taking a fixed slice: one
+    // series alone should fill the pane, and several should divide it. The
+    // minimum is what keeps a dozen of them readable, with the pane scrolling
+    // past that point.
     v_flex()
-        .flex_shrink_0()
+        .flex_1()
+        .min_h(px(120.))
         .gap_1()
         .child(
             h_flex()
+                .flex_shrink_0()
                 .gap_2()
                 .items_baseline()
                 .justify_between()
@@ -256,7 +267,7 @@ fn series_row(
                 ),
         )
         .child(
-            div().h(px(96.)).w_full().child(
+            div().flex_1().min_h_0().w_full().child(
                 LineChart::new(points)
                     .x(|(label, _): &(SharedString, f64)| label.clone())
                     .y(|(_, sample): &(SharedString, f64)| *sample)

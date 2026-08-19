@@ -27,6 +27,7 @@ use crate::cloud;
 use crate::scene_view::SceneView;
 use crate::series::History;
 use crate::session::{RobotWhisperer, Sessions};
+use crate::tokens;
 use crate::views::{self, View};
 use crate::workspace::Workspace;
 
@@ -469,22 +470,24 @@ impl Render for VizPanel {
                 .into_any_element(),
         };
 
-        // Nothing but the picture. The topic is the tab, the controls are on
-        // the tab strip, and the count sits beside the title.
+        // The same material as everywhere else: content sits on an elevated
+        // card with a hairline border, inset from the pane's edge. Without it a
+        // dashboard reads as bare text on the window while every other surface
+        // in the app is a card, which is what made it look unfinished.
         v_flex()
             .id("pane")
             .size_full()
             .min_h_0()
+            .p_2()
             .track_focus(&self.focus_handle)
             .bg(cx.theme().background)
             .child(
-                v_flex()
-                    .id("pane-body")
-                    .flex_1()
-                    .min_h_0()
-                    .p_2()
-                    .overflow_y_scroll()
-                    .child(body),
+                tokens::card(cx).flex_1().min_h_0().child(
+                    tokens::card_body()
+                        .id("pane-body")
+                        .overflow_scroll()
+                        .child(body),
+                ),
             )
     }
 }

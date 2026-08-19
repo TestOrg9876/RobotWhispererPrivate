@@ -3,7 +3,7 @@
 wait 900
 click 1327 16
 wait 600
-click 1272 175
+click 1272 203
 wait 5000
 shot 01-robot
 

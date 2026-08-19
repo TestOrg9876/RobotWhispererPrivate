@@ -27,7 +27,7 @@ use rw_assets::math;
 use rw_assets::mesh::Part;
 use rw_render::{MeshVertex, Solid};
 
-use crate::scene_view::{self, SceneView};
+use crate::scene_view::SceneView;
 use crate::tokens;
 
 /// One link's geometry, uploaded once and placed by a matrix every frame.
@@ -373,13 +373,24 @@ impl Render for RobotPanel {
                 )
             })
             .child(
+                // Both halves are cards on the panel's ground, the same
+                // material a request's response sits on. Bare content beside a
+                // hairline divider was what made this pane look unlike the rest
+                // of the app.
                 h_flex()
                     .flex_1()
                     .min_h_0()
                     .items_stretch()
-                    .child(div().flex_1().min_w_0().p_2().child(self.scene.clone()))
+                    .p_2()
+                    .gap_2()
                     .child(
-                        v_flex()
+                        tokens::card(cx)
+                            .flex_1()
+                            .min_w_0()
+                            .child(self.scene.clone()),
+                    )
+                    .child(
+                        tokens::card(cx)
                             .id("joints")
                             .flex_shrink_0()
                             .w(px(240.))
@@ -387,8 +398,6 @@ impl Render for RobotPanel {
                             .p_3()
                             .gap_3()
                             .overflow_y_scroll()
-                            .border_l_1()
-                            .border_color(cx.theme().border)
                             .child(tokens::section_label("Joints", cx))
                             .children(self.controls.iter().map(|control| {
                                 let value = self.pose.get(&control.name);
@@ -423,15 +432,6 @@ impl Render for RobotPanel {
                                 )
                             }),
                     ),
-            )
-            .child(
-                h_flex()
-                    .flex_shrink_0()
-                    .px_3()
-                    .py_1()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .child(scene_view::controls(&self.scene, cx)),
             )
     }
 }

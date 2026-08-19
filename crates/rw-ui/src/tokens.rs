@@ -201,6 +201,112 @@ pub fn series_colors(cx: &gpui::App) -> Vec<gpui::Hsla> {
     ]
 }
 
+/// The word for a request kind, as it reads on a row's badge.
+///
+/// The verb rather than the noun — `SUB`, `CALL`, `GOAL` — because it matches the
+/// button that runs the request and says what the row *does*. A row labelled
+/// "TOPIC" still leaves you working out what will happen when you press it.
+pub fn kind_badge_label(kind: RequestKind) -> &'static str {
+    match kind {
+        RequestKind::Topic => "SUB",
+        RequestKind::Service => "CALL",
+        RequestKind::Action => "GOAL",
+    }
+}
+
+/// The badge that identifies a request's kind in a list.
+///
+/// Fixed width so the names beside them line up: a ragged left edge is what makes
+/// a list of thirty rows tiring to scan. Monospaced and tracked, so three
+/// four-letter words at 10px stay distinct from body text.
+pub fn kind_badge(kind: RequestKind, cx: &gpui::App) -> impl gpui::IntoElement {
+    let colour = kind_color(kind, cx);
+    gpui::div()
+        .flex()
+        .flex_none()
+        .w(px(KIND_BADGE_WIDTH))
+        .items_center()
+        .justify_center()
+        .py_0p5()
+        .rounded(cx.theme().radius)
+        .bg(colour.opacity(0.12))
+        .font_family(cx.theme().mono_font_family.clone())
+        .text_size(px(9.))
+        .text_color(colour)
+        .child(kind_badge_label(kind))
+}
+
+/// The width of [`kind_badge`], and so of the column the names start after.
+pub const KIND_BADGE_WIDTH: f32 = 34.;
+
+/// How far one level of nesting indents a sidebar row.
+pub const INDENT: f32 = 13.;
+
+/// The vertical hairlines that show which level a nested row belongs to.
+///
+/// One per ancestor, drawn inside the row rather than around the group: rows
+/// stacked in a flat list have no group to draw a border on, and per-row segments
+/// join into continuous lines anyway. This is what makes three levels of nesting
+/// readable instead of merely indented.
+pub fn rails(depth: usize, cx: &gpui::App) -> impl gpui::IntoElement {
+    use gpui::{ParentElement as _, Styled as _};
+
+    gpui::div()
+        .flex()
+        .flex_none()
+        .h_full()
+        .children((0..depth).map(|_| {
+            gpui::div()
+                .w(px(INDENT))
+                .h_full()
+                .flex()
+                .justify_center()
+                .child(gpui::div().w(px(1.)).h_full().bg(cx.theme().sidebar_border))
+        }))
+}
+
+#[cfg(test)]
+mod badge_tests {
+    use super::*;
+
+    #[test]
+    fn every_kind_has_its_own_badge() {
+        let labels: Vec<_> = [
+            RequestKind::Topic,
+            RequestKind::Service,
+            RequestKind::Action,
+        ]
+        .map(kind_badge_label)
+        .to_vec();
+
+        assert_eq!(labels, ["SUB", "CALL", "GOAL"]);
+        // Distinct is the whole point: two kinds sharing a label would make the
+        // list worse than having no badge at all.
+        let mut unique = labels.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), labels.len());
+    }
+
+    #[test]
+    fn a_badge_fits_the_column_it_is_given() {
+        // Four characters at 9px in a monospaced face is about 22px, and the
+        // column is 34px, so the tinted chip has padding rather than hugging the
+        // text. A longer label would overflow it.
+        for kind in [
+            RequestKind::Topic,
+            RequestKind::Service,
+            RequestKind::Action,
+        ] {
+            assert!(
+                kind_badge_label(kind).len() <= 4,
+                "{:?} is too long for the badge column",
+                kind
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

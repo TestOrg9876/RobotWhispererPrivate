@@ -52,6 +52,13 @@ pub struct RenameCollection(pub i64);
 #[action(namespace = robot_whisperer, no_json)]
 pub struct DeleteCollection(pub i64);
 
+/// The height of a request row: two lines of text with room to breathe.
+///
+/// Collections are shorter, because a collection is one line and matching the
+/// two-line rows would leave it looking hollow.
+const ROW_HEIGHT: f32 = 42.;
+const COLLECTION_HEIGHT: f32 = 30.;
+
 /// What is being dragged.
 ///
 /// One type for both kinds of row: a drop target accepts either, and only the
@@ -300,12 +307,18 @@ impl CollectionsPanel {
     ) -> AnyElement {
         if self.renaming == Some(id) {
             return h_flex()
-                .h(px(tokens::CONTROL_HEIGHT))
                 .w_full()
-                .pl(px(8. + depth as f32 * 14.))
-                .pr_2()
+                .h(px(COLLECTION_HEIGHT))
                 .items_center()
-                .child(Input::new(&self.collection_name).xsmall())
+                .child(tokens::rails(depth, cx))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .pl_1()
+                        .pr_2()
+                        .child(Input::new(&self.collection_name).xsmall()),
+                )
                 .into_any_element();
         }
 
@@ -313,16 +326,13 @@ impl CollectionsPanel {
 
         h_flex()
             .id(("collection", id as usize))
-            .h(px(tokens::CONTROL_HEIGHT))
             .w_full()
-            .pl(px(4. + depth as f32 * 14.))
-            .pr_2()
-            .gap_1()
+            .h(px(COLLECTION_HEIGHT))
             .items_center()
             .rounded(cx.theme().radius)
-            .hover(|row| row.bg(cx.theme().list_hover))
-            // The target lights up only for a drop it would actually accept, so
-            // an impossible move looks impossible before it is attempted.
+            .hover(|row| row.bg(cx.theme().sidebar_accent.opacity(0.6)))
+            // The target lights up only for a drop it would accept, so an
+            // impossible move looks impossible before it is attempted.
             .drag_over::<Dragged>(move |style, dragged: &Dragged, _, cx| {
                 let allowed = match dragged {
                     Dragged::Request { .. } => true,
@@ -332,7 +342,7 @@ impl CollectionsPanel {
                 };
                 if allowed {
                     style
-                        .bg(cx.theme().list_active)
+                        .bg(cx.theme().sidebar_accent)
                         .border_1()
                         .border_color(cx.theme().ring)
                 } else {
@@ -352,30 +362,45 @@ impl CollectionsPanel {
                     cx.new(|_| DragPreview { label })
                 },
             )
+            .child(tokens::rails(depth, cx))
             .child(
-                gpui_component::Icon::new(if expanded {
-                    IconName::ChevronDown
-                } else {
-                    IconName::ChevronRight
-                })
-                .xsmall()
-                .text_color(cx.theme().muted_foreground),
-            )
-            .child(
-                div()
+                h_flex()
                     .flex_1()
                     .min_w_0()
-                    .text_sm()
-                    .text_color(cx.theme().foreground)
-                    .truncate()
-                    .child(name.to_string()),
-            )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(total.to_string()),
+                    .pl_1()
+                    .pr_2()
+                    .gap_1p5()
+                    .items_center()
+                    // Rotated rather than swapped: the caret turning is what
+                    // reads as opening, and it is how the library's own menus
+                    // behave.
+                    .child(
+                        gpui_component::Icon::new(IconName::ChevronRight)
+                            .size_3()
+                            .text_color(cx.theme().muted_foreground)
+                            .when(expanded, |icon| icon.rotate(gpui::percentage(0.25))),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_sm()
+                            .text_color(cx.theme().sidebar_foreground)
+                            .truncate()
+                            .child(name.to_string()),
+                    )
+                    .when(total > 0, |row| {
+                        row.child(
+                            div()
+                                .flex_none()
+                                .px_1p5()
+                                .rounded_full()
+                                .bg(cx.theme().sidebar_accent)
+                                .text_size(px(10.))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(total.to_string()),
+                        )
+                    }),
             )
             .on_click(
                 cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_collection(id, cx)),
@@ -398,48 +423,76 @@ impl CollectionsPanel {
         let selected = self.selected == Some(id);
         let target = request.target.clone();
         let kind = request.kind;
+        let colour = tokens::kind_color(kind, cx);
+
         h_flex()
             .id(("request", id as usize))
-            .h(px(tokens::CONTROL_HEIGHT))
             .w_full()
-            .pl(px(8. + depth as f32 * 14.))
-            .pr_2()
-            .gap_2()
+            .h(px(ROW_HEIGHT))
             .items_center()
             .rounded(cx.theme().radius)
-            .when(selected, |row| row.bg(cx.theme().list_active))
-            .when(!selected, |row| {
-                row.hover(|row| row.bg(cx.theme().list_hover))
+            .when(selected, |row| {
+                row.bg(cx.theme().sidebar_accent)
+                    .text_color(cx.theme().sidebar_accent_foreground)
             })
-            .child(tokens::status_dot(tokens::kind_color(kind, cx)))
+            .when(!selected, |row| {
+                row.hover(|row| row.bg(cx.theme().sidebar_accent.opacity(0.6)))
+            })
+            .child(tokens::rails(depth, cx))
+            // A bar in the kind's colour on the selected row: the one place the
+            // colour appears at full strength, so the eye finds the current
+            // request without the list having to shout anywhere else.
             .child(
-                v_flex()
+                div()
+                    .flex_none()
+                    .w(px(2.))
+                    .h(px(ROW_HEIGHT - 12.))
+                    .rounded_full()
+                    .when(selected, |bar| bar.bg(colour)),
+            )
+            .child(
+                h_flex()
                     .flex_1()
                     .min_w_0()
-                    .gap_0()
+                    .h_full()
+                    .pl_2()
+                    .pr_2()
+                    .gap_2()
+                    .items_center()
+                    .child(tokens::kind_badge(kind, cx))
                     .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().foreground)
-                            .truncate()
-                            .child(request.name.clone()),
-                    )
-                    .when(!target.is_empty(), |stack| {
-                        stack.child(
-                            tokens::mono(cx)
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .truncate()
-                                .child(target.clone()),
-                        )
-                    }),
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(px(1.))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(if selected {
+                                        cx.theme().sidebar_accent_foreground
+                                    } else {
+                                        cx.theme().sidebar_foreground
+                                    })
+                                    .truncate()
+                                    .child(request.name.clone()),
+                            )
+                            .when(!target.is_empty(), |stack| {
+                                stack.child(
+                                    tokens::mono(cx)
+                                        .text_size(px(10.))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .truncate()
+                                        .child(target.clone()),
+                                )
+                            }),
+                    ),
             )
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.selected = Some(id);
                 cx.emit(CollectionsEvent::Open(id));
                 cx.notify();
             }))
-            // Dragged, not moved through a submenu: a list of every folder in
+            // Dragged, not moved through a submenu: a list of every collection in
             // a menu is a workaround for not being able to point at one.
             .on_drag(
                 Dragged::Request {
@@ -499,6 +552,35 @@ impl Panel for CollectionsPanel {
 
     fn closable(&self, _cx: &App) -> bool {
         false
+    }
+
+    /// The panel's own actions, drawn by the dock beside its tab.
+    ///
+    /// This is the slot a dock provides for exactly this, and using it leaves the
+    /// panel's own header free to do one thing: search.
+    fn toolbar_buttons(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Vec<Button>> {
+        Some(vec![
+            Button::new("new-collection")
+                .ghost()
+                .xsmall()
+                .icon(IconName::Folder)
+                .tooltip("New collection")
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.add_collection(None, window, cx);
+                })),
+            Button::new("new-request")
+                .ghost()
+                .xsmall()
+                .icon(IconName::Plus)
+                .tooltip("New request")
+                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                    cx.emit(CollectionsEvent::New);
+                })),
+        ])
     }
 }
 
@@ -575,39 +657,17 @@ impl Render for CollectionsPanel {
                     .detach();
             }))
             .child(
-                h_flex()
-                    .flex_shrink_0()
-                    .p_2()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(Input::new(&self.search).small().cleanable(true)),
-                    )
-                    .child(
-                        Button::new("new-collection")
-                            .ghost()
-                            .small()
-                            .icon(IconName::Folder)
-                            .tooltip("New collection")
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                this.add_collection(None, window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("new-request")
-                            .ghost()
-                            .small()
-                            .icon(IconName::Plus)
-                            .tooltip("New request")
-                            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                                cx.emit(CollectionsEvent::New);
-                            })),
+                // Search alone. The two actions moved to the dock's own toolbar,
+                // beside the panel's tab, which is where a dock puts a panel's
+                // controls — and it leaves this row to do one thing.
+                div().flex_shrink_0().px_2().pt_2().pb_1p5().child(
+                    Input::new(&self.search).xsmall().cleanable(true).prefix(
+                        gpui_component::Icon::new(IconName::Search)
+                            .size_3()
+                            .text_color(cx.theme().muted_foreground),
                     ),
+                ),
             )
-            .child(tokens::hairline(cx))
             .child(if rows.is_empty() && !searching {
                 self.empty_state(cx)
             } else {
@@ -616,8 +676,9 @@ impl Render for CollectionsPanel {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .p_2()
-                    .gap_0p5()
+                    .px_1p5()
+                    .pb_2()
+                    .gap(px(1.))
                     // The list's own background is the root, so dragging
                     // something out of a collection is the same gesture as
                     // dragging it in — there is no "move to top level" command to

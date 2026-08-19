@@ -1,0 +1,90 @@
+# The sidebar with real work in it: three kinds of request, named and targeted,
+# arranged into a collection.
+
+wait 900
+
+# A Dummy ROS system, from the footer.
+click 105 888
+wait 900
+click 1403 81
+wait 700
+click 1384 158
+wait 500
+click 1269 211
+type Simulator
+wait 500
+click 1395 242
+wait 1500
+click 1327 16
+wait 600
+click 1272 102
+wait 900
+
+# A collection to put them in.
+click 224 49
+wait 900
+type Dummy robot
+wait 400
+key Return
+wait 900
+
+# A topic, a service and an action — the kind is chosen before the target so
+# the offers are the right ones, and the name is replaced rather than typed
+# into the middle of the placeholder.
+click 244 49
+wait 1400
+click 700 133
+wait 700
+type /dummy/wave
+wait 700
+key Return
+wait 600
+click 420 89
+wait 500
+key ctrl+a
+wait 300
+type Wave data
+wait 500
+key ctrl+s
+wait 1000
+click 244 49
+wait 1400
+click 330 133
+wait 700
+click 350 189
+wait 800
+click 700 133
+wait 700
+type /dummy/add_two_ints
+wait 700
+key Return
+wait 600
+click 420 89
+wait 500
+key ctrl+a
+wait 300
+type Add two ints
+wait 500
+key ctrl+s
+wait 1000
+click 244 49
+wait 1400
+click 330 133
+wait 700
+click 349 215
+wait 1000
+click 700 133
+wait 700
+type /dummy/fibonacci
+wait 700
+key Return
+wait 600
+click 420 89
+wait 500
+key ctrl+a
+wait 300
+type Fibonacci
+wait 500
+key ctrl+s
+wait 1000
+shot 01-three-kinds

@@ -36,8 +36,10 @@ const LAVAPIPE_ICD: &str = "/usr/share/vulkan/icd.d/lvp_icd.json";
 const APP_BINARY: &str = "target/debug/robot-whisperer";
 /// How long to wait for the app to map a window before giving up.
 const WINDOW_TIMEOUT: Duration = Duration::from_secs(60);
-/// Settling time after the window appears, for fonts, storage and first layout.
-const FIRST_PAINT: Duration = Duration::from_millis(4000);
+/// How long to keep nudging before giving up on a first frame.
+const FIRST_PAINT_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long to leave between nudges while waiting for that frame.
+const NUDGE_INTERVAL: Duration = Duration::from_millis(500);
 
 pub struct Options {
     /// X display number to claim, e.g. `99`.
@@ -90,13 +92,7 @@ fn with_app(scenario: &Scenario, options: &Options, display: &str) -> Result<Vec
             "  window {} at {}x{}",
             window.id, window.width, window.height
         );
-        // The nudge that makes GPUI paint its first frame. Twice, from
-        // different points: the window can map before it is ready to draw, and
-        // a single motion event delivered too early buys nothing.
-        xdotool(display, &["mousemove", "10", "10"])?;
-        std::thread::sleep(FIRST_PAINT / 2);
-        xdotool(display, &["mousemove", "40", "40"])?;
-        std::thread::sleep(FIRST_PAINT / 2);
+        await_first_paint(display, &window)?;
         play(scenario, options, display, &window)
     })();
 
@@ -413,4 +409,52 @@ fn drag_to(display: &str, window: &WindowGeometry, from: (i32, i32), to: (i32, i
         std::thread::sleep(Duration::from_millis(40));
     }
     Ok(())
+}
+
+/// Nudges the pointer until the window actually draws something.
+///
+/// GPUI paints on demand, and a mapped window is not a painted one: without this
+/// a scenario whose first step is a screenshot captures a black rectangle, which
+/// looks exactly like a broken layout. Waiting a fixed time was the old approach
+/// and it failed whenever the machine was busy — so this checks the frame instead
+/// of guessing at a duration, and only gives up after
+/// [`FIRST_PAINT_TIMEOUT`].
+fn await_first_paint(display: &str, window: &WindowGeometry) -> Result<()> {
+    let probe = std::env::temp_dir().join(format!("rw-first-paint-{}.png", std::process::id()));
+    let deadline = std::time::Instant::now() + FIRST_PAINT_TIMEOUT;
+    let mut at = 10;
+
+    while std::time::Instant::now() < deadline {
+        // From a different point each time: a motion event to where the pointer
+        // already is tells the toolkit nothing. A bare modifier press goes with
+        // it — GPUI does not always treat pointer motion over an unfocused
+        // window as a reason to draw, and a key event with no binding costs
+        // nothing but does.
+        at = if at == 10 { 40 } else { 10 };
+        xdotool(display, &["mousemove", &at.to_string(), &at.to_string()])?;
+        xdotool(display, &["key", "shift"])?;
+        std::thread::sleep(NUDGE_INTERVAL);
+
+        capture(display, &window.id, &probe)?;
+        if colours(&probe)? > 1 {
+            let _ = std::fs::remove_file(&probe);
+            return Ok(());
+        }
+    }
+
+    let _ = std::fs::remove_file(&probe);
+    bail!("the window never painted anything (still one flat colour after {FIRST_PAINT_TIMEOUT:?})")
+}
+
+/// How many distinct colours a capture holds. One means nothing was drawn.
+fn colours(path: &Path) -> Result<u32> {
+    let out = Command::new("identify")
+        .args(["-format", "%k"])
+        .arg(path)
+        .output()
+        .context("running identify")?;
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .context("reading the colour count from identify")
 }

@@ -50,15 +50,34 @@ actions!(
 #[action(namespace = robot_whisperer, no_json)]
 pub struct SetTheme(pub SharedString);
 
-/// Point a dashboard pane at a connection. One action serves the whole menu.
+/// Retarget or restyle one pane of a dashboard.
+///
+/// Each carries the pane it is about, because the menu these come from is drawn
+/// by the dock on the tab strip — outside the pane — and an action dispatches
+/// up from wherever the click happened. The dashboard is the first thing above
+/// both the strip and the panes, so it is the one that routes them.
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
 #[action(namespace = robot_whisperer, no_json)]
-pub struct SetPaneConnection(pub i64);
+pub struct SetPaneConnection {
+    pub pane: u64,
+    pub connection: i64,
+}
 
 /// Point a dashboard pane at a topic.
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
 #[action(namespace = robot_whisperer, no_json)]
-pub struct SetPaneTopic(pub SharedString);
+pub struct SetPaneTopic {
+    pub pane: u64,
+    pub topic: SharedString,
+}
+
+/// Choose how a dashboard pane shows what it is watching.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
+pub struct SetPaneView {
+    pub pane: u64,
+    pub view: SharedString,
+}
 
 /// Open the transport for a stored connection.
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]

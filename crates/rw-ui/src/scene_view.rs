@@ -294,65 +294,54 @@ impl Render for SceneView {
     }
 }
 
-/// The strip of controls a host pane puts beside a scene.
+/// The controls a host pane puts beside a scene.
+///
+/// Deliberately tiny: colouring, when the data offers a choice, and a way back
+/// to the default view. No count and no "drag to orbit" hint — a line of
+/// instructions teaches once and then costs a row of the picture forever, and
+/// this pane is often small.
 pub fn controls(view: &Entity<SceneView>, cx: &App) -> impl IntoElement + use<> {
     let scene = view.read(cx);
     let active = scene.coloring();
+    // One entry is not a choice, so it is not offered.
     let available = scene.available();
-    let count = scene.point_count();
+    let choices = if available.len() > 1 {
+        available
+    } else {
+        Vec::new()
+    };
+
+    let chip = |label: &'static str, on: bool, cx: &App| {
+        div()
+            .id(label)
+            .px_1p5()
+            .rounded(cx.theme().radius)
+            .text_xs()
+            .cursor_pointer()
+            .when(on, |this| {
+                this.bg(cx.theme().accent)
+                    .text_color(cx.theme().accent_foreground)
+            })
+            .when(!on, |this| this.text_color(cx.theme().muted_foreground))
+            .child(label)
+    };
 
     h_flex()
-        .gap_2()
+        .gap_1()
         .items_center()
-        // A pane showing a robot has nothing to colour and no points to count,
-        // so it gets the view controls and nothing else.
-        .when(count > 0, |row| {
-            row.child(
-                h_flex()
-                    .gap_1()
-                    .children(available.into_iter().map(|coloring| {
-                        let view = view.clone();
-                        div()
-                            .id(coloring.label())
-                            .px_2()
-                            .py_0p5()
-                            .rounded(cx.theme().radius)
-                            .text_xs()
-                            .cursor_pointer()
-                            .when(coloring == active, |this| {
-                                this.bg(cx.theme().accent)
-                                    .text_color(cx.theme().accent_foreground)
-                            })
-                            .when(coloring != active, |this| {
-                                this.text_color(cx.theme().muted_foreground)
-                            })
-                            .child(coloring.label())
-                            .on_mouse_down(gpui::MouseButton::Left, move |_, _, cx| {
-                                view.update(cx, |view, cx| view.set_coloring(coloring, cx));
-                            })
-                    })),
+        .children(choices.into_iter().map(|coloring| {
+            let view = view.clone();
+            chip(coloring.label(), coloring == active, cx).on_mouse_down(
+                gpui::MouseButton::Left,
+                move |_, _, cx| {
+                    view.update(cx, |view, cx| view.set_coloring(coloring, cx));
+                },
             )
-            .child(tokens::meta("Points", count.to_string(), cx))
-        })
+        }))
         .child({
             let view = view.clone();
-            div()
-                .id("reset-view")
-                .px_2()
-                .py_0p5()
-                .rounded(cx.theme().radius)
-                .text_xs()
-                .cursor_pointer()
-                .text_color(cx.theme().muted_foreground)
-                .child("Reset view")
-                .on_mouse_down(gpui::MouseButton::Left, move |_, _, cx| {
-                    view.update(cx, |view, cx| view.reset(cx));
-                })
+            chip("Reset", false, cx).on_mouse_down(gpui::MouseButton::Left, move |_, _, cx| {
+                view.update(cx, |view, cx| view.reset(cx));
+            })
         })
-        .child(
-            div()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child("drag to orbit · scroll to zoom"),
-        )
 }

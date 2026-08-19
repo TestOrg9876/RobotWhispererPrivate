@@ -9,16 +9,15 @@
 
 use std::sync::{Arc, Mutex};
 
-use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Task, Window, div, px,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Task, Window, div,
 };
 use gpui_component::dock::{Panel, PanelEvent, PanelState, TabPanel};
 use gpui_component::menu::DropdownMenu as _;
 use gpui_component::{
-    ActiveTheme as _, IconName, Sizable as _,
+    ActiveTheme as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex, v_flex,
 };
@@ -28,7 +27,6 @@ use crate::cloud;
 use crate::scene_view::SceneView;
 use crate::series::History;
 use crate::session::{RobotWhisperer, Sessions};
-use crate::tokens;
 use crate::views::{self, View};
 use crate::workspace::Workspace;
 
@@ -110,6 +108,22 @@ impl VizPanel {
             topic: self.topic.clone(),
             view: self.view.as_str().to_string(),
         }
+    }
+
+    pub fn set_connection(&mut self, connection: i64, cx: &mut Context<Self>) {
+        let topic = self.topic.clone();
+        self.set_target(Some(connection), topic, cx);
+    }
+
+    pub fn set_topic(&mut self, topic: String, cx: &mut Context<Self>) {
+        let connection = self.connection;
+        self.set_target(connection, topic, cx);
+    }
+
+    pub fn set_view(&mut self, view: &str, cx: &mut Context<Self>) {
+        self.view = View::parse(view);
+        cx.emit(PaneChanged);
+        cx.notify();
     }
 
     fn set_target(&mut self, connection: Option<i64>, topic: String, cx: &mut Context<Self>) {
@@ -220,22 +234,17 @@ impl VizPanel {
     }
 
     /// The connection and topic pickers, and the view switcher.
-    fn toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The systems and topics this pane could be pointed at.
+    fn choices(&self, cx: &App) -> (Vec<(i64, SharedString)>, Vec<SharedString>) {
         let workspace = self.workspace.read(cx);
-        let connections: Vec<(i64, SharedString)> = workspace
+        let systems = workspace
             .connections()
             .iter()
-            .map(|connection| (connection.id, connection.name.clone().into()))
+            .map(|connection| (connection.id, SharedString::from(connection.name.clone())))
             .collect();
-        let named = self
-            .connection
-            .and_then(|id| workspace.connection(id))
-            .map(|connection| SharedString::from(connection.name.clone()))
-            .unwrap_or_else(|| "Pick a system".into());
-
-        // Only topics the chosen system actually publishes: a dashboard pane is
-        // pointed at something that exists, not typed at from memory.
-        let topics: Vec<SharedString> = self
+        // Only topics the chosen system actually publishes: a pane is pointed
+        // at something that exists, not typed at from memory.
+        let topics = self
             .connection
             .and_then(|id| self.sessions.read(cx).discovery(id).cloned())
             .map(|discovery| {
@@ -246,54 +255,65 @@ impl VizPanel {
                     .collect()
             })
             .unwrap_or_default();
+        (systems, topics)
+    }
+
+    /// The two pickers, shown in the body while the pane is still empty.
+    ///
+    /// Only then. Once a pane is showing something, its topic is the tab's
+    /// title and its settings are on the tab strip — a permanent control row
+    /// would repeat the one and duplicate the other.
+    fn pickers(&self, cx: &mut Context<Self>) -> AnyElement {
+        let pane = cx.entity_id().as_u64();
+        let (systems, topics) = self.choices(cx);
         let chosen = self.connection;
+        let named = self
+            .connection
+            .and_then(|id| self.workspace.read(cx).connection(id))
+            .map(|connection| SharedString::from(connection.name.clone()))
+            .unwrap_or_else(|| "System".into());
         let showing = SharedString::from(self.topic.clone());
-        let topic_label = if self.topic.is_empty() {
-            SharedString::from("Pick a topic")
-        } else {
-            SharedString::from(self.topic.clone())
-        };
 
         h_flex()
-            .flex_shrink_0()
-            .h(px(tokens::CARD_HEADER_HEIGHT))
-            .w_full()
+            .flex_1()
+            .min_h_0()
             .items_center()
+            .justify_center()
             .gap_1()
-            .px_2()
-            .border_b_1()
-            .border_color(cx.theme().border)
             .child(
-                Button::new("pane-connection")
+                Button::new("pick-system")
                     .ghost()
                     .xsmall()
                     .label(named)
                     .dropdown_menu(move |mut menu, _window, _cx| {
-                        if connections.is_empty() {
+                        if systems.is_empty() {
                             return menu.menu(
                                 "Add a connection…",
                                 Box::new(crate::actions::ManageConnections),
                             );
                         }
-                        for (id, name) in connections.clone() {
+                        for (id, name) in systems.clone() {
                             menu = menu.menu_with_check(
                                 name,
                                 Some(id) == chosen,
-                                Box::new(crate::actions::SetPaneConnection(id)),
+                                Box::new(crate::actions::SetPaneConnection {
+                                    pane,
+                                    connection: id,
+                                }),
                             );
                         }
                         menu
                     }),
             )
             .child(
-                Button::new("pane-topic")
+                Button::new("pick-topic")
                     .ghost()
                     .xsmall()
-                    .label(topic_label)
+                    .label("Topic")
                     .dropdown_menu(move |mut menu, _window, _cx| {
                         if topics.is_empty() {
                             return menu.menu(
-                                "Nothing discovered yet",
+                                "Connect a system first",
                                 Box::new(crate::actions::ManageConnections),
                             );
                         }
@@ -302,25 +322,12 @@ impl VizPanel {
                             menu = menu.menu_with_check(
                                 topic.clone(),
                                 chosen,
-                                Box::new(crate::actions::SetPaneTopic(topic)),
+                                Box::new(crate::actions::SetPaneTopic { pane, topic }),
                             );
                         }
                         menu
                     }),
             )
-            .child(div().flex_1())
-            .children(View::ALL.map(|view| {
-                Button::new(SharedString::from(view.as_str()))
-                    .ghost()
-                    .xsmall()
-                    .label(view.label())
-                    .when(view == self.view, |button| button.primary())
-                    .on_click(cx.listener(move |pane, _: &ClickEvent, _, cx| {
-                        pane.view = view;
-                        cx.emit(PaneChanged);
-                        cx.notify();
-                    }))
-            }))
             .into_any_element()
     }
 }
@@ -352,6 +359,73 @@ impl Panel for VizPanel {
         state
     }
 
+    /// The message count, beside the tab's title.
+    ///
+    /// Small, dim and out of the way — enough to see a pane is alive without
+    /// spending a row of it on a status strip.
+    fn title_suffix(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
+        let count = self.incoming.lock().expect("incoming mutex").count;
+        (count > 0).then(|| {
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(compact(count))
+                .into_any_element()
+        })
+    }
+
+    /// Everything this pane can be told, on the menu the dock already draws
+    /// beside the tab. Flat: a submenu to reach a topic is two clicks and a
+    /// hunt for something that should be one click and a read.
+    fn dropdown_menu(
+        &mut self,
+        mut menu: gpui_component::menu::PopupMenu,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui_component::menu::PopupMenu {
+        let pane = cx.entity_id().as_u64();
+        let (systems, topics) = self.choices(cx);
+        for view in View::ALL {
+            menu = menu.menu_with_check(
+                view.label(),
+                view == self.view,
+                Box::new(crate::actions::SetPaneView {
+                    pane,
+                    view: view.as_str().into(),
+                }),
+            );
+        }
+        if !systems.is_empty() {
+            menu = menu.separator();
+            for (id, name) in systems {
+                menu = menu.menu_with_check(
+                    name,
+                    Some(id) == self.connection,
+                    Box::new(crate::actions::SetPaneConnection {
+                        pane,
+                        connection: id,
+                    }),
+                );
+            }
+        }
+        if !topics.is_empty() {
+            menu = menu.separator();
+            for topic in topics {
+                let chosen = topic == self.topic;
+                menu = menu.menu_with_check(
+                    topic.clone(),
+                    chosen,
+                    Box::new(crate::actions::SetPaneTopic { pane, topic }),
+                );
+            }
+        }
+        menu
+    }
+
     fn on_added_to(
         &mut self,
         _tab_panel: gpui::WeakEntity<TabPanel>,
@@ -364,56 +438,45 @@ impl Panel for VizPanel {
 impl Render for VizPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_scene(cx);
-        let toolbar = self.toolbar(cx);
-        let (value, schema, count, history) = {
+        let (value, history) = {
             let incoming = self.incoming.lock().expect("incoming mutex");
-            (
-                incoming.value.clone(),
-                incoming.schema.clone(),
-                incoming.count,
-                incoming.history.clone(),
-            )
+            (incoming.value.clone(), incoming.history.clone())
         };
 
         let body = match (&value, self.view) {
             (Some(value), View::Raw) => views::raw(value, cx),
             (Some(_), View::Plot) => views::plot(&history, cx),
             (Some(value), View::Visualize) => views::visualize(value, self.scene.as_ref(), cx),
-            (None, _) => {
-                let (title, detail) = match (&self.problem, self.topic.is_empty()) {
-                    (Some(problem), _) => ("Nothing arriving", problem.to_string()),
-                    (None, true) => (
-                        "Nothing chosen yet",
-                        "Pick a system and a topic for this pane.".to_string(),
-                    ),
-                    (None, false) => (
-                        "Waiting for the first message…",
-                        "The subscription is open; nothing has arrived yet.".to_string(),
-                    ),
-                };
-                tokens::empty_state(IconName::Inbox, title, detail, cx).into_any_element()
-            }
+            // A pane with nothing in it offers the two pickers, where there is
+            // room for them and nothing else to show. Otherwise one dim line:
+            // a pane is often small, and the full empty state — icon tile,
+            // heading, explanation — would fill it.
+            (None, _) if self.topic.is_empty() && self.problem.is_none() => self.pickers(cx),
+            (None, _) => div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .p_3()
+                .text_xs()
+                .text_center()
+                .text_color(cx.theme().muted_foreground)
+                .child(match &self.problem {
+                    Some(problem) => SharedString::from(problem.to_string()),
+                    None => SharedString::from("Waiting for the first message…"),
+                })
+                .into_any_element(),
         };
 
+        // Nothing but the picture. The topic is the tab, the controls are on
+        // the tab strip, and the count sits beside the title.
         v_flex()
             .id("pane")
             .size_full()
             .min_h_0()
             .track_focus(&self.focus_handle)
             .bg(cx.theme().background)
-            .on_action(
-                cx.listener(|pane, action: &crate::actions::SetPaneConnection, _, cx| {
-                    let topic = pane.topic.clone();
-                    pane.set_target(Some(action.0), topic, cx);
-                }),
-            )
-            .on_action(
-                cx.listener(|pane, action: &crate::actions::SetPaneTopic, _, cx| {
-                    let connection = pane.connection;
-                    pane.set_target(connection, action.0.to_string(), cx);
-                }),
-            )
-            .child(toolbar)
             .child(
                 v_flex()
                     .id("pane-body")
@@ -423,21 +486,15 @@ impl Render for VizPanel {
                     .overflow_y_scroll()
                     .child(body),
             )
-            .when(count > 0, |pane| {
-                pane.child(
-                    h_flex()
-                        .flex_shrink_0()
-                        .gap_3()
-                        .px_2()
-                        .py_1()
-                        .border_t_1()
-                        .border_color(cx.theme().border)
-                        .child(tokens::meta("Messages", count.to_string(), cx))
-                        .when_some(schema, |row, schema| {
-                            row.child(tokens::meta("Schema", schema, cx))
-                        }),
-                )
-            })
+    }
+}
+
+/// A message count short enough to sit beside a tab title.
+fn compact(count: u64) -> SharedString {
+    match count {
+        0..=999 => SharedString::from(count.to_string()),
+        1_000..=999_999 => SharedString::from(format!("{:.1}k", count as f64 / 1e3)),
+        _ => SharedString::from(format!("{:.1}M", count as f64 / 1e6)),
     }
 }
 

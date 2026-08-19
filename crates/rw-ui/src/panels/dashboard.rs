@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 use gpui::{
     App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
-    px,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    Subscription, Window, div,
 };
 use gpui_component::dock::{
     DockArea, DockAreaState, DockEvent, DockItem, DockPlacement, PanelEvent, PanelState, PanelView,
@@ -23,15 +23,14 @@ use gpui_component::dock::{
 use gpui_component::{
     ActiveTheme as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
 };
 use rw_core::domain::Dashboard;
 
+use crate::actions::{SetPaneConnection, SetPaneTopic, SetPaneView};
 use crate::docking::Restored;
 use crate::panels::pane::Config;
 use crate::panels::{PaneChanged, VizPanel};
 use crate::session::RobotWhisperer;
-use crate::tokens;
 use crate::workspace::Workspace;
 
 /// Bumped when the shape of a saved arrangement changes.
@@ -43,6 +42,9 @@ pub struct DashboardPanel {
     id: i64,
     name: SharedString,
     dock: Entity<DockArea>,
+    /// Every open pane, so a menu drawn on the tab strip can be routed back to
+    /// the one it belongs to.
+    panes: Vec<Entity<VizPanel>>,
     /// One per open pane, so retargeting a pane saves the dashboard.
     pane_subscriptions: Vec<Subscription>,
     /// The tab group this panel sits in, so the shell can bring it forward.
@@ -85,6 +87,7 @@ impl DashboardPanel {
                 id,
                 name: dashboard.name.clone().into(),
                 dock: dock.clone(),
+                panes: Vec::new(),
                 pane_subscriptions: Vec::new(),
                 home: Default::default(),
                 _subscriptions: vec![cx.subscribe_in(
@@ -142,6 +145,7 @@ impl DashboardPanel {
         // leave themselves in the global and are claimed now.
         let restored = std::mem::take(cx.global_mut::<Restored>());
         self.pane_subscriptions.clear();
+        self.panes.clear();
         for pane in restored.panes {
             self.watch(&pane, cx);
         }
@@ -151,8 +155,16 @@ impl DashboardPanel {
     /// Saves the dashboard when a pane is retargeted, not only when the layout
     /// moves — the dock has no idea a pane changed what it is watching.
     fn watch(&mut self, pane: &Entity<VizPanel>, cx: &mut Context<Self>) {
+        self.panes.push(pane.clone());
         self.pane_subscriptions
             .push(cx.subscribe(pane, |this, _, _: &PaneChanged, cx| this.save(cx)));
+    }
+
+    /// The pane an action from the tab strip is about.
+    fn pane(&self, id: u64) -> Option<&Entity<VizPanel>> {
+        self.panes
+            .iter()
+            .find(|pane| pane.entity_id().as_u64() == id)
     }
 
     /// Adds an empty pane, for the user to point somewhere.
@@ -209,47 +221,54 @@ impl gpui_component::dock::Panel for DashboardPanel {
     ) {
         self.home.moved_to(tab_panel);
     }
+
+    /// Rendered by the dock beside this panel's tab, so adding a pane costs no
+    /// height inside the dashboard itself.
+    fn toolbar_buttons(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Vec<Button>> {
+        Some(vec![
+            Button::new("add-pane")
+                .ghost()
+                .xsmall()
+                .icon(IconName::Plus)
+                .tooltip("Add pane")
+                .on_click(
+                    cx.listener(|this, _: &ClickEvent, window, cx| this.add_pane(window, cx)),
+                ),
+        ])
+    }
 }
 
 impl Render for DashboardPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
+        // Nothing but the dock. The dashboard's name is already the tab above
+        // it, and "Add pane" is a panel action the dock renders beside that
+        // tab — a header strip here would repeat the name and spend a row of
+        // the pane's height saying nothing.
+        div()
             .size_full()
             .min_h_0()
             .bg(cx.theme().background)
-            .child(
-                h_flex()
-                    .flex_shrink_0()
-                    .h(px(tokens::CARD_HEADER_HEIGHT))
-                    .items_center()
-                    .justify_between()
-                    .px_3()
-                    .gap_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(tokens::section_label(self.name.clone(), cx))
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("drag a pane's tab to an edge to split"),
-                            )
-                            .child(
-                                Button::new("add-pane")
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::Plus)
-                                    .label("Add pane")
-                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                        this.add_pane(window, cx)
-                                    })),
-                            ),
-                    ),
-            )
-            .child(div().flex_1().min_h_0().child(self.dock.clone()))
+            // Routed here because the menu these come from is drawn by the dock
+            // on the tab strip, and this is the first thing above both.
+            .on_action(cx.listener(|this, action: &SetPaneConnection, _, cx| {
+                if let Some(pane) = this.pane(action.pane).cloned() {
+                    pane.update(cx, |pane, cx| pane.set_connection(action.connection, cx));
+                }
+            }))
+            .on_action(cx.listener(|this, action: &SetPaneTopic, _, cx| {
+                if let Some(pane) = this.pane(action.pane).cloned() {
+                    pane.update(cx, |pane, cx| pane.set_topic(action.topic.to_string(), cx));
+                }
+            }))
+            .on_action(cx.listener(|this, action: &SetPaneView, _, cx| {
+                if let Some(pane) = this.pane(action.pane).cloned() {
+                    pane.update(cx, |pane, cx| pane.set_view(&action.view, cx));
+                }
+            }))
+            .child(self.dock.clone())
     }
 }

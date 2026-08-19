@@ -23,47 +23,50 @@ click 261 835
 wait 1800
 shot 01-empty-dashboard
 
-# Point the pane at a live topic.
-click 328 150
+# Point the pane at a live topic. The pickers sit in the empty pane itself;
+# once it is showing something they are gone and its settings live on the tab
+# strip the dock already draws.
+click 842 470
 wait 700
-click 330 178
+click 845 498
 wait 900
-click 410 150
+click 887 470
 wait 800
-click 402 233
-wait 1600
-# Plot rather than raw text: this pane is watching a sine wave.
-click 1418 150
-wait 1500
+click 880 553
+wait 1800
 shot 02-first-pane
 
-# A second pane, pointed at the camera. The tab strip has appeared by now, so
-# the pane's own controls sit a row lower than they did.
-click 1400 82
-wait 1200
-click 328 158
-wait 700
-click 330 186
-wait 900
-click 410 158
-wait 800
-click 402 269
-wait 1600
-click 1402 158
+# A second pane, added from the tab strip.
+click 1383 50
 wait 1500
+click 842 470
+wait 700
+click 845 498
+wait 900
+click 887 470
+wait 800
+click 880 582
+wait 1800
 shot 03-two-panes
 
-# The point of a dashboard: drag a pane's tab to an edge and the view splits.
-dragover 453 117 -> 1350 500
+# Drag a pane's tab to an edge and the view splits.
+dragover 453 79 -> 1350 500
 wait 800
-shot 04-drop-target
 release
 wait 2000
-shot 05-split
+shot 04-split
 
-# The arrangement is saved against the dashboard, so it survives a restart.
-restart
-wait 2500
-click 105 858
-wait 3000
-shot 06-restored
+# Each pane's settings are on the menu the dock already draws beside its tab:
+# flat, one click to a topic or a view.
+click 843 78
+wait 700
+shot 05-pane-menu
+click 741 161
+wait 1500
+
+# And the camera pane, shown as a picture.
+click 1422 78
+wait 700
+click 1320 133
+wait 1800
+shot 06-dashboard

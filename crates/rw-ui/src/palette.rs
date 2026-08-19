@@ -15,6 +15,8 @@ pub enum Choice {
     Request(i64),
     /// Connect or disconnect a ROS system.
     Connection(i64),
+    /// Open a saved dashboard.
+    Dashboard(i64),
 }
 
 /// One row of the palette.

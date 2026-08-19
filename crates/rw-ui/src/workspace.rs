@@ -6,8 +6,10 @@
 use std::sync::Arc;
 
 use gpui::{Context, Task};
-use rw_core::domain::{Collection, Connection, Request, RequestKind, TransportConfig, Value};
-use rw_core::storage::{NewConnection, NewRequest, Storage};
+use rw_core::domain::{
+    Collection, Connection, Dashboard, Request, RequestKind, TransportConfig, Value,
+};
+use rw_core::storage::{NewConnection, NewDashboard, NewRequest, Storage};
 
 /// Storage handle shared by the app.
 ///
@@ -21,6 +23,7 @@ pub struct Workspace {
     connections: Vec<Connection>,
     collections: Vec<Collection>,
     requests: Vec<Request>,
+    dashboards: Vec<Dashboard>,
     loaded: bool,
     error: Option<String>,
 }
@@ -32,6 +35,7 @@ impl Workspace {
             connections: Vec::new(),
             collections: Vec::new(),
             requests: Vec::new(),
+            dashboards: Vec::new(),
             loaded: false,
             error: None,
         }
@@ -51,6 +55,14 @@ impl Workspace {
 
     pub fn requests(&self) -> &[Request] {
         &self.requests
+    }
+
+    pub fn dashboards(&self) -> &[Dashboard] {
+        &self.dashboards
+    }
+
+    pub fn dashboard(&self, id: i64) -> Option<&Dashboard> {
+        self.dashboards.iter().find(|entry| entry.id == id)
     }
 
     /// False until the first load finishes, so views can tell "empty" from
@@ -92,6 +104,7 @@ impl Workspace {
             let connections = storage.list_connections().await;
             let collections = storage.list_collections().await;
             let requests = storage.list_requests().await;
+            let dashboards = storage.list_dashboards().await;
 
             workspace
                 .update(cx, |workspace, cx| {
@@ -107,6 +120,10 @@ impl Workspace {
                     match requests {
                         Ok(list) => workspace.requests = list,
                         Err(error) => failures.push(format!("requests: {error}")),
+                    }
+                    match dashboards {
+                        Ok(list) => workspace.dashboards = list,
+                        Err(error) => failures.push(format!("dashboards: {error}")),
                     }
 
                     workspace.loaded = true;
@@ -342,6 +359,95 @@ impl Workspace {
         })
     }
 
+    // ── dashboards ─────────────────────────────────────────────────────────────
+
+    /// Creates an empty dashboard and returns it so the caller can open it.
+    pub fn create_dashboard(&mut self, cx: &mut Context<Self>) -> Task<Option<Dashboard>> {
+        let storage = self.storage();
+        let draft = NewDashboard {
+            name: "New dashboard".into(),
+            layout: None,
+        };
+        cx.spawn(async move |workspace, cx| {
+            let created = storage.create_dashboard(draft).await;
+            workspace
+                .update(cx, |workspace, cx| {
+                    cx.notify();
+                    match created {
+                        Ok(dashboard) => {
+                            workspace.dashboards.push(dashboard.clone());
+                            Some(dashboard)
+                        }
+                        Err(error) => {
+                            workspace.fail("create dashboard", error);
+                            None
+                        }
+                    }
+                })
+                .unwrap_or(None)
+        })
+    }
+
+    pub fn rename_dashboard(&mut self, id: i64, name: String, cx: &mut Context<Self>) -> Task<()> {
+        self.update_dashboard(id, cx, |dashboard| dashboard.name = name)
+    }
+
+    /// Stores a dashboard's arrangement.
+    pub fn save_dashboard_layout(
+        &mut self,
+        id: i64,
+        layout: String,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        self.update_dashboard(id, cx, |dashboard| dashboard.layout = Some(layout))
+    }
+
+    /// Applies a change to a dashboard, in memory and then in storage.
+    fn update_dashboard(
+        &mut self,
+        id: i64,
+        cx: &mut Context<Self>,
+        change: impl FnOnce(&mut Dashboard),
+    ) -> Task<()> {
+        let storage = self.storage();
+        let Some(dashboard) = self.dashboards.iter_mut().find(|entry| entry.id == id) else {
+            return Task::ready(());
+        };
+        change(dashboard);
+        let updated = dashboard.clone();
+        cx.notify();
+
+        cx.spawn(async move |workspace, cx| {
+            let outcome = storage.update_dashboard(&updated).await;
+            workspace
+                .update(cx, |workspace, cx| {
+                    if let Err(error) = outcome {
+                        workspace.fail("save dashboard", error);
+                        cx.notify();
+                    }
+                })
+                .ok();
+        })
+    }
+
+    pub fn delete_dashboard(&mut self, id: i64, cx: &mut Context<Self>) -> Task<()> {
+        let storage = self.storage();
+        self.dashboards.retain(|dashboard| dashboard.id != id);
+        cx.notify();
+
+        cx.spawn(async move |workspace, cx| {
+            let outcome = storage.delete_dashboard(id).await;
+            workspace
+                .update(cx, |workspace, cx| {
+                    if let Err(error) = outcome {
+                        workspace.fail("delete dashboard", error);
+                        cx.notify();
+                    }
+                })
+                .ok();
+        })
+    }
+
     /// Deletes a collection, keeping what was inside it.
     ///
     /// The requests move up to where the collection was rather than going with
@@ -479,7 +585,12 @@ impl Workspace {
 
     /// The workspace as a shareable document.
     pub fn document(&self) -> rw_core::portable::Document {
-        rw_core::portable::export(&self.connections, &self.collections, &self.requests)
+        rw_core::portable::export(
+            &self.connections,
+            &self.collections,
+            &self.requests,
+            &self.dashboards,
+        )
     }
 
     /// Applies an import plan: connections first, so the requests that name
@@ -596,10 +707,35 @@ impl Workspace {
                 }
             }
 
+            // Dashboards last, and independently: a pane inside one names a
+            // connection by id, which means nothing here, so an imported
+            // dashboard arrives with its arrangement intact and its panes
+            // pointing at nothing until they are re-targeted.
+            let mut dashboards = Vec::new();
+            for portable in plan.new_dashboards {
+                let draft = NewDashboard {
+                    name: portable.name,
+                    layout: portable.layout,
+                };
+                match storage.create_dashboard(draft).await {
+                    Ok(dashboard) => dashboards.push(dashboard),
+                    Err(error) => {
+                        workspace
+                            .update(cx, |workspace, cx| {
+                                workspace.fail("import dashboard", error);
+                                cx.notify();
+                            })
+                            .ok();
+                        return;
+                    }
+                }
+            }
+
             workspace
                 .update(cx, |workspace, cx| {
                     workspace.connections.extend(created);
                     workspace.requests.extend(requests);
+                    workspace.dashboards.extend(dashboards);
                     cx.notify();
                 })
                 .ok();

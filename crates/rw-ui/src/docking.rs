@@ -83,6 +83,8 @@ pub fn close(
 pub struct Restored {
     pub requests: Vec<(i64, gpui::Entity<crate::panels::RequestPanel>)>,
     pub welcome: Option<gpui::Entity<crate::panels::WelcomePanel>>,
+    /// Dashboard panes, claimed by the dashboard that asked for the load.
+    pub panes: Vec<gpui::Entity<crate::panels::VizPanel>>,
 }
 
 impl gpui::Global for Restored {}

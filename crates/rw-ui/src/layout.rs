@@ -16,6 +16,8 @@ pub const REQUEST: &str = "Request";
 const REQUEST_ID: &str = "request";
 /// `panel_name` of the welcome panel.
 pub const WELCOME: &str = "Welcome";
+/// `panel_name` of one view inside a dashboard.
+pub const PANE: &str = "Pane";
 
 /// The saved form of a request editor: its id, and nothing else. Everything
 /// else about a request is already in storage.
@@ -97,22 +99,33 @@ pub fn prune(state: &PanelState, exists: &dyn Fn(i64) -> bool) -> Option<PanelSt
     }
 }
 
-/// Guarantees a stack at the root of the arrangement.
+/// Collapses an arrangement into a single tab group.
 ///
-/// A `TabPanel` with no parent `StackPanel` reports itself locked, and a locked
-/// tab strip can neither be dragged nor dropped onto — so a layout restored as
-/// a bare tab group would come back with its splitting disabled.
-pub fn rooted(state: PanelState) -> PanelState {
-    if matches!(state.info, PanelInfo::Stack { .. }) {
-        return state;
-    }
+/// The centre of the window is a tab strip, not a canvas: editors open as tabs
+/// and stay tabs. Restoring a saved tree verbatim would be the one way a split
+/// could come back — from a file written by a build that allowed them — so
+/// every leaf is gathered into one group on the way in.
+pub fn flatten(state: PanelState) -> PanelState {
+    let mut leaves = Vec::new();
+    gather(&state, &mut leaves);
+    let active_index = state.info.active_index().unwrap_or(0);
     PanelState {
-        panel_name: "StackPanel".into(),
-        children: vec![state],
-        info: PanelInfo::Stack {
-            sizes: Vec::new(),
-            axis: 1,
+        panel_name: "TabPanel".into(),
+        info: PanelInfo::Tabs {
+            active_index: active_index.min(leaves.len().saturating_sub(1)),
         },
+        children: leaves,
+    }
+}
+
+fn gather(state: &PanelState, into: &mut Vec<PanelState>) {
+    match &state.info {
+        PanelInfo::Panel(_) => into.push(state.clone()),
+        _ => {
+            for child in &state.children {
+                gather(child, into);
+            }
+        }
     }
 }
 
@@ -150,17 +163,30 @@ mod tests {
     }
 
     #[test]
-    fn a_stack_at_the_root_is_left_alone() {
-        let saved = stack(vec![tabs(vec![request(1)], 0)], vec![px(800.)]);
-        assert_eq!(rooted(saved.clone()), saved);
+    fn a_single_tab_group_comes_back_as_it_was() {
+        let saved = tabs(vec![request(1), request(2)], 1);
+        assert_eq!(flatten(saved.clone()), saved);
     }
 
     #[test]
-    fn a_bare_tab_group_gains_a_stack_so_it_stays_splittable() {
-        let saved = tabs(vec![request(1)], 0);
-        let rooted = rooted(saved.clone());
-        assert!(matches!(rooted.info, PanelInfo::Stack { .. }));
-        assert_eq!(rooted.children, vec![saved]);
+    fn a_split_written_by_an_older_build_collapses_into_one_group() {
+        let saved = stack(
+            vec![tabs(vec![request(1)], 0), tabs(vec![request(2)], 0)],
+            vec![px(400.), px(400.)],
+        );
+        let flat = flatten(saved);
+        assert!(matches!(flat.info, PanelInfo::Tabs { .. }));
+        assert_eq!(flat.children.len(), 2);
+        assert_eq!(request_of(&flat.children[0].info), Some(1));
+        assert_eq!(request_of(&flat.children[1].info), Some(2));
+    }
+
+    #[test]
+    fn flattening_keeps_the_active_index_in_range() {
+        let saved = tabs(vec![request(1), request(2), request(3)], 2);
+        assert_eq!(flatten(saved).info.active_index(), Some(2));
+        let empty = tabs(vec![], 5);
+        assert_eq!(flatten(empty).info.active_index(), Some(0));
     }
 
     #[test]

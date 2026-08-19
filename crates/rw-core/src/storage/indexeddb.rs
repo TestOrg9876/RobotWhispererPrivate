@@ -3,19 +3,23 @@ use idb::{
 };
 use wasm_bindgen::JsValue;
 
-use crate::domain::{Collection, Connection, Request};
-use crate::ids::{CollectionId, ConnectionId, RequestId};
+use crate::domain::{Collection, Connection, Dashboard, Request};
+use crate::ids::{CollectionId, ConnectionId, DashboardId, RequestId};
 use crate::schema::SchemaDefinition;
-use crate::storage::{NewCollection, NewConnection, NewRequest, Storage};
+use crate::storage::{NewCollection, NewConnection, NewDashboard, NewRequest, Storage};
 use crate::{CoreError, CoreResult};
 
 const DB_NAME: &str = "RobotWhispererWorkspace";
-const DB_VERSION: u32 = 1;
+// Bumped when a store is added: the browser only runs `upgrade` when the
+// version changes, so an existing database would otherwise have no dashboards
+// store and every read of one would fail.
+const DB_VERSION: u32 = 2;
 
 const REQUESTS: &str = "requests";
 const COLLECTIONS: &str = "collections";
 const CONNECTIONS: &str = "connections";
 const SCHEMAS: &str = "schemas";
+const DASHBOARDS: &str = "dashboards";
 
 #[derive(Debug)]
 pub struct IdbStorage {
@@ -66,6 +70,16 @@ fn upgrade(event: idb::event::VersionChangeEvent) -> CoreResult<()> {
     idx_params.unique(true);
     connections
         .create_index("name", KeyPath::new_single("name"), Some(idx_params))
+        .map_err(idb_err)?;
+
+    // `create_object_store` fails if it already exists, which it will for a
+    // database upgraded from version 1 — but only for the stores that were
+    // there before. This one is new either way, so a plain create is right for
+    // a fresh database and for an upgrade alike.
+    let mut dashboard_params = ObjectStoreParams::new();
+    dashboard_params.auto_increment(true);
+    dashboard_params.key_path(Some(KeyPath::new_single("id")));
+    db.create_object_store(DASHBOARDS, dashboard_params)
         .map_err(idb_err)?;
 
     let mut schema_params = ObjectStoreParams::new();
@@ -218,6 +232,71 @@ impl Storage for IdbStorage {
             .map_err(idb_err)?;
         let finishing = finishing(tx);
         written.await.map_err(idb_err)?;
+        finishing.wait().await
+    }
+
+    async fn list_dashboards(&self) -> CoreResult<Vec<Dashboard>> {
+        let tx = self.ro(&[DASHBOARDS])?;
+        let store = tx.object_store(DASHBOARDS).map_err(idb_err)?;
+        let all = store
+            .get_all(None, None)
+            .map_err(idb_err)?
+            .await
+            .map_err(idb_err)?;
+        let mut out = Vec::with_capacity(all.len());
+        for entry in all {
+            out.push(from_js(entry)?);
+        }
+        Ok(out)
+    }
+
+    async fn create_dashboard(&self, draft: NewDashboard) -> CoreResult<Dashboard> {
+        let now = chrono::Utc::now();
+        let candidate = Dashboard {
+            id: 0,
+            name: draft.name,
+            layout: draft.layout,
+            created_at: now,
+            updated_at: now,
+        };
+        let tx = self.rw(&[DASHBOARDS])?;
+        let store = tx.object_store(DASHBOARDS).map_err(idb_err)?;
+        let js = to_js(&candidate)?;
+        // The key is auto-assigned, so the placeholder has to go or the store
+        // takes the zero as the id.
+        let _ = js_sys::Reflect::delete_property(
+            js.unchecked_ref::<js_sys::Object>(),
+            &JsValue::from_str("id"),
+        );
+        let added = store.add(&js, None).map_err(idb_err)?;
+        let finishing = finishing(tx);
+        let key = added.await.map_err(idb_err)?;
+        let id = key
+            .as_f64()
+            .ok_or_else(|| CoreError::Storage("non-numeric key".into()))? as i64;
+        finishing.wait().await?;
+        Ok(Dashboard { id, ..candidate })
+    }
+
+    async fn update_dashboard(&self, dashboard: &Dashboard) -> CoreResult<()> {
+        let mut payload = dashboard.clone();
+        payload.updated_at = chrono::Utc::now();
+        let tx = self.rw(&[DASHBOARDS])?;
+        let store = tx.object_store(DASHBOARDS).map_err(idb_err)?;
+        let written = store.put(&to_js(&payload)?, None).map_err(idb_err)?;
+        let finishing = finishing(tx);
+        written.await.map_err(idb_err)?;
+        finishing.wait().await
+    }
+
+    async fn delete_dashboard(&self, id: DashboardId) -> CoreResult<()> {
+        let tx = self.rw(&[DASHBOARDS])?;
+        let store = tx.object_store(DASHBOARDS).map_err(idb_err)?;
+        let removed = store
+            .delete(idb::Query::Key(JsValue::from_f64(id as f64)))
+            .map_err(idb_err)?;
+        let finishing = finishing(tx);
+        removed.await.map_err(idb_err)?;
         finishing.wait().await
     }
 
@@ -470,9 +549,9 @@ impl Storage for IdbStorage {
     }
 
     async fn clear_all(&self) -> CoreResult<()> {
-        let tx = self.rw(&[REQUESTS, COLLECTIONS, CONNECTIONS, SCHEMAS])?;
+        let tx = self.rw(&[REQUESTS, COLLECTIONS, CONNECTIONS, SCHEMAS, DASHBOARDS])?;
         let mut clears = Vec::new();
-        for store_name in [REQUESTS, COLLECTIONS, CONNECTIONS, SCHEMAS] {
+        for store_name in [REQUESTS, COLLECTIONS, CONNECTIONS, SCHEMAS, DASHBOARDS] {
             clears.push(
                 tx.object_store(store_name)
                     .map_err(idb_err)?

@@ -20,6 +20,7 @@ use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     list::ListItem,
+    menu::ContextMenuExt as _,
     tree::{Tree, TreeEvent, TreeItem, TreeState},
     v_flex,
 };
@@ -56,6 +57,10 @@ pub struct RenameCollection(pub i64);
 #[action(namespace = robot_whisperer, no_json)]
 pub struct DeleteCollection(pub i64);
 
+#[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
+pub struct DeleteDashboard(pub i64);
+
 /// What the sidebar asks the shell to do.
 #[derive(Debug, Clone)]
 pub enum CollectionsEvent {
@@ -63,6 +68,11 @@ pub enum CollectionsEvent {
     Duplicate(i64),
     Delete(i64),
     New,
+    /// Open a saved dashboard.
+    OpenDashboard(i64),
+    /// Create one and open it.
+    NewDashboard,
+    DeleteDashboard(i64),
     /// Something the user tried that could not be done, for the console.
     Complain(String),
 }
@@ -177,6 +187,9 @@ pub struct CollectionsPanel {
     built_from: String,
     /// The request the shell has open, so the row reads as current.
     selected: Option<i64>,
+    /// Which dashboard row is highlighted, kept apart from `selected` so
+    /// opening a dashboard does not un-highlight the request above it.
+    selected_dashboard: Option<i64>,
 
     /// The collection being renamed, and the field holding the new name.
     renaming: Option<i64>,
@@ -233,6 +246,7 @@ impl CollectionsPanel {
             expanded: HashSet::new(),
             built_from: String::new(),
             selected: None,
+            selected_dashboard: None,
             renaming: None,
             collection_name,
             _subscriptions: subscriptions,
@@ -643,6 +657,102 @@ impl Panel for CollectionsPanel {
     }
 }
 
+impl CollectionsPanel {
+    /// The dashboards section: a heading, a way to add one, and the list.
+    ///
+    /// Flat rather than a second tree. A dashboard is a whole screen of work
+    /// and people keep a handful of them, not a filing system — the tree above
+    /// is for requests, which arrive in the hundreds.
+    fn dashboards(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let dashboards = self.workspace.read(cx).dashboards().to_vec();
+        let selected = self.selected_dashboard;
+
+        v_flex()
+            .flex_shrink_0()
+            .max_h(px(220.))
+            .border_t_1()
+            .border_color(cx.theme().sidebar_border)
+            .child(
+                h_flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .justify_between()
+                    .px_2p5()
+                    .py_1p5()
+                    .child(tokens::section_label("Dashboards", cx))
+                    .child(
+                        Button::new("new-dashboard")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Plus)
+                            .tooltip("New dashboard")
+                            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                                cx.emit(CollectionsEvent::NewDashboard);
+                            })),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .id("dashboards")
+                    .flex_1()
+                    .min_h_0()
+                    .px_1()
+                    .pb_1()
+                    .overflow_y_scroll()
+                    .when(dashboards.is_empty(), |list| {
+                        list.child(
+                            div()
+                                .px_2()
+                                .py_1()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("None yet."),
+                        )
+                    })
+                    .children(
+                        dashboards
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, dashboard)| {
+                                let id = dashboard.id;
+                                ListItem::new(("dashboard", index))
+                                    .selected(selected == Some(id))
+                                    .child(
+                                        h_flex()
+                                            .w_full()
+                                            .gap_1p5()
+                                            .items_center()
+                                            .child(div().w(px(12.)).flex_none())
+                                            .child(
+                                                tokens::mono(cx)
+                                                    .flex_none()
+                                                    .w(px(tokens::KIND_WIDTH))
+                                                    .text_size(px(9.))
+                                                    .text_color(cx.theme().cyan)
+                                                    .child("DASH"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .child(dashboard.name.clone()),
+                                            ),
+                                    )
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.selected_dashboard = Some(id);
+                                        cx.emit(CollectionsEvent::OpenDashboard(id));
+                                        cx.notify();
+                                    }))
+                                    .context_menu(move |menu, _, _| {
+                                        menu.menu("Delete dashboard", Box::new(DeleteDashboard(id)))
+                                    })
+                            }),
+                    ),
+            )
+    }
+}
+
 impl Render for CollectionsPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync(cx);
@@ -803,6 +913,9 @@ impl Render for CollectionsPanel {
                             .cleanable(true),
                     ),
             )
+            .on_action(cx.listener(|_, action: &DeleteDashboard, _, cx| {
+                cx.emit(CollectionsEvent::DeleteDashboard(action.0));
+            }))
             .child(if empty {
                 tokens::empty_state(
                     IconName::Inbox,
@@ -825,5 +938,6 @@ impl Render for CollectionsPanel {
                     .child(tree)
                     .into_any_element()
             })
+            .child(self.dashboards(cx))
     }
 }

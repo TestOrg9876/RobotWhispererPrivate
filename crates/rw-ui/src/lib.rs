@@ -26,6 +26,7 @@ pub mod theme;
 pub mod tick;
 pub mod tokens;
 pub mod value;
+pub mod views;
 pub mod workspace;
 pub mod workspace_view;
 
@@ -66,10 +67,11 @@ pub fn init(storage: SharedStorage, pipeline: Arc<CanonicalPipeline>, cx: &mut A
 
 /// Teaches the dock how to rebuild the panels it can find in a saved layout.
 ///
-/// Only the centre panels are registered, because only the centre is restored:
-/// the sidebar and console are fixed chrome the shell builds itself, and
-/// rebuilding them here would hand the dock a second copy of each, unsubscribed
-/// and disconnected from everything.
+/// Only panels that appear in a saved arrangement are registered: the window's
+/// centre tabs, and the panes inside a dashboard. The sidebar and console are
+/// fixed chrome the shell builds itself, and rebuilding them here would hand
+/// the dock a second copy of each, unsubscribed and disconnected from
+/// everything.
 fn register_panels(cx: &mut App) {
     use gpui_component::dock::{PanelView, register_panel};
 
@@ -94,6 +96,16 @@ fn register_panels(cx: &mut App) {
         // them, so this only fires if storage changed underneath us. The
         // welcome panel is a truthful stand-in: there is nothing to show.
         panel.unwrap_or_else(|| Box::new(welcome_panel(cx)) as Box<dyn PanelView>)
+    });
+
+    // A dashboard's panes: rebuilt from the config each stored, and left in
+    // the `Restored` global for the dashboard that asked for the load.
+    register_panel(cx, layout::PANE, |_, _, info, _, cx| {
+        let pane = panels::pane::VizPanel::view(panels::pane::config_of(info), cx);
+        cx.global_mut::<docking::Restored>()
+            .panes
+            .push(pane.clone());
+        Box::new(pane) as Box<dyn PanelView>
     });
 
     register_panel(cx, layout::WELCOME, |_, _, _, _, cx| {

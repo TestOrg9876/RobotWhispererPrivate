@@ -8,6 +8,7 @@ const MIGRATIONS: &[fn(&Transaction<'_>) -> rusqlite::Result<()>] = &[
     migration_3,
     migration_4,
     migration_5,
+    migration_6,
 ];
 
 pub(super) fn run(conn: &mut Connection) -> CoreResult<()> {
@@ -153,6 +154,23 @@ fn migration_5(tx: &Transaction<'_>) -> rusqlite::Result<()> {
         DROP TABLE connections;
         ALTER TABLE connections_new RENAME TO connections;
         CREATE INDEX idx_connections_name ON connections(name);
+        "#,
+    )?;
+    Ok(())
+}
+
+/// Dashboards: a named arrangement of live views, saved like a request is.
+fn migration_6(tx: &Transaction<'_>) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        r#"
+        CREATE TABLE dashboards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            layout_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_dashboards_name ON dashboards(name);
         "#,
     )?;
     Ok(())

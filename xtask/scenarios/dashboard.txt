@@ -1,4 +1,4 @@
-# Two live requests side by side: a dashboard, built by dragging a tab.
+# A dashboard: several live views, arranged by hand.
 
 wait 900
 click 105 888
@@ -17,54 +17,53 @@ wait 600
 click 1272 102
 wait 900
 
-# The wave topic, subscribed.
-click 244 49
-wait 1400
-click 700 133
-wait 700
-type /dummy/wave
-wait 700
-key Return
-wait 600
-click 1266 131
-wait 1200
-key ctrl+s
-wait 500
+# New dashboard, from the sidebar's Dashboards section.
+shot 00-sidebar
+click 261 835
+wait 1800
+shot 01-empty-dashboard
 
-# The counter topic, subscribed, in a second tab.
-click 244 49
-wait 1400
-click 700 133
+# Point the pane at a live topic.
+click 328 150
 wait 700
-type /dummy/counter
-wait 700
-key Return
-wait 600
-click 1266 131
-wait 1200
-key ctrl+s
-wait 500
-shot 01-two-tabs
-
-# Drag the second tab to the right edge, which splits the pane.
-# Held at the pane's right edge first: the dock works out which half it is
-# over as the pointer moves, and a drop that arrives in the same instant as
-# the pointer gives it nothing to work with.
-dragover 490 49 -> 1425 450
-wait 700
-shot 02-drop-target
-release
-wait 1500
-shot 02-split
-
-# Clicking the split-off request in the sidebar must reveal it where it now
-# lives, not add a second copy to the pane it was dragged out of.
-click 105 134
+click 330 178
+wait 900
+click 410 150
 wait 800
-shot 03-reveal-after-split
+click 402 233
+wait 1600
+# Plot rather than raw text: this pane is watching a sine wave.
+click 1418 150
+wait 1500
+shot 02-first-pane
 
-# The arrangement must survive a restart. Nothing is reconnected on launch, so
-# the panes come back empty of data — the layout is what is being checked.
+# A second pane, pointed at the camera. The tab strip has appeared by now, so
+# the pane's own controls sit a row lower than they did.
+click 1400 82
+wait 1200
+click 328 158
+wait 700
+click 330 186
+wait 900
+click 410 158
+wait 800
+click 402 269
+wait 1600
+click 1402 158
+wait 1500
+shot 03-two-panes
+
+# The point of a dashboard: drag a pane's tab to an edge and the view splits.
+dragover 453 117 -> 1350 500
+wait 800
+shot 04-drop-target
+release
+wait 2000
+shot 05-split
+
+# The arrangement is saved against the dashboard, so it survives a restart.
 restart
 wait 2500
-shot 04-restored
+click 105 858
+wait 3000
+shot 06-restored

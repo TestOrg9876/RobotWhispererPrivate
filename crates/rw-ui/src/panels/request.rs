@@ -13,7 +13,6 @@ use gpui::{
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window,
     deferred, div, px,
 };
-use gpui_component::chart::LineChart;
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
@@ -32,13 +31,12 @@ use crate::cloud;
 use crate::discovery::{self, Suggestion};
 use crate::docking::Home;
 use crate::form::{self, Field};
-use crate::image;
 use crate::runs::{RunState, Runs};
-use crate::scene_view::{self, SceneView};
-use crate::series::{History, Series};
+use crate::scene_view::SceneView;
+use crate::series::History;
 use crate::session::{RobotWhisperer, Sessions};
 use crate::tokens;
-use crate::value;
+use crate::views::{self, View};
 use crate::workspace::Workspace;
 
 /// Written by the subscription callback, read while rendering. `Arc<Mutex<_>>`
@@ -81,33 +79,6 @@ impl Problem {
 }
 
 /// Which response view is showing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ResponseTab {
-    Raw,
-    Visualize,
-    Plot,
-}
-
-impl ResponseTab {
-    const ALL: [Self; 3] = [Self::Raw, Self::Visualize, Self::Plot];
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Raw => "Raw",
-            Self::Visualize => "Visualize",
-            Self::Plot => "Plot",
-        }
-    }
-
-    /// Position in [`Self::ALL`], which is what `TabBar` selects by.
-    fn index(self) -> usize {
-        Self::ALL
-            .iter()
-            .position(|tab| *tab == self)
-            .expect("every variant is listed in ALL")
-    }
-}
-
 /// Change the request's kind. Carries the discriminant so one action serves the
 /// whole menu.
 #[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
@@ -198,7 +169,7 @@ pub struct RequestPanel {
     activity: Activity,
     /// Shared, so the sidebar can show what this request is doing.
     runs: Entity<Runs>,
-    tab: ResponseTab,
+    tab: View,
     problem: Option<Problem>,
     /// The 3D pane, built the first time a message turns out to be a point
     /// cloud: most requests never need a GPU and should not open one.
@@ -289,7 +260,7 @@ impl RequestPanel {
             incoming: Arc::new(Mutex::new(Incoming::default())),
             activity: Activity::default(),
             runs,
-            tab: ResponseTab::Raw,
+            tab: View::Raw,
             problem: None,
             scene: None,
             scene_at: 0,
@@ -1186,7 +1157,15 @@ impl RequestPanel {
     }
     /// The schema-driven form: a message to publish, a service's request, or an
     /// action's goal.
-    fn payload(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn payload(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // Nothing to fill in, nothing to show. A card saying "this takes no
+        // arguments" is a paragraph of chrome explaining an empty box, and it
+        // pushes the response — the part anyone is here for — down the pane.
+        // `std_srvs/Trigger` and a great many topics take nothing at all.
+        if self.payload.is_empty() {
+            return None;
+        }
+
         let title = match self.draft.kind {
             RequestKind::Topic => "Message",
             RequestKind::Service => "Request",
@@ -1194,47 +1173,31 @@ impl RequestPanel {
         };
         let schema = self.payload_schema.clone();
 
-        let body = if self.payload.is_empty() {
-            tokens::card_body()
+        Some(
+            tokens::card(cx)
+                .flex_shrink_0()
                 .child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(match &schema {
-                            // A schema with no fields is a real thing —
-                            // `std_srvs/Trigger` takes nothing — and saying so
-                            // is better than an empty box.
-                            Some(_) => "This one takes no arguments.",
-                            None => "Pick a target to see what it takes.",
+                    tokens::card_header(cx)
+                        .child(tokens::section_label(title, cx))
+                        .when_some(schema, |header, schema| {
+                            header.child(tokens::meta("Schema", schema, cx))
                         }),
                 )
-                .into_any_element()
-        } else {
-            v_flex()
-                .id("payload-form")
-                .max_h(px(280.))
-                .overflow_y_scroll()
-                .p_3()
-                .gap_2()
-                .children(
-                    self.payload
-                        .iter()
-                        .map(|(field, input)| self.row(field, input, cx)),
+                .child(
+                    v_flex()
+                        .id("payload-form")
+                        .max_h(px(280.))
+                        .overflow_y_scroll()
+                        .p_3()
+                        .gap_2()
+                        .children(
+                            self.payload
+                                .iter()
+                                .map(|(field, input)| self.row(field, input, cx)),
+                        ),
                 )
-                .into_any_element()
-        };
-
-        tokens::card(cx)
-            .flex_shrink_0()
-            .child(
-                tokens::card_header(cx)
-                    .child(tokens::section_label(title, cx))
-                    .when_some(schema, |header, schema| {
-                        header.child(tokens::meta("Schema", schema, cx))
-                    }),
-            )
-            .child(body)
-            .into_any_element()
+                .into_any_element(),
+        )
     }
 
     /// One leaf of the form: its name, its type, and its editor.
@@ -1326,7 +1289,7 @@ impl RequestPanel {
     /// a context that can create an entity and because a pane nobody is looking
     /// at should not be uploading megabytes.
     fn sync_scene(&mut self, cx: &mut Context<Self>) {
-        if self.tab != ResponseTab::Visualize {
+        if self.tab != View::Visualize {
             return;
         }
         let (value, count) = {
@@ -1352,192 +1315,6 @@ impl RequestPanel {
         scene.update(cx, |scene, cx| scene.show(cloud.into(), cx));
     }
 
-    /// The message as something readable.
-    ///
-    /// An image is shown as an image; anything else becomes a flat table of
-    /// leaf paths and values, which beats indented JSON for the thing people
-    /// actually do here — finding one field in a large message.
-    fn visualize(&self, value: &CanonicalValue, cx: &mut Context<Self>) -> AnyElement {
-        if let Some(image) = image::decode(value) {
-            return self.image(image, cx);
-        }
-
-        if let Some(scene) = self.scene.clone()
-            && scene.read(cx).point_count() > 0
-        {
-            return v_flex()
-                .size_full()
-                .min_h_0()
-                .gap_2()
-                .child(scene_view::controls(&scene, cx))
-                .child(div().flex_1().min_h_0().child(scene))
-                .into_any_element();
-        }
-
-        let leaves = value::leaves(value);
-        if leaves.is_empty() {
-            return tokens::empty_state(
-                IconName::Inbox,
-                "Nothing to show",
-                "This message has no fields.",
-                cx,
-            )
-            .into_any_element();
-        }
-
-        v_flex()
-            .id("fields")
-            .size_full()
-            .gap_0p5()
-            .children(leaves.into_iter().map(|(path, shown)| {
-                h_flex()
-                    .w_full()
-                    .py_0p5()
-                    .gap_4()
-                    .items_baseline()
-                    .child(
-                        tokens::mono(cx)
-                            .w(px(240.))
-                            .flex_shrink_0()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .truncate()
-                            .child(path),
-                    )
-                    .child(
-                        tokens::mono(cx)
-                            .flex_1()
-                            .min_w_0()
-                            .text_xs()
-                            .text_color(cx.theme().foreground)
-                            .child(shown),
-                    )
-            }))
-            .into_any_element()
-    }
-
-    fn image(&self, image: image::Frame, cx: &App) -> AnyElement {
-        v_flex()
-            .size_full()
-            .gap_2()
-            .items_center()
-            .child(
-                gpui::img(image.source)
-                    .max_w_full()
-                    .max_h(px(420.))
-                    .rounded(cx.theme().radius),
-            )
-            .child(
-                tokens::mono(cx)
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(image.caption),
-            )
-            .into_any_element()
-    }
-
-    /// One line per numeric field, newest sample at the right.
-    ///
-    /// The x axis is the sample index rather than a wall clock: messages arrive
-    /// when the robot sends them, and pretending otherwise would draw a smooth
-    /// line over a gap where nothing came.
-    fn plot(&self, history: &History, cx: &App) -> AnyElement {
-        if history.is_empty() {
-            return tokens::empty_state(
-                IconName::ChartPie,
-                "Nothing to plot",
-                "This message has no numbers in it, or none that fit on a line chart.",
-                cx,
-            )
-            .into_any_element();
-        }
-
-        let palette = tokens::series_colors(cx);
-        let charts = history
-            .iter()
-            .enumerate()
-            .map(|(index, (path, series))| self.series_row(index, path, series, &palette, cx));
-
-        v_flex()
-            .id("plot")
-            .size_full()
-            .gap_3()
-            .children(charts)
-            .into_any_element()
-    }
-
-    fn series_row(
-        &self,
-        index: usize,
-        path: &str,
-        series: &Series,
-        palette: &[gpui::Hsla],
-        cx: &App,
-    ) -> AnyElement {
-        let stroke = palette[index % palette.len()];
-        let caption = match (series.last(), series.range()) {
-            (Some(last), Some((low, high))) => {
-                format!("{last:.4}  ·  {low:.4} to {high:.4}")
-            }
-            _ => String::new(),
-        };
-
-        // The x value is the sample's position in the window, as a string
-        // because that is what the chart's point scale keys on. It has to be
-        // distinct per sample — give them all the same label and every point
-        // lands on the same x, which draws the series as a single vertical
-        // stroke. The axis itself is off, so the numbers are never shown.
-        let points: Vec<(SharedString, f64)> = series
-            .samples
-            .iter()
-            .enumerate()
-            .map(|(index, sample)| (SharedString::from(index.to_string()), *sample))
-            .collect();
-
-        v_flex()
-            .flex_shrink_0()
-            .gap_1()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_baseline()
-                    .justify_between()
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(tokens::status_dot(stroke))
-                            .child(
-                                tokens::mono(cx)
-                                    .text_xs()
-                                    .text_color(cx.theme().foreground)
-                                    .child(if path.is_empty() {
-                                        SharedString::from("value")
-                                    } else {
-                                        SharedString::from(path.to_string())
-                                    }),
-                            ),
-                    )
-                    .child(
-                        tokens::mono(cx)
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(caption),
-                    ),
-            )
-            .child(
-                div().h(px(96.)).w_full().child(
-                    LineChart::new(points)
-                        .x(|(label, _): &(SharedString, f64)| label.clone())
-                        .y(|(_, sample): &(SharedString, f64)| *sample)
-                        .stroke(stroke)
-                        .linear()
-                        .x_axis(false),
-                ),
-            )
-            .into_any_element()
-    }
-
     fn response(&self, cx: &mut Context<Self>) -> AnyElement {
         let active = self.tab;
         let running = self.running();
@@ -1556,9 +1333,9 @@ impl RequestPanel {
         let tabs = TabBar::new("response-views")
             .segmented()
             .selected_index(active.index())
-            .children(ResponseTab::ALL.map(|tab| Tab::new().label(tab.label())))
+            .children(View::ALL.map(|tab| Tab::new().label(tab.label())))
             .on_click(cx.listener(|this, index: &usize, _, cx| {
-                if let Some(tab) = ResponseTab::ALL.get(*index) {
+                if let Some(tab) = View::ALL.get(*index) {
                     this.tab = *tab;
                     cx.notify();
                 }
@@ -1573,13 +1350,9 @@ impl RequestPanel {
             });
 
         let body = match (&value, active) {
-            (Some(value), ResponseTab::Raw) => tokens::mono(cx)
-                .text_xs()
-                .text_color(cx.theme().foreground)
-                .child(value::preview(value))
-                .into_any_element(),
-            (Some(_), ResponseTab::Plot) => self.plot(&history, cx),
-            (Some(value), ResponseTab::Visualize) => self.visualize(value, cx),
+            (Some(value), View::Raw) => views::raw(value, cx),
+            (Some(_), View::Plot) => views::plot(&history, cx),
+            (Some(value), View::Visualize) => views::visualize(value, self.scene.as_ref(), cx),
             (None, _) => tokens::empty_state(
                 IconName::Inbox,
                 if running {
@@ -1671,8 +1444,9 @@ impl Render for RequestPanel {
         let header = self.header(cx);
         let bar = self.request_bar(cx);
         // Shown for topics too: a topic request that can only be watched is half
-        // a request, and the message you publish is the same form.
-        let payload = Some(self.payload(cx));
+        // a request, and the message you publish is the same form. Absent
+        // entirely when the message has no fields to fill in.
+        let payload = self.payload(cx);
         let response = self.response(cx);
         let problem = self.problem(cx);
 
@@ -1757,7 +1531,7 @@ mod tests {
 
     #[test]
     fn response_tabs_have_distinct_labels() {
-        let labels: Vec<_> = ResponseTab::ALL.iter().map(|tab| tab.label()).collect();
+        let labels: Vec<_> = View::ALL.iter().map(|tab| tab.label()).collect();
         assert_eq!(labels, ["Raw", "Visualize", "Plot"]);
     }
 }

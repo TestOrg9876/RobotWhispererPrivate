@@ -22,6 +22,8 @@ actions!(
         ToggleSidebar,
         /// Show or hide the console.
         ToggleConsole,
+        /// Create a dashboard and open it.
+        NewDashboard,
         /// Open the robot viewer.
         ShowRobot,
         /// Start capturing every subscribed topic, or stop and keep what was
@@ -47,6 +49,16 @@ actions!(
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
 #[action(namespace = robot_whisperer, no_json)]
 pub struct SetTheme(pub SharedString);
+
+/// Point a dashboard pane at a connection. One action serves the whole menu.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
+pub struct SetPaneConnection(pub i64);
+
+/// Point a dashboard pane at a topic.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
+pub struct SetPaneTopic(pub SharedString);
 
 /// Open the transport for a stored connection.
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]

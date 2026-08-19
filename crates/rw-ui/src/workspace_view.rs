@@ -28,15 +28,16 @@ use gpui_component::{
 
 use crate::actions::{
     CommandPalette, Connect, Disconnect, ExportWorkspace, ImportWorkspace, ManageConnections,
-    NewRequest, OpenRecording, OpenSettings, ReplayRecording, SaveRecording, ShowRobot,
-    ToggleConsole, ToggleRecording, ToggleSidebar,
+    NewDashboard, NewRequest, OpenRecording, OpenSettings, ReplayRecording, SaveRecording,
+    ShowRobot, ToggleConsole, ToggleRecording, ToggleSidebar,
 };
 use crate::docking::{self, Restored};
 use crate::layout;
 use crate::palette::{Choice, Entry};
 use crate::panels::{
-    CollectionsEvent, CollectionsPanel, ConnectionsPanel, ConsolePanel, PaletteEvent, PaletteView,
-    RequestPanel, RobotPanel, SettingsEvent, SettingsView, WelcomeEvent, WelcomePanel,
+    CollectionsEvent, CollectionsPanel, ConnectionsPanel, ConsolePanel, DashboardPanel,
+    PaletteEvent, PaletteView, RequestPanel, RobotPanel, SettingsEvent, SettingsView, WelcomeEvent,
+    WelcomePanel,
 };
 use crate::prefs::Prefs;
 use crate::session::{Notice, RobotWhisperer, Sessions, Status};
@@ -46,7 +47,7 @@ use crate::workspace::Workspace;
 
 /// Bumped when the default dock arrangement changes, so stale saved layouts get
 /// rebuilt rather than loaded into a shape that no longer exists.
-const LAYOUT_VERSION: usize = 4;
+const LAYOUT_VERSION: usize = 5;
 
 pub struct WorkspaceView {
     /// Held so the shell is always somewhere in the focus chain.
@@ -75,6 +76,8 @@ pub struct WorkspaceView {
     _welcome: Option<Subscription>,
     /// The robot viewer, if it has been opened.
     robot: Option<Entity<RobotPanel>>,
+    /// Dashboards currently open, by id.
+    dashboards: HashMap<i64, Entity<DashboardPanel>>,
     prefs: Prefs,
     _subscriptions: Vec<Subscription>,
 }
@@ -93,17 +96,14 @@ impl WorkspaceView {
         let left = DockItem::tab(collections.clone(), &weak, window, cx);
         let bottom = DockItem::tab(console.clone(), &weak, window, cx);
         let welcome = WelcomePanel::view(cx);
-        // Wrapped in a split, not handed to `set_center` bare. A `TabPanel`
-        // with no parent `StackPanel` reports itself locked, and a locked tab
-        // strip is neither draggable nor droppable — so dragging a tab to a
-        // pane edge to split the view would do nothing at all.
-        let centre = DockItem::v_split(
-            vec![DockItem::tabs(
-                vec![Arc::new(welcome.clone()) as Arc<dyn PanelView>],
-                &weak,
-                window,
-                cx,
-            )],
+        // Deliberately handed to `set_center` bare rather than wrapped in a
+        // split. A `TabPanel` with no parent `StackPanel` reports itself
+        // locked, and a locked tab strip cannot be dragged apart — which is
+        // exactly right here: request editors are tabs, not a canvas. Composing
+        // a custom arrangement of live views is what a dashboard is for, and a
+        // dashboard has a dock of its own.
+        let centre = DockItem::tabs(
+            vec![Arc::new(welcome.clone()) as Arc<dyn PanelView>],
             &weak,
             window,
             cx,
@@ -146,6 +146,7 @@ impl WorkspaceView {
             connections: None,
             welcome: Some(welcome.clone()),
             robot: None,
+            dashboards: HashMap::new(),
             prefs,
             _welcome: Some(cx.subscribe_in(&welcome, window, Self::on_welcome_event)),
             _subscriptions: subscriptions,
@@ -187,7 +188,7 @@ impl WorkspaceView {
         cx.set_global(Restored::default());
         let state = DockAreaState {
             version: Some(LAYOUT_VERSION),
-            center: layout::rooted(centre),
+            center: layout::flatten(centre),
             // The sidebar and console are chrome this shell just built. Leaving
             // them out means `load` keeps them rather than rebuilding panels
             // nothing is subscribed to.
@@ -404,7 +405,77 @@ impl WorkspaceView {
                     .update(cx, |workspace, cx| workspace.delete_request(*id, cx))
                     .detach();
             }
+            CollectionsEvent::OpenDashboard(id) => self.open_dashboard(*id, window, cx),
+            CollectionsEvent::NewDashboard => self.new_dashboard(window, cx),
+            CollectionsEvent::DeleteDashboard(id) => {
+                self.close_dashboard(*id, window, cx);
+                self.workspace
+                    .update(cx, |workspace, cx| workspace.delete_dashboard(*id, cx))
+                    .detach();
+            }
         }
+    }
+
+    // ── dashboards ─────────────────────────────────────────────────────────────
+
+    /// Opens a dashboard, or brings it forward if it is already open.
+    fn open_dashboard(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(existing) = self.dashboards.get(&id).cloned() {
+            let home = existing.read(cx).home();
+            let panel = Arc::new(existing) as Arc<dyn PanelView>;
+            if !docking::reveal(home, panel.clone(), window, cx) {
+                self.dock.update(cx, |dock, cx| {
+                    dock.add_panel(panel, DockPlacement::Center, None, window, cx)
+                });
+            }
+            return;
+        }
+        let Some(dashboard) = self.workspace.read(cx).dashboard(id).cloned() else {
+            return;
+        };
+        let panel = DashboardPanel::view(&dashboard, window, cx);
+        self.dashboards.insert(id, panel.clone());
+        self.dock.update(cx, |dock, cx| {
+            dock.add_panel(
+                Arc::new(panel) as Arc<dyn PanelView>,
+                DockPlacement::Center,
+                None,
+                window,
+                cx,
+            )
+        });
+        self.dismiss_welcome(window, cx);
+        cx.notify();
+    }
+
+    fn new_dashboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let created = self
+            .workspace
+            .update(cx, |workspace, cx| workspace.create_dashboard(cx));
+        cx.spawn_in(window, async move |view, cx| {
+            let Some(dashboard) = created.await else {
+                return;
+            };
+            view.update_in(cx, |view, window, cx| {
+                view.open_dashboard(dashboard.id, window, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn close_dashboard(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(panel) = self.dashboards.remove(&id) else {
+            return;
+        };
+        let home = panel.read(cx).home();
+        let panel = Arc::new(panel) as Arc<dyn PanelView>;
+        if !docking::close(home, panel.clone(), window, cx) {
+            self.dock.update(cx, |dock, cx| {
+                dock.remove_panel(panel, DockPlacement::Center, window, cx)
+            });
+        }
+        cx.notify();
     }
 
     // ── connections ────────────────────────────────────────────────────────────
@@ -441,6 +512,7 @@ impl WorkspaceView {
                     .menu("Manage connections…", Box::new(ManageConnections))
                     .separator()
                     .menu("Toggle request list", Box::new(ToggleSidebar))
+                    .menu("New dashboard", Box::new(NewDashboard))
                     .menu("Robot viewer", Box::new(ShowRobot))
                     .menu("Start or stop recording", Box::new(ToggleRecording))
                     .menu("Replay last recording", Box::new(ReplayRecording))
@@ -545,6 +617,7 @@ impl WorkspaceView {
                 "Toggle console",
                 Choice::Command("ToggleConsole"),
             ),
+            Entry::new("Command", "New dashboard", Choice::Command("NewDashboard")),
             Entry::new("Command", "Robot viewer", Choice::Command("ShowRobot")),
             Entry::new(
                 "Command",
@@ -574,6 +647,14 @@ impl WorkspaceView {
                 .detail(request.target.clone())
         }));
 
+        entries.extend(workspace.dashboards().iter().map(|dashboard| {
+            Entry::new(
+                "Dashboard",
+                dashboard.name.clone(),
+                Choice::Dashboard(dashboard.id),
+            )
+        }));
+
         let sessions = self.sessions.read(cx);
         entries.extend(workspace.connections().iter().map(|connection| {
             let connected = sessions.status(connection.id).is_connected();
@@ -601,7 +682,9 @@ impl WorkspaceView {
             Choice::Command("OpenSettings") => self.open_settings(window, cx),
             Choice::Command("ToggleSidebar") => self.on_toggle_sidebar(&ToggleSidebar, window, cx),
             Choice::Command("ToggleConsole") => self.on_toggle_console(&ToggleConsole, window, cx),
+            Choice::Command("NewDashboard") => self.new_dashboard(window, cx),
             Choice::Command("ShowRobot") => self.open_robot(window, cx),
+            Choice::Dashboard(id) => self.open_dashboard(id, window, cx),
             Choice::Command("ToggleRecording") => self.toggle_recording(cx),
             Choice::Command("ReplayRecording") => self.replay_recording(cx),
             Choice::Command("SaveRecording") => self.save_recording(cx),
@@ -891,7 +974,9 @@ impl WorkspaceView {
                 let workspace = view.workspace.read(cx);
                 let connections = workspace.connections().to_vec();
                 let collections = workspace.collections().to_vec();
-                let plan = rw_core::portable::plan(&document, &connections, &collections);
+                let dashboards = workspace.dashboards().to_vec();
+                let plan =
+                    rw_core::portable::plan(&document, &connections, &collections, &dashboards);
                 let summary = plan.summary();
                 if plan.is_empty() {
                     return view.say(summary, cx);
@@ -993,6 +1078,10 @@ impl WorkspaceView {
             dock.toggle_dock(DockPlacement::Bottom, window, cx)
         });
         cx.notify();
+    }
+
+    fn on_new_dashboard(&mut self, _: &NewDashboard, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_dashboard(window, cx);
     }
 
     fn on_show_robot(&mut self, _: &ShowRobot, window: &mut Window, cx: &mut Context<Self>) {
@@ -1209,6 +1298,7 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(Self::on_disconnect))
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_toggle_console))
+            .on_action(cx.listener(Self::on_new_dashboard))
             .on_action(cx.listener(Self::on_show_robot))
             .on_action(cx.listener(Self::on_toggle_recording))
             .on_action(cx.listener(Self::on_replay_recording))

@@ -1,6 +1,7 @@
 pub type RequestId = i64;
 pub type CollectionId = i64;
 pub type ConnectionId = i64;
+pub type DashboardId = i64;
 
 pub type SessionId = String;
 pub type SubscriptionHandle = String;

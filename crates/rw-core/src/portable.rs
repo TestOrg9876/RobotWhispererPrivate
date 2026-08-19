@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{
-    Collection, Connection, Request, RequestKind, SchemaRef, TransportConfig, Value,
+    Collection, Connection, Dashboard, Request, RequestKind, SchemaRef, TransportConfig, Value,
 };
 use crate::{CoreError, CoreResult};
 
@@ -31,6 +31,19 @@ pub struct Document {
     pub collections: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requests: Vec<PortableRequest>,
+    /// Dashboards, with their arrangement as the dock wrote it. A pane inside
+    /// names its connection by id, which means nothing on another machine —
+    /// the panes come back pointing at nothing until they are re-targeted, and
+    /// that is better than losing the arrangement itself.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dashboards: Vec<PortableDashboard>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PortableDashboard {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -88,6 +101,7 @@ pub fn export(
     connections: &[Connection],
     collections: &[Collection],
     requests: &[Request],
+    dashboards: &[Dashboard],
 ) -> Document {
     let name_of = |id| {
         connections
@@ -130,6 +144,13 @@ pub fn export(
                 input: request.input.clone(),
             })
             .collect(),
+        dashboards: dashboards
+            .iter()
+            .map(|dashboard| PortableDashboard {
+                name: dashboard.name.clone(),
+                layout: dashboard.layout.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -144,6 +165,7 @@ impl Default for Document {
             connections: Vec::new(),
             collections: Vec::new(),
             requests: Vec::new(),
+            dashboards: Vec::new(),
         }
     }
 }
@@ -186,6 +208,8 @@ pub struct Plan {
     /// Collection paths the workspace does not have, parents before children so
     /// they can be created in order.
     pub new_collections: Vec<String>,
+    /// Dashboards in the document the workspace does not already have by name.
+    pub new_dashboards: Vec<PortableDashboard>,
 }
 
 impl Plan {
@@ -193,6 +217,7 @@ impl Plan {
         self.new_connections.is_empty()
             && self.new_requests.is_empty()
             && self.new_collections.is_empty()
+            && self.new_dashboards.is_empty()
     }
 
     /// A one-line summary, for a confirmation.
@@ -206,6 +231,9 @@ impl Plan {
         }
         if !self.new_requests.is_empty() {
             parts.push(plural(self.new_requests.len(), "request"));
+        }
+        if !self.new_dashboards.is_empty() {
+            parts.push(plural(self.new_dashboards.len(), "dashboard"));
         }
         if parts.is_empty() {
             return "Nothing new to import.".to_string();
@@ -250,7 +278,12 @@ fn plural(count: usize, noun: &str) -> String {
 /// Requests are always added rather than matched by name: two requests can
 /// legitimately share a name, and an import that silently replaced one would
 /// lose work that was never offered up.
-pub fn plan(document: &Document, connections: &[Connection], collections: &[Collection]) -> Plan {
+pub fn plan(
+    document: &Document,
+    connections: &[Connection],
+    collections: &[Collection],
+    dashboards: &[Dashboard],
+) -> Plan {
     let mut plan = Plan::default();
 
     // Every collection mentioned anywhere, including the ancestors of a path
@@ -301,6 +334,14 @@ pub fn plan(document: &Document, connections: &[Connection], collections: &[Coll
                 .map(|existing| existing.id)
         });
         plan.new_requests.push((request.clone(), id));
+    }
+
+    // Matched by name, like connections: importing the same file twice should
+    // not leave two copies of every dashboard.
+    for dashboard in &document.dashboards {
+        if !dashboards.iter().any(|here| here.name == dashboard.name) {
+            plan.new_dashboards.push(dashboard.clone());
+        }
     }
 
     plan
@@ -358,13 +399,14 @@ mod tests {
             &[connection(7, "Robot")],
             &[],
             &[request(1, "Chatter", Some(7))],
+            &[],
         );
         assert_eq!(document.requests[0].connection.as_deref(), Some("Robot"));
     }
 
     #[test]
     fn a_request_pointing_at_nothing_exports_as_pointing_at_nothing() {
-        let document = export(&[], &[], &[request(1, "Chatter", None)]);
+        let document = export(&[], &[], &[request(1, "Chatter", None)], &[]);
         assert_eq!(document.requests[0].connection, None);
     }
 
@@ -376,6 +418,7 @@ mod tests {
             &[connection(7, "Robot")],
             &[],
             &[request(1, "Chatter", Some(99))],
+            &[],
         );
         assert_eq!(document.requests[0].connection, None);
     }
@@ -386,8 +429,9 @@ mod tests {
             &[connection(7, "Robot")],
             &[],
             &[request(1, "Chatter", Some(7))],
+            &[],
         );
-        let plan = plan(&document, &[], &[]);
+        let plan = plan(&document, &[], &[], &[]);
 
         assert_eq!(plan.new_connections.len(), 1);
         assert_eq!(plan.new_requests.len(), 1);
@@ -401,8 +445,8 @@ mod tests {
     fn a_connection_that_is_already_here_is_left_alone() {
         // The local one may point at a different robot under the same name, and
         // silently overwriting a URL somebody is using is worse than skipping.
-        let document = export(&[connection(7, "Robot")], &[], &[]);
-        let plan = plan(&document, &[connection(1, "Robot")], &[]);
+        let document = export(&[connection(7, "Robot")], &[], &[], &[]);
+        let plan = plan(&document, &[connection(1, "Robot")], &[], &[]);
 
         assert!(plan.new_connections.is_empty());
         assert_eq!(plan.existing_connections, ["Robot"]);
@@ -414,8 +458,9 @@ mod tests {
             &[connection(7, "Robot")],
             &[],
             &[request(1, "Chatter", Some(7))],
+            &[],
         );
-        let plan = plan(&document, &[connection(42, "Robot")], &[]);
+        let plan = plan(&document, &[connection(42, "Robot")], &[], &[]);
         assert_eq!(plan.new_requests[0].1, Some(42));
     }
 
@@ -423,8 +468,8 @@ mod tests {
     fn requests_are_added_rather_than_matched_by_name() {
         // Two requests can legitimately share a name, and an import that
         // replaced one would lose work nobody offered up.
-        let document = export(&[], &[], &[request(1, "Chatter", None)]);
-        let plan = plan(&document, &[], &[]);
+        let document = export(&[], &[], &[request(1, "Chatter", None)], &[]);
+        let plan = plan(&document, &[], &[], &[]);
         assert_eq!(plan.new_requests.len(), 1);
     }
 
@@ -434,18 +479,69 @@ mod tests {
             &[connection(7, "Robot")],
             &[],
             &[request(1, "A", Some(7)), request(2, "B", Some(7))],
+            &[],
         );
         assert_eq!(
-            plan(&document, &[], &[]).summary(),
+            plan(&document, &[], &[], &[]).summary(),
             "Import 1 connection and 2 requests."
         );
         assert_eq!(
-            plan(&document, &[connection(1, "Robot")], &[]).summary(),
+            plan(&document, &[connection(1, "Robot")], &[], &[]).summary(),
             "Import 2 requests, keeping 1 connection already here."
         );
         assert_eq!(
-            plan(&Document::default(), &[], &[]).summary(),
+            plan(&Document::default(), &[], &[], &[]).summary(),
             "Nothing new to import."
+        );
+    }
+
+    fn dashboard(id: i64, name: &str) -> Dashboard {
+        Dashboard {
+            id,
+            name: name.into(),
+            layout: Some(format!("{{\"panel_name\":\"TabPanel\",\"of\":{id}}}")),
+            created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            updated_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+        }
+    }
+
+    #[test]
+    fn a_dashboard_travels_with_its_arrangement() {
+        let document = export(&[], &[], &[], &[dashboard(1, "Arm")]);
+        assert_eq!(document.dashboards.len(), 1);
+        assert_eq!(document.dashboards[0].name, "Arm");
+        assert!(document.dashboards[0].layout.is_some());
+
+        let back = from_json(&to_json(&document).expect("written")).expect("read");
+        assert_eq!(back.dashboards, document.dashboards);
+    }
+
+    #[test]
+    fn importing_the_same_dashboard_twice_does_not_duplicate_it() {
+        let document = export(&[], &[], &[], &[dashboard(1, "Arm")]);
+        assert_eq!(plan(&document, &[], &[], &[]).new_dashboards.len(), 1);
+        assert!(
+            plan(&document, &[], &[], &[dashboard(9, "Arm")])
+                .new_dashboards
+                .is_empty(),
+            "a dashboard of that name is already here"
+        );
+    }
+
+    #[test]
+    fn a_document_with_only_a_dashboard_is_still_worth_importing() {
+        let document = export(&[], &[], &[], &[dashboard(1, "Arm")]);
+        let plan = plan(&document, &[], &[], &[]);
+        assert!(!plan.is_empty());
+        assert_eq!(plan.summary(), "Import 1 dashboard.");
+    }
+
+    #[test]
+    fn a_workspace_with_no_dashboards_writes_none_rather_than_an_empty_list() {
+        let json = to_json(&export(&[], &[], &[], &[])).expect("written");
+        assert!(
+            !json.contains("dashboards"),
+            "an absent section should not appear at all:\n{json}"
         );
     }
 
@@ -457,12 +553,12 @@ mod tests {
             collection(10, "Robot", None),
             collection(11, "Arm", Some(10)),
         ];
-        let document = export(&[], &collections, &[request(1, "lift", None)]);
+        let document = export(&[], &collections, &[request(1, "lift", None)], &[]);
         assert_eq!(document.collections, ["Robot", "Robot/Arm"]);
 
         let mut inside = request(2, "grip", None);
         inside.collection_id = Some(11);
-        let document = export(&[], &collections, &[inside]);
+        let document = export(&[], &collections, &[inside], &[]);
         assert_eq!(
             document.requests[0].collection.as_deref(),
             Some("Robot/Arm")
@@ -472,9 +568,9 @@ mod tests {
     #[test]
     fn an_empty_collection_survives_the_trip() {
         // Somebody made it on purpose, and it is where the next request goes.
-        let document = export(&[], &[collection(10, "Arm", None)], &[]);
+        let document = export(&[], &[collection(10, "Arm", None)], &[], &[]);
         assert_eq!(document.collections, ["Arm"]);
-        assert_eq!(plan(&document, &[], &[]).new_collections, ["Arm"]);
+        assert_eq!(plan(&document, &[], &[], &[]).new_collections, ["Arm"]);
     }
 
     #[test]
@@ -486,7 +582,7 @@ mod tests {
         // Only the leaf is listed, so the ancestors have to be inferred — and
         // created in an order where each one's parent already exists.
         assert_eq!(
-            plan(&document, &[], &[]).new_collections,
+            plan(&document, &[], &[], &[]).new_collections,
             ["Robot", "Robot/Arm", "Robot/Arm/Wrist"]
         );
     }
@@ -498,14 +594,17 @@ mod tests {
             collections: vec!["Robot".into(), "Robot/Arm".into()],
             ..Document::default()
         };
-        assert_eq!(plan(&document, &[], &here).new_collections, ["Robot/Arm"]);
+        assert_eq!(
+            plan(&document, &[], &here, &[]).new_collections,
+            ["Robot/Arm"]
+        );
     }
 
     #[test]
     fn a_cycle_in_stored_collections_does_not_hang_the_export() {
         let collections = [collection(10, "A", Some(11)), collection(11, "B", Some(10))];
         // Unresolvable, so left out rather than looped over forever.
-        assert!(export(&[], &collections, &[]).collections.is_empty());
+        assert!(export(&[], &collections, &[], &[]).collections.is_empty());
     }
 
     #[test]
@@ -524,7 +623,7 @@ mod tests {
             ..Document::default()
         };
         assert_eq!(
-            plan(&document, &[], &[]).summary(),
+            plan(&document, &[], &[], &[]).summary(),
             "Import 1 collection and 1 request."
         );
     }
@@ -535,6 +634,7 @@ mod tests {
             &[connection(7, "Robot")],
             &[],
             &[request(1, "Chatter", Some(7)), request(2, "Other", None)],
+            &[],
         );
         let json = to_json(&document).expect("written");
         assert_eq!(from_json(&json).expect("read"), document);
@@ -544,7 +644,7 @@ mod tests {
     fn the_file_is_pretty_printed_and_ends_in_a_newline() {
         // These land in version control, where a one-line file makes every
         // change look like every other change.
-        let json = to_json(&export(&[connection(7, "Robot")], &[], &[])).expect("written");
+        let json = to_json(&export(&[connection(7, "Robot")], &[], &[], &[])).expect("written");
         assert!(json.contains('\n'));
         assert!(json.ends_with('\n'));
     }
@@ -576,7 +676,7 @@ mod tests {
         // A file full of `"input": null` is noise in a diff.
         let mut only = request(1, "Chatter", None);
         only.input = Value::Struct(BTreeMap::new());
-        let json = to_json(&export(&[], &[], &[only])).expect("written");
+        let json = to_json(&export(&[], &[], &[only], &[])).expect("written");
         assert!(!json.contains("input"), "{json}");
     }
 
@@ -584,7 +684,7 @@ mod tests {
     fn a_payload_that_was_filled_in_survives() {
         let mut filled = request(1, "Add", None);
         filled.input = Value::Struct(BTreeMap::from([("a".into(), Value::Int(2))]));
-        let document = export(&[], &[], &[filled]);
+        let document = export(&[], &[], &[filled], &[]);
         let read = from_json(&to_json(&document).expect("written")).expect("read");
         assert_eq!(read.requests[0].input, document.requests[0].input);
     }

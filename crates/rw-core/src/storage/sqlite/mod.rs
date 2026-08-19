@@ -5,11 +5,12 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection as SqliteConnection, OptionalExtension, Row};
 
 use crate::domain::{
-    Collection, Connection, Request, RequestKind, SchemaRef, TransportConfig, TransportKind, Value,
+    Collection, Connection, Dashboard, Request, RequestKind, SchemaRef, TransportConfig,
+    TransportKind, Value,
 };
-use crate::ids::{CollectionId, ConnectionId, RequestId};
+use crate::ids::{CollectionId, ConnectionId, DashboardId, RequestId};
 use crate::schema::SchemaDefinition;
-use crate::storage::{NewCollection, NewConnection, NewRequest, Storage};
+use crate::storage::{NewCollection, NewConnection, NewDashboard, NewRequest, Storage};
 use crate::util::Clock;
 use crate::{CoreError, CoreResult};
 
@@ -92,6 +93,23 @@ fn row_to_collection(row: &Row<'_>) -> rusqlite::Result<Collection> {
         created_at: from_rfc3339(&created_at).map_err(|err| {
             rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(err))
         })?,
+    })
+}
+
+fn row_to_dashboard(row: &Row<'_>) -> rusqlite::Result<Dashboard> {
+    let created_at: String = row.get("created_at")?;
+    let updated_at: String = row.get("updated_at")?;
+    let stamp = |raw: &str| {
+        from_rfc3339(raw).map_err(|err| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(err))
+        })
+    };
+    Ok(Dashboard {
+        id: row.get("id")?,
+        name: row.get("name")?,
+        layout: row.get("layout_json")?,
+        created_at: stamp(&created_at)?,
+        updated_at: stamp(&updated_at)?,
     })
 }
 
@@ -391,6 +409,70 @@ impl Storage for SqliteStorage {
         .await
     }
 
+    async fn list_dashboards(&self) -> CoreResult<Vec<Dashboard>> {
+        self.run(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT * FROM dashboards ORDER BY created_at, id")
+                .map_err(map_sqlite)?;
+            let mapped = stmt.query_map([], row_to_dashboard).map_err(map_sqlite)?;
+            let collected: rusqlite::Result<Vec<_>> = mapped.collect();
+            collected.map_err(map_sqlite)
+        })
+        .await
+    }
+
+    async fn create_dashboard(&self, draft: NewDashboard) -> CoreResult<Dashboard> {
+        let now = self.now();
+        self.run(move |conn| {
+            conn.execute(
+                "INSERT INTO dashboards (name, layout_json, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?3)",
+                params![draft.name, draft.layout, to_rfc3339(now)],
+            )
+            .map_err(map_sqlite)?;
+            let id = conn.last_insert_rowid();
+            conn.query_row(
+                "SELECT * FROM dashboards WHERE id = ?1",
+                params![id],
+                row_to_dashboard,
+            )
+            .map_err(map_sqlite)
+        })
+        .await
+    }
+
+    async fn update_dashboard(&self, dashboard: &Dashboard) -> CoreResult<()> {
+        let payload = dashboard.clone();
+        let now = self.now();
+        self.run(move |conn| {
+            let updated = conn
+                .execute(
+                    "UPDATE dashboards SET name = ?2, layout_json = ?3, updated_at = ?4 \
+                     WHERE id = ?1",
+                    params![payload.id, payload.name, payload.layout, to_rfc3339(now)],
+                )
+                .map_err(map_sqlite)?;
+            if updated == 0 {
+                return Err(CoreError::NotFound(format!("dashboard {}", payload.id)));
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    async fn delete_dashboard(&self, id: DashboardId) -> CoreResult<()> {
+        self.run(move |conn| {
+            let removed = conn
+                .execute("DELETE FROM dashboards WHERE id = ?1", params![id])
+                .map_err(map_sqlite)?;
+            if removed == 0 {
+                return Err(CoreError::NotFound(format!("dashboard {id}")));
+            }
+            Ok(())
+        })
+        .await
+    }
+
     async fn list_connections(&self) -> CoreResult<Vec<Connection>> {
         self.run(|conn| {
             let mut stmt = conn
@@ -555,6 +637,8 @@ impl Storage for SqliteStorage {
             tx.execute("DELETE FROM connections", [])
                 .map_err(map_sqlite)?;
             tx.execute("DELETE FROM schemas", []).map_err(map_sqlite)?;
+            tx.execute("DELETE FROM dashboards", [])
+                .map_err(map_sqlite)?;
             tx.commit().map_err(map_sqlite)?;
             Ok(())
         })

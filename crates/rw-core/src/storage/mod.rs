@@ -1,7 +1,8 @@
 use crate::domain::{
-    Collection, Connection, Request, RequestKind, SchemaRef, TransportConfig, Value, Visualization,
+    Collection, Connection, Dashboard, Request, RequestKind, SchemaRef, TransportConfig, Value,
+    Visualization,
 };
-use crate::ids::{CollectionId, ConnectionId, RequestId};
+use crate::ids::{CollectionId, ConnectionId, DashboardId, RequestId};
 use crate::schema::SchemaDefinition;
 use crate::CoreResult;
 use serde::{Deserialize, Serialize};
@@ -39,6 +40,12 @@ pub struct NewCollection {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewDashboard {
+    pub name: String,
+    pub layout: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewConnection {
     pub name: String,
     pub config: TransportConfig,
@@ -63,6 +70,11 @@ pub trait Storage: Send + Sync {
     async fn create_collection(&self, draft: NewCollection) -> CoreResult<Collection>;
     async fn update_collection(&self, collection: &Collection) -> CoreResult<()>;
     async fn delete_collection(&self, id: CollectionId) -> CoreResult<()>;
+
+    async fn list_dashboards(&self) -> CoreResult<Vec<Dashboard>>;
+    async fn create_dashboard(&self, draft: NewDashboard) -> CoreResult<Dashboard>;
+    async fn update_dashboard(&self, dashboard: &Dashboard) -> CoreResult<()>;
+    async fn delete_dashboard(&self, id: DashboardId) -> CoreResult<()>;
 
     async fn list_connections(&self) -> CoreResult<Vec<Connection>>;
     async fn get_connection(&self, id: ConnectionId) -> CoreResult<Option<Connection>>;
@@ -94,6 +106,11 @@ pub trait Storage {
     async fn create_collection(&self, draft: NewCollection) -> CoreResult<Collection>;
     async fn update_collection(&self, collection: &Collection) -> CoreResult<()>;
     async fn delete_collection(&self, id: CollectionId) -> CoreResult<()>;
+
+    async fn list_dashboards(&self) -> CoreResult<Vec<Dashboard>>;
+    async fn create_dashboard(&self, draft: NewDashboard) -> CoreResult<Dashboard>;
+    async fn update_dashboard(&self, dashboard: &Dashboard) -> CoreResult<()>;
+    async fn delete_dashboard(&self, id: DashboardId) -> CoreResult<()>;
 
     async fn list_connections(&self) -> CoreResult<Vec<Connection>>;
     async fn get_connection(&self, id: ConnectionId) -> CoreResult<Option<Connection>>;

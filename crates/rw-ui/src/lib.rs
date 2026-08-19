@@ -15,6 +15,7 @@ pub mod prefs;
 pub mod series;
 pub mod session;
 pub mod theme;
+pub mod tick;
 pub mod tokens;
 pub mod value;
 pub mod workspace;

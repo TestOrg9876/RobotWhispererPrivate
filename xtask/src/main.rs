@@ -92,6 +92,7 @@ fn build_web(args: Vec<String>) -> Result<()> {
 fn screenshot_web(args: Vec<String>) -> Result<()> {
     let mut out_dir = workspace_root().join("target/screenshots/web");
     let mut port = 3000;
+    let mut release = true;
     let mut names = Vec::new();
     let mut rest = args.into_iter();
 
@@ -107,6 +108,7 @@ fn screenshot_web(args: Vec<String>) -> Result<()> {
                     .parse()
                     .context("--port needs a number")?
             }
+            "--dev" => release = false,
             flag if flag.starts_with('-') => bail!("unknown option `{flag}`"),
             name => names.push(name.to_string()),
         }
@@ -123,7 +125,7 @@ fn screenshot_web(args: Vec<String>) -> Result<()> {
             scenario.steps.len(),
             scenario.shots().len()
         );
-        web::screenshot(&scenario, &out_dir, port)?;
+        web::screenshot(&scenario, &out_dir, port, release)?;
     }
     Ok(())
 }

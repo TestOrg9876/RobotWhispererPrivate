@@ -40,5 +40,15 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros", "time"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
+# GPUI's own timer stamps every timer with `Instant::now`, so waiting has to go
+# through the browser instead. See `tick.rs`.
+gloo-timers = { version = "0.3", features = ["futures"] }
+# Not used here — declared to turn on a feature that gpui-component's dependency
+# on it leaves off. `instant` falls back to `std::time::Instant` unless
+# `wasm-bindgen` is enabled, and on wasm32-unknown-unknown that panics with
+# "time not implemented on this platform". It sits under gpui-component's undo
+# manager and scrollbars, so without this the browser build dies the moment a
+# text field's value is set from code.
+instant = { version = "0.1", features = ["wasm-bindgen"] }
 web-sys = { version = "0.3", features = ["Window", "Storage"] }
 tokio = { workspace = true, features = ["sync", "macros"] }

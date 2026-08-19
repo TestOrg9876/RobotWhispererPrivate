@@ -758,9 +758,9 @@ impl RequestPanel {
     fn start_repaint(&mut self, cx: &mut Context<Self>) {
         self._repaint = Some(cx.spawn(async move |panel, cx| {
             loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(100))
-                    .await;
+                // Not `background_executor().timer`: that panics on wasm. See
+                // `crate::tick`.
+                crate::tick::sleep(std::time::Duration::from_millis(100), cx).await;
                 if panel.update(cx, |_, cx| cx.notify()).is_err() {
                     break;
                 }

@@ -223,8 +223,11 @@ const DRIVER: &str = "xtask/scripts/drive-web.mjs";
 /// than as a child process, so it cannot outlive a failed run and leave a port
 /// held — which is exactly the sort of thing that makes the *next* run fail for
 /// an unrelated reason.
-pub fn screenshot(scenario: &Scenario, out_dir: &Path, port: u16) -> Result<()> {
-    let dist = build(true)?;
+pub fn screenshot(scenario: &Scenario, out_dir: &Path, port: u16, release: bool) -> Result<()> {
+    // A release wasm inlines the frames above a panic away, which leaves a stack
+    // ending at `Instant::now` with no clue who called it. `--dev` trades a very
+    // large module for a stack that names the caller.
+    let dist = build(release)?;
     let listener = listen(port)?;
 
     let serving = dist.clone();

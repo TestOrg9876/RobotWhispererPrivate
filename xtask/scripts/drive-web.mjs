@@ -46,21 +46,84 @@ const browser = await chromium.launch({
 // native harness's window size. Scenario coordinates are written against it.
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
 
+// Chrome keeps ten stack frames by default, and a wasm panic spends all ten on
+// the panic machinery — so the frame that actually called the panicking function
+// is always the one cut off.
+await page.addInitScript(() => {
+  Error.stackTraceLimit = 200;
+});
+
 const failures = [];
 // Kept so a failed boot can show what the app was doing, not just that it
 // stopped: the app logs each stage of start-up.
 const log = [];
 const PANIC = /panicked at|RuntimeError|unreachable executed|called `Option::unwrap|called `Result::unwrap/i;
-page.on("pageerror", (error) => failures.push(`pageerror: ${error.message}`));
+// Which step is in flight, so a panic can be attributed to the interaction that
+// caused it. Without this, a panic is a wall of wasm frames with no clue which
+// click produced it — and the frames above the panic are inlined away.
+let current = "startup";
+page.on("pageerror", (error) =>
+  failures.push(`pageerror during ${current}: ${error.message}`),
+);
 page.on("console", (message) => {
   const text = message.text();
   log.push(`[${message.type()}] ${text}`);
   if (log.length > 60) log.shift();
-  if (PANIC.test(text)) failures.push(`console: ${text}`);
+  if (PANIC.test(text)) failures.push(`console during ${current}: ${text}`);
 });
 
 // What the page itself says when it fails to start. The host page writes the
 // reason into #loading, and without this a failed boot is just "no canvas".
+// Scenarios are written in xdotool's spelling, because that is what the native
+// harness runs. Playwright names several keys differently, and an unmapped one
+// is a hard error rather than a no-op — so every key a scenario can use has to
+// be translated here, not just the chord separators.
+const KEY_NAMES = {
+  return: "Enter",
+  kp_enter: "Enter",
+  down: "ArrowDown",
+  up: "ArrowUp",
+  left: "ArrowLeft",
+  right: "ArrowRight",
+  next: "PageDown",
+  prior: "PageUp",
+  bracketleft: "[",
+  bracketright: "]",
+  comma: ",",
+  period: ".",
+  minus: "-",
+  equal: "=",
+  slash: "/",
+};
+
+function playwrightKey(key) {
+  return key
+    .split("+")
+    .map((part) => {
+      const lower = part.toLowerCase();
+      if (lower === "ctrl") return "Control";
+      if (lower === "cmd" || lower === "super") return "Meta";
+      if (lower === "alt") return "Alt";
+      if (lower === "shift") return "Shift";
+      if (KEY_NAMES[lower]) return KEY_NAMES[lower];
+      // Single characters go through as typed; anything else is already a
+      // Playwright name (Escape, Tab, Home…) bar its capitalisation.
+      if (part.length === 1) return part;
+      return part[0].toUpperCase() + part.slice(1).toLowerCase();
+    })
+    .join("+");
+}
+
+/// A short description of a step, for attributing a panic to it.
+function describe(step) {
+  if (step.step === "click") return ` ${step.x},${step.y}`;
+  if (step.step === "type") return ` ${JSON.stringify(step.text)}`;
+  if (step.step === "key") return ` ${step.key}`;
+  if (step.step === "shot") return ` ${step.name}`;
+  if (step.step === "wait") return ` ${step.ms}ms`;
+  return "";
+}
+
 async function pageState() {
   try {
     const loading = await page.textContent("#loading", { timeout: 2000 });
@@ -79,6 +142,7 @@ try {
   await page.waitForTimeout(6000);
 
   for (const step of scenario.steps) {
+    current = `${step.step}${describe(step)}`;
     switch (step.step) {
       case "move":
         await page.mouse.move(step.x, step.y);
@@ -95,10 +159,7 @@ try {
         await page.waitForTimeout(250);
         break;
       case "key":
-        // xdotool spells chords `ctrl+s`; Playwright wants `Control+s`.
-        await page.keyboard.press(
-          step.key.replace(/\bctrl\b/i, "Control").replace(/\bcmd\b/i, "Meta"),
-        );
+        await page.keyboard.press(playwrightKey(step.key));
         await page.waitForTimeout(250);
         break;
       case "scroll":

@@ -70,4 +70,4 @@ debug = "line-tables-only"
 debug = false
 
 [profile.release]
-debug = false
+debug = "line-tables-only"

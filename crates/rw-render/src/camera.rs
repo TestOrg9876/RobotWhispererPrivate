@@ -7,6 +7,14 @@
 /// A 4×4 matrix in column-major order, which is what WGSL expects.
 pub type Mat4 = [[f32; 4]; 4];
 
+/// The transform that changes nothing, for a solid that needs no placing.
+pub const IDENTITY: Mat4 = [
+    [1., 0., 0., 0.],
+    [0., 1., 0., 0.],
+    [0., 0., 1., 0.],
+    [0., 0., 0., 1.],
+];
+
 /// A camera that looks at a point and orbits around it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Camera {

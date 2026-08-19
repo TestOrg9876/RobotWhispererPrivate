@@ -11,9 +11,14 @@
 
 mod camera;
 mod scene;
+mod solid;
 
-pub use camera::{Camera, Mat4};
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+pub use camera::{Camera, IDENTITY, Mat4};
 pub use scene::{Coloring, Grid, Points, Scene};
+pub use solid::{MeshVertex, Solid};
 
 /// One rendered image, in RGBA order, tightly packed.
 pub struct Frame {
@@ -36,8 +41,12 @@ pub struct Renderer {
     queue: wgpu::Queue,
     points: wgpu::RenderPipeline,
     lines: wgpu::RenderPipeline,
+    solids: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    /// Geometry already on the GPU, by the key its owner gave it. A robot's
+    /// meshes are megabytes and never change; only the matrices placing them do.
+    uploaded: Mutex<HashMap<u64, (wgpu::Buffer, u32)>>,
     /// What the adapter turned out to be, for the diagnostics line.
     pub adapter: String,
 }
@@ -93,7 +102,9 @@ impl Renderer {
             label: Some("scene uniforms"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                // The fragment stage reads the eye position for its specular
+                // highlight, so the uniform is visible to both.
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -131,13 +142,17 @@ impl Renderer {
             wgpu::PrimitiveTopology::LineList,
         );
 
+        let solids = Self::solid_pipeline(&device, &shader, &pipeline_layout);
+
         Ok(Self {
             device,
             queue,
             points,
             lines,
+            solids,
             uniforms,
             bind_group,
+            uploaded: Mutex::new(HashMap::new()),
             adapter: format!("{} ({:?})", info.name, info.backend),
         })
     }
@@ -205,6 +220,124 @@ impl Renderer {
         })
     }
 
+    /// The lit-surface pipeline: geometry in buffer 0, one model matrix per
+    /// instance in buffer 1.
+    ///
+    /// The matrix arrives as four vec4 attributes because a vertex attribute
+    /// cannot be a mat4, and as instance data rather than a uniform so a robot's
+    /// thirty links are thirty draws off one small buffer instead of thirty
+    /// buffer writes.
+    fn solid_pipeline(
+        device: &wgpu::Device,
+        shader: &wgpu::ShaderModule,
+        layout: &wgpu::PipelineLayout,
+    ) -> wgpu::RenderPipeline {
+        let model_attributes: Vec<wgpu::VertexAttribute> = (0..4)
+            .map(|column| wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: column * 16,
+                shader_location: 3 + column as u32,
+            })
+            .collect();
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("solid"),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_solid"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<solid::MeshVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x3,
+                                offset: 0,
+                                shader_location: 0,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x3,
+                                offset: 16,
+                                shader_location: 1,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x4,
+                                offset: 32,
+                                shader_location: 2,
+                            },
+                        ],
+                    },
+                    wgpu::VertexBufferLayout {
+                        array_stride: 64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &model_attributes,
+                    },
+                ],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_solid"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: FORMAT,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                // Not culled: robot meshes come from a dozen exporters and a
+                // consistent winding is not something any of them promise.
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        })
+    }
+
+    /// Uploads a solid's geometry the first time it is seen, and hands back the
+    /// buffer and how many vertices are in it.
+    fn geometry(&self, solid: &Solid) -> (wgpu::Buffer, u32) {
+        let mut uploaded = self.uploaded.lock().expect("geometry cache");
+        if let Some((buffer, count)) = uploaded.get(&solid.key) {
+            return (buffer.clone(), *count);
+        }
+        let bytes: &[u8] = bytemuck::cast_slice(solid.vertices.as_slice());
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("solid geometry"),
+            size: bytes.len().max(std::mem::size_of::<solid::MeshVertex>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        if !bytes.is_empty() {
+            self.queue.write_buffer(&buffer, 0, bytes);
+        }
+        let count = solid.vertices.len() as u32;
+        uploaded.insert(solid.key, (buffer.clone(), count));
+        (buffer, count)
+    }
+
+    /// Forgets cached geometry, for when a robot is swapped for another.
+    ///
+    /// Keys are chosen by the caller, so nothing else can know when geometry is
+    /// finished with; without this the cache would only ever grow.
+    pub fn forget(&self, keys: &[u64]) {
+        let mut uploaded = self.uploaded.lock().expect("geometry cache");
+        for key in keys {
+            uploaded.remove(key);
+        }
+    }
+
     /// Draws a scene and reads it back.
     ///
     /// `None` when the pane has no area to draw into, which happens while a
@@ -225,6 +358,10 @@ impl Renderer {
                 viewport: [width as f32, height as f32],
                 point_size: scene.point_size,
                 _padding: 0.,
+                eye: {
+                    let eye = scene.camera.eye();
+                    [eye[0], eye[1], eye[2], 1.]
+                },
             }),
         );
 
@@ -232,6 +369,16 @@ impl Renderer {
         let (point_count, line_count) = (vertices.points.len(), vertices.lines.len());
         let points = self.vertex_buffer("points", &vertices.points);
         let lines = self.vertex_buffer("lines", &vertices.lines);
+
+        // One buffer holding every solid's model matrix, drawn one instance at
+        // a time from its own offset.
+        let geometry: Vec<(wgpu::Buffer, u32)> = scene
+            .solids
+            .iter()
+            .map(|solid| self.geometry(solid))
+            .collect();
+        let models: Vec<Mat4> = scene.solids.iter().map(|solid| solid.transform).collect();
+        let instances = self.instance_buffer(&models);
 
         let target = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("scene"),
@@ -318,6 +465,18 @@ impl Renderer {
                 pass.set_vertex_buffer(0, points.slice(..));
                 pass.draw(0..point_count as u32, 0..1);
             }
+            if !geometry.is_empty() {
+                pass.set_pipeline(&self.solids);
+                for (index, (buffer, count)) in geometry.iter().enumerate() {
+                    if *count == 0 {
+                        continue;
+                    }
+                    let offset = (index * 64) as u64;
+                    pass.set_vertex_buffer(0, buffer.slice(..));
+                    pass.set_vertex_buffer(1, instances.slice(offset..offset + 64));
+                    pass.draw(0..*count, 0..1);
+                }
+            }
         }
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
@@ -362,6 +521,22 @@ impl Renderer {
             height,
             rgba,
         })
+    }
+
+    fn instance_buffer(&self, models: &[Mat4]) -> wgpu::Buffer {
+        let bytes = if models.is_empty() {
+            vec![0u8; 64]
+        } else {
+            bytemuck::cast_slice(models).to_vec()
+        };
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("solid instances"),
+            size: bytes.len() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&buffer, 0, &bytes);
+        buffer
     }
 
     fn vertex_buffer(&self, label: &str, vertices: &[Vertex]) -> wgpu::Buffer {
@@ -416,4 +591,5 @@ struct Uniforms {
     viewport: [f32; 2],
     point_size: f32,
     _padding: f32,
+    eye: [f32; 4],
 }

@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/rw-assets",
     "crates/rw-canonical",
     "crates/rw-codec-cdr",
     "crates/rw-codec-json",
@@ -51,6 +52,7 @@ gpui-component = { version = "0.5.2", git = "https://github.com/longbridge/gpui-
 rw-core = { path = "crates/rw-core", default-features = false }
 rw-canonical = { path = "crates/rw-canonical" }
 rw-pipeline = { path = "crates/rw-pipeline" }
+rw-assets = { path = "crates/rw-assets" }
 rw-render = { path = "crates/rw-render" }
 rw-transport = { path = "crates/rw-transport" }
 rw-ui = { path = "crates/rw-ui" }

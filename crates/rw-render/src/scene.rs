@@ -153,6 +153,8 @@ fn ramp(t: f32) -> [f32; 4] {
 pub struct Scene {
     pub camera: Camera,
     pub points: Points,
+    /// Lit surfaces: robot links, and anything else with a skin.
+    pub solids: Vec<crate::Solid>,
     pub grid: Option<Grid>,
     pub background: [f32; 3],
     /// Point diameter, in pixels.
@@ -164,6 +166,7 @@ impl Default for Scene {
         Self {
             camera: Camera::default(),
             points: Points::default(),
+            solids: Vec::new(),
             grid: Some(Grid::default()),
             background: [0.055, 0.063, 0.078],
             point_size: 3.,

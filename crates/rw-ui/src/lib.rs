@@ -6,6 +6,7 @@
 
 pub mod actions;
 pub mod assets;
+pub mod cloud;
 pub mod discovery;
 pub mod docking;
 pub mod form;

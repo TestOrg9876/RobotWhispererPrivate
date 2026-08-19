@@ -6,6 +6,7 @@ members = [
     "crates/rw-codec-rosmsg",
     "crates/rw-core",
     "crates/rw-pipeline",
+    "crates/rw-render",
     "crates/rw-schema-foxglove",
     "crates/rw-schema-ros1",
     "crates/rw-schema-ros2",
@@ -50,6 +51,7 @@ gpui-component = { version = "0.5.2", git = "https://github.com/longbridge/gpui-
 rw-core = { path = "crates/rw-core", default-features = false }
 rw-canonical = { path = "crates/rw-canonical" }
 rw-pipeline = { path = "crates/rw-pipeline" }
+rw-render = { path = "crates/rw-render" }
 rw-transport = { path = "crates/rw-transport" }
 rw-ui = { path = "crates/rw-ui" }
 

@@ -24,6 +24,10 @@ actions!(
         ToggleConsole,
         /// Save the active request.
         SaveRequest,
+        /// Write the workspace to a file that can be shared or committed.
+        ExportWorkspace,
+        /// Read a workspace file into this one.
+        ImportWorkspace,
     ]
 );
 

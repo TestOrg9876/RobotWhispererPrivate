@@ -129,6 +129,14 @@ impl Sessions {
             .count()
     }
 
+    /// Puts a line in the console.
+    ///
+    /// The console already listens to this store for connection events, so
+    /// everything the app has to say arrives by one route and in one order.
+    pub fn announce(&mut self, notice: Notice, cx: &mut Context<Self>) {
+        cx.emit(SessionEvent(notice));
+    }
+
     /// Opens the transport for `connection` and starts mirroring its status and
     /// discovery channels.
     pub fn connect(&mut self, connection: &Connection, cx: &mut Context<Self>) -> Task<()> {

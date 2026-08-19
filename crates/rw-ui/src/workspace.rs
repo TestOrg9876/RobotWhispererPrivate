@@ -281,6 +281,96 @@ impl Workspace {
         })
     }
 
+    // ── import and export ──────────────────────────────────────────────────────
+
+    /// The workspace as a shareable document.
+    pub fn document(&self) -> rw_core::portable::Document {
+        rw_core::portable::export(&self.connections, &self.requests)
+    }
+
+    /// Applies an import plan: connections first, so the requests that name
+    /// them can be bound as they are created.
+    ///
+    /// One task rather than several, because a half-applied import — the
+    /// connections in, the requests not — is a state nobody asked for.
+    pub fn apply_import(
+        &mut self,
+        plan: rw_core::portable::Plan,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        let storage = self.storage();
+
+        cx.spawn(async move |workspace, cx| {
+            let mut created: Vec<Connection> = Vec::new();
+
+            for portable in plan.new_connections {
+                let draft = NewConnection {
+                    name: portable.name,
+                    config: portable.config,
+                    auto_connect: portable.auto_connect,
+                    color: None,
+                };
+                match storage.create_connection(draft).await {
+                    Ok(connection) => created.push(connection),
+                    Err(error) => {
+                        workspace
+                            .update(cx, |workspace, cx| {
+                                workspace.fail("import connection", error);
+                                cx.notify();
+                            })
+                            .ok();
+                        return;
+                    }
+                }
+            }
+
+            // A request whose connection came in with this document could not be
+            // resolved when the plan was made, because that connection did not
+            // exist yet. Resolve it now against what was just created.
+            let mut requests = Vec::new();
+            for (portable, existing) in plan.new_requests {
+                let connection_id = existing.or_else(|| {
+                    let name = portable.connection.as_ref()?;
+                    created
+                        .iter()
+                        .find(|connection| connection.name == *name)
+                        .map(|connection| connection.id)
+                });
+
+                let draft = NewRequest {
+                    collection_id: None,
+                    connection_id,
+                    name: portable.name,
+                    kind: portable.kind,
+                    target: portable.target,
+                    schema: portable.schema,
+                    input: portable.input,
+                    visualization: None,
+                };
+                match storage.create_request(draft).await {
+                    Ok(request) => requests.push(request),
+                    Err(error) => {
+                        workspace
+                            .update(cx, |workspace, cx| {
+                                workspace.fail("import request", error);
+                                cx.notify();
+                            })
+                            .ok();
+                        return;
+                    }
+                }
+            }
+
+            workspace
+                .update(cx, |workspace, cx| {
+                    workspace.connections.extend(created);
+                    workspace.requests.extend(requests);
+                    cx.notify();
+                })
+                .ok();
+        })
+    }
+
     /// Writes an edited request back to storage and to the in-memory list.
     pub fn save_request(&mut self, request: Request, cx: &mut Context<Self>) -> Task<()> {
         let storage = self.storage();

@@ -1,6 +1,7 @@
 pub mod domain;
 pub mod error;
 pub mod ids;
+pub mod portable;
 pub mod schema;
 pub mod storage;
 pub mod util;

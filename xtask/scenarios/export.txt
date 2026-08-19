@@ -1,0 +1,13 @@
+# Export from the menu. The file dialog itself is the platform's, and there is
+# no portal under a bare X server, so this checks the app survives the attempt
+# and says so rather than dying.
+
+wait 900
+click 1327 16
+wait 700
+shot 01-menu
+click 1272 202
+wait 1500
+click 38 888
+wait 900
+shot 02-after-export

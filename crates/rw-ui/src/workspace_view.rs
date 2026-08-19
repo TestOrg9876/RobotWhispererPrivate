@@ -25,8 +25,8 @@ use gpui_component::{
 };
 
 use crate::actions::{
-    CommandPalette, Connect, Disconnect, ManageConnections, NewRequest, OpenSettings,
-    ToggleConsole, ToggleSidebar,
+    CommandPalette, Connect, Disconnect, ExportWorkspace, ImportWorkspace, ManageConnections,
+    NewRequest, OpenSettings, ToggleConsole, ToggleSidebar,
 };
 use crate::palette::{Choice, Entry};
 use crate::panels::{
@@ -34,7 +34,7 @@ use crate::panels::{
     RequestPanel, SettingsEvent, SettingsView, WelcomeEvent, WelcomePanel,
 };
 use crate::prefs::Prefs;
-use crate::session::{RobotWhisperer, Sessions, Status};
+use crate::session::{Notice, RobotWhisperer, Sessions, Status};
 use crate::theme::{self, Preference};
 use crate::tokens;
 use crate::workspace::Workspace;
@@ -318,6 +318,9 @@ impl WorkspaceView {
                     .menu("Toggle request list", Box::new(ToggleSidebar))
                     .menu("Toggle console", Box::new(ToggleConsole))
                     .separator()
+                    .menu("Import workspace…", Box::new(ImportWorkspace))
+                    .menu("Export workspace…", Box::new(ExportWorkspace))
+                    .separator()
                     .menu("Settings…", Box::new(OpenSettings))
             })
             .into_any_element()
@@ -451,6 +454,123 @@ impl WorkspaceView {
         }
     }
 
+    // ── import and export ──────────────────────────────────────────────────────
+
+    /// Writes the workspace to a file the user picks.
+    fn export(&mut self, cx: &mut Context<Self>) {
+        let document = self.workspace.read(cx).document();
+        let directory = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let picked = cx.prompt_for_new_path(&directory, Some("robot-whisperer.json"));
+
+        cx.spawn(async move |view, cx| {
+            let path = match picked.await {
+                Ok(Ok(Some(path))) => path,
+                // Cancelling is a decision, not a problem.
+                Ok(Ok(None)) => return,
+                // No file dialog available — on Linux that means no portal.
+                // Saying nothing here is the one outcome nobody can act on.
+                Ok(Err(error)) => {
+                    view.update(cx, |view, cx| {
+                        view.complain(format!("could not open a file dialog: {error}"), cx)
+                    })
+                    .ok();
+                    return;
+                }
+                Err(_) => {
+                    view.update(cx, |view, cx| {
+                        view.complain("could not open a file dialog", cx)
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            let outcome = rw_core::portable::to_json(&document)
+                .map_err(|error| error.to_string())
+                .and_then(|json| std::fs::write(&path, json).map_err(|error| error.to_string()));
+
+            view.update(cx, |view, cx| match outcome {
+                Ok(()) => view.say(format!("exported to {}", path.display()), cx),
+                Err(error) => view.complain(format!("export failed: {error}"), cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Reads a workspace file and merges it into this one.
+    fn import(&mut self, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+
+        cx.spawn(async move |view, cx| {
+            let paths = match picked.await {
+                Ok(Ok(Some(paths))) => paths,
+                Ok(Ok(None)) => return,
+                Ok(Err(error)) => {
+                    view.update(cx, |view, cx| {
+                        view.complain(format!("could not open a file dialog: {error}"), cx)
+                    })
+                    .ok();
+                    return;
+                }
+                Err(_) => {
+                    view.update(cx, |view, cx| {
+                        view.complain("could not open a file dialog", cx)
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+
+            let read = std::fs::read_to_string(&path)
+                .map_err(|error| error.to_string())
+                .and_then(|json| {
+                    rw_core::portable::from_json(&json).map_err(|error| error.to_string())
+                });
+
+            view.update(cx, |view, cx| {
+                let document = match read {
+                    Ok(document) => document,
+                    Err(error) => return view.complain(format!("import failed: {error}"), cx),
+                };
+
+                let connections = view.workspace.read(cx).connections().to_vec();
+                let plan = rw_core::portable::plan(&document, &connections);
+                let summary = plan.summary();
+                if plan.is_empty() {
+                    return view.say(summary, cx);
+                }
+
+                view.workspace
+                    .update(cx, |workspace, cx| workspace.apply_import(plan, cx))
+                    .detach();
+                view.say(summary, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Puts a line in the console, which is where this app says things.
+    fn say(&self, message: impl Into<String>, cx: &mut Context<Self>) {
+        self.sessions.update(cx, |sessions, cx| {
+            sessions.announce(Notice::Info(message.into()), cx)
+        });
+    }
+
+    fn complain(&self, message: impl Into<String>, cx: &mut Context<Self>) {
+        self.sessions.update(cx, |sessions, cx| {
+            sessions.announce(Notice::Error(message.into()), cx)
+        });
+    }
+
     fn apply_theme(&mut self, preference: Preference, cx: &mut Context<Self>) {
         self.prefs.set_theme(&preference);
         theme::apply(&preference, cx);
@@ -484,6 +604,14 @@ impl WorkspaceView {
 
     fn on_open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
         self.open_settings(window, cx);
+    }
+
+    fn on_export(&mut self, _: &ExportWorkspace, _: &mut Window, cx: &mut Context<Self>) {
+        self.export(cx);
+    }
+
+    fn on_import(&mut self, _: &ImportWorkspace, _: &mut Window, cx: &mut Context<Self>) {
+        self.import(cx);
     }
 
     fn on_connect(&mut self, action: &Connect, _: &mut Window, cx: &mut Context<Self>) {
@@ -662,6 +790,8 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(Self::on_new_request))
             .on_action(cx.listener(Self::on_manage_connections))
             .on_action(cx.listener(Self::on_open_settings))
+            .on_action(cx.listener(Self::on_export))
+            .on_action(cx.listener(Self::on_import))
             .on_action(cx.listener(Self::on_connect))
             .on_action(cx.listener(Self::on_disconnect))
             .on_action(cx.listener(Self::on_toggle_sidebar))

@@ -133,6 +133,20 @@ fn play(
                 xdotool(display, &["click", "3"])?;
                 std::thread::sleep(Duration::from_millis(250));
             }
+            Step::Drag { from, to } => {
+                drag_to(display, window, *from, *to)?;
+                xdotool(display, &["mouseup", "1"])?;
+                std::thread::sleep(Duration::from_millis(400));
+            }
+            Step::DragOver { from, to } => {
+                drag_to(display, window, *from, *to)?;
+                // Left held, so the next step can photograph the target.
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            Step::Release => {
+                xdotool(display, &["mouseup", "1"])?;
+                std::thread::sleep(Duration::from_millis(400));
+            }
             Step::Type { text } => {
                 xdotool(display, &["type", "--delay", "40", text])?;
                 std::thread::sleep(Duration::from_millis(250));
@@ -377,6 +391,26 @@ fn xdotool(display: &str, args: &[&str]) -> Result<()> {
         .context("running xdotool")?;
     if !status.success() {
         bail!("xdotool {args:?} failed ({status})");
+    }
+    Ok(())
+}
+
+/// Presses at `from` and drags to `to`, leaving the button held.
+///
+/// Stepped rather than jumped: a toolkit starts a drag only once the pointer has
+/// travelled while held, and it needs those moves as separate events to notice.
+fn drag_to(display: &str, window: &WindowGeometry, from: (i32, i32), to: (i32, i32)) -> Result<()> {
+    const STEPS: i32 = 8;
+
+    point_at(display, window, from.0, from.1)?;
+    xdotool(display, &["mousedown", "1"])?;
+    std::thread::sleep(Duration::from_millis(120));
+
+    for step in 1..=STEPS {
+        let x = from.0 + (to.0 - from.0) * step / STEPS;
+        let y = from.1 + (to.1 - from.1) * step / STEPS;
+        point_at(display, window, x, y)?;
+        std::thread::sleep(Duration::from_millis(40));
     }
     Ok(())
 }

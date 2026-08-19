@@ -306,7 +306,7 @@ impl Workspace {
                             Some(collection)
                         }
                         Err(error) => {
-                            workspace.fail("create folder", error);
+                            workspace.fail("create collection", error);
                             None
                         }
                     }
@@ -334,7 +334,7 @@ impl Workspace {
             workspace
                 .update(cx, |workspace, cx| {
                     if let Err(error) = outcome {
-                        workspace.fail("rename folder", error);
+                        workspace.fail("rename collection", error);
                         cx.notify();
                     }
                 })
@@ -342,11 +342,11 @@ impl Workspace {
         })
     }
 
-    /// Deletes a folder, keeping what was inside it.
+    /// Deletes a collection, keeping what was inside it.
     ///
-    /// The requests move up to where the folder was rather than going with it: a
-    /// folder is a way of arranging work, and removing the arrangement should
-    /// never remove the work.
+    /// The requests move up to where the collection was rather than going with
+    /// it: a collection is a way of arranging work, and removing the arrangement
+    /// should never remove the work.
     pub fn delete_collection(&mut self, id: i64, cx: &mut Context<Self>) -> Task<()> {
         let storage = self.storage();
         let parent = self
@@ -378,9 +378,9 @@ impl Workspace {
 
         cx.spawn(async move |workspace, cx| {
             let mut failure = None;
-            // Re-parented first: deleting the folder before its contents are
-            // moved out is what a cascading delete in the database would turn
-            // into lost requests.
+            // Re-parented first: deleting the collection before its contents
+            // are moved out is what a cascading delete in the database would
+            // turn into lost requests.
             for request in orphans {
                 if let Err(error) = storage.update_request(&request).await {
                     failure = Some(error);
@@ -404,7 +404,7 @@ impl Workspace {
             workspace
                 .update(cx, |workspace, cx| {
                     if let Some(error) = failure {
-                        workspace.fail("delete folder", error);
+                        workspace.fail("delete collection", error);
                     }
                     cx.notify();
                 })
@@ -412,7 +412,42 @@ impl Workspace {
         })
     }
 
-    /// Moves a request into a folder, or out to the root with `None`.
+    /// Moves a collection under another, or out to the root with `None`.
+    ///
+    /// Whether the move is *allowed* is the tree's business — this only writes
+    /// it, so the check has one home rather than two that can disagree.
+    pub fn move_collection(
+        &mut self,
+        collection: i64,
+        parent: Option<i64>,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        let storage = self.storage();
+        let Some(found) = self
+            .collections
+            .iter_mut()
+            .find(|entry| entry.id == collection)
+        else {
+            return Task::ready(());
+        };
+        found.parent_id = parent;
+        let moved = found.clone();
+        cx.notify();
+
+        cx.spawn(async move |workspace, cx| {
+            let outcome = storage.update_collection(&moved).await;
+            workspace
+                .update(cx, |workspace, cx| {
+                    if let Err(error) = outcome {
+                        workspace.fail("move collection", error);
+                        cx.notify();
+                    }
+                })
+                .ok();
+        })
+    }
+
+    /// Moves a request into a collection, or out to the root with `None`.
     pub fn move_request(
         &mut self,
         request: i64,
@@ -444,7 +479,7 @@ impl Workspace {
 
     /// The workspace as a shareable document.
     pub fn document(&self) -> rw_core::portable::Document {
-        rw_core::portable::export(&self.connections, &self.requests)
+        rw_core::portable::export(&self.connections, &self.collections, &self.requests)
     }
 
     /// Applies an import plan: connections first, so the requests that name
@@ -458,8 +493,40 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Task<()> {
         let storage = self.storage();
+        let here = self.collections.clone();
 
         cx.spawn(async move |workspace, cx| {
+            // Collections first, parents before children, so a request can be
+            // put in the one it names. The plan already ordered them by depth.
+            let mut made: Vec<(String, i64)> = Vec::new();
+            for path in plan.new_collections {
+                let (parent_path, name) = match path.rsplit_once('/') {
+                    Some((parent, name)) => (Some(parent.to_string()), name.to_string()),
+                    None => (None, path.clone()),
+                };
+                let parent_id = parent_path.and_then(|parent| {
+                    made.iter()
+                        .find(|(created, _)| *created == parent)
+                        .map(|(_, id)| *id)
+                });
+
+                match storage
+                    .create_collection(rw_core::storage::NewCollection { parent_id, name })
+                    .await
+                {
+                    Ok(collection) => made.push((path, collection.id)),
+                    Err(error) => {
+                        workspace
+                            .update(cx, |workspace, cx| {
+                                workspace.fail("import collection", error);
+                                cx.notify();
+                            })
+                            .ok();
+                        return;
+                    }
+                }
+            }
+
             let mut created: Vec<Connection> = Vec::new();
 
             for portable in plan.new_connections {
@@ -496,8 +563,17 @@ impl Workspace {
                         .map(|connection| connection.id)
                 });
 
+                // One that was already here is not in `made`, so it is resolved
+                // from what the workspace holds.
+                let collection_id = portable.collection.as_ref().and_then(|path| {
+                    made.iter()
+                        .find(|(created, _)| created == path)
+                        .map(|(_, id)| *id)
+                        .or_else(|| existing_collection(&here, path))
+                });
+
                 let draft = NewRequest {
-                    collection_id: None,
+                    collection_id,
                     connection_id,
                     name: portable.name,
                     kind: portable.kind,
@@ -612,4 +688,22 @@ impl Workspace {
                 .ok();
         })
     }
+}
+
+/// Finds the collection at a `Robot/Arm` path among the ones already stored.
+///
+/// Walked segment by segment rather than matched on the leaf name: two
+/// collections in different places can share a name, and the path is what
+/// distinguishes them.
+fn existing_collection(collections: &[Collection], path: &str) -> Option<i64> {
+    let mut parent = None;
+    let mut found = None;
+    for name in path.split('/').filter(|part| !part.is_empty()) {
+        let collection = collections
+            .iter()
+            .find(|entry| entry.parent_id == parent && entry.name == name)?;
+        parent = Some(collection.id);
+        found = Some(collection.id);
+    }
+    found
 }

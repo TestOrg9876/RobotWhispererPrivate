@@ -273,6 +273,7 @@ impl WorkspaceView {
             CollectionsEvent::Open(id) => self.open_request(*id, window, cx),
             CollectionsEvent::New => self.new_request(window, cx),
             CollectionsEvent::Duplicate(id) => self.duplicate_request(*id, window, cx),
+            CollectionsEvent::Complain(message) => self.complain(message.clone(), cx),
             CollectionsEvent::Delete(id) => {
                 self.close_request(*id, window, cx);
                 self.workspace
@@ -541,8 +542,10 @@ impl WorkspaceView {
                     Err(error) => return view.complain(format!("import failed: {error}"), cx),
                 };
 
-                let connections = view.workspace.read(cx).connections().to_vec();
-                let plan = rw_core::portable::plan(&document, &connections);
+                let workspace = view.workspace.read(cx);
+                let connections = workspace.connections().to_vec();
+                let collections = workspace.collections().to_vec();
+                let plan = rw_core::portable::plan(&document, &connections, &collections);
                 let summary = plan.summary();
                 if plan.is_empty() {
                     return view.say(summary, cx);

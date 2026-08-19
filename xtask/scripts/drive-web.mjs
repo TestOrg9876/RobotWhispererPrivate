@@ -120,6 +120,8 @@ function describe(step) {
     return ` ${step.x},${step.y}`;
   if (step.step === "type") return ` ${JSON.stringify(step.text)}`;
   if (step.step === "key") return ` ${step.key}`;
+  if (step.step === "drag" || step.step === "dragover")
+    return ` ${step.from.join(",")} -> ${step.to.join(",")}`;
   if (step.step === "shot") return ` ${step.name}`;
   if (step.step === "wait") return ` ${step.ms}ms`;
   return "";
@@ -154,6 +156,32 @@ try {
         await page.waitForTimeout(150);
         await page.mouse.click(step.x, step.y);
         await page.waitForTimeout(250);
+        break;
+      case "drag":
+      case "dragover": {
+        // Stepped, for the same reason the native driver steps: a single jump
+        // does not read as a drag.
+        await page.mouse.move(step.from[0], step.from[1]);
+        await page.mouse.down();
+        const steps = 8;
+        for (let i = 1; i <= steps; i += 1) {
+          await page.mouse.move(
+            step.from[0] + ((step.to[0] - step.from[0]) * i) / steps,
+            step.from[1] + ((step.to[1] - step.from[1]) * i) / steps,
+          );
+          await page.waitForTimeout(40);
+        }
+        if (step.step === "drag") {
+          await page.mouse.up();
+          await page.waitForTimeout(400);
+        } else {
+          await page.waitForTimeout(250);
+        }
+        break;
+      }
+      case "release":
+        await page.mouse.up();
+        await page.waitForTimeout(400);
         break;
       case "rightclick":
         await page.mouse.move(step.x, step.y);

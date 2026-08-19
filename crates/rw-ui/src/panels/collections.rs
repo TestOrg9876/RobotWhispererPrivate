@@ -22,6 +22,7 @@ use gpui_component::{
 use rw_core::domain::Request;
 
 use crate::tokens;
+use crate::tree;
 use crate::workspace::Workspace;
 
 /// Right-click actions on a request row. Each carries the row's id, so one
@@ -38,26 +39,59 @@ pub struct DuplicateRequest(pub i64);
 #[action(namespace = robot_whisperer, no_json)]
 pub struct DeleteRequest(pub i64);
 
-/// Move a request into a folder. `None` — spelled as `-1`, since an action's
-/// payload has to be a plain value — means the root.
+/// Create a collection inside this one.
 #[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
 #[action(namespace = robot_whisperer, no_json)]
-pub struct MoveRequest {
-    pub request: i64,
-    pub folder: i64,
+pub struct AddCollection(pub i64);
+
+#[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
+pub struct RenameCollection(pub i64);
+
+#[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
+pub struct DeleteCollection(pub i64);
+
+/// What is being dragged.
+///
+/// One type for both kinds of row: a drop target accepts either, and only the
+/// collection case needs the checks that keep the tree a tree.
+#[derive(Clone)]
+pub enum Dragged {
+    Request { id: i64, name: String },
+    Collection { id: i64, name: String },
 }
 
-#[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
-#[action(namespace = robot_whisperer, no_json)]
-pub struct NewFolder(pub i64);
+impl Dragged {
+    fn name(&self) -> &str {
+        match self {
+            Dragged::Request { name, .. } | Dragged::Collection { name, .. } => name,
+        }
+    }
+}
 
-#[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
-#[action(namespace = robot_whisperer, no_json)]
-pub struct RenameFolder(pub i64);
+/// What follows the pointer while dragging.
+///
+/// A chip with the name on it. The row itself would be as wide as the sidebar
+/// and would cover the thing being aimed at.
+struct DragPreview {
+    label: String,
+}
 
-#[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
-#[action(namespace = robot_whisperer, no_json)]
-pub struct DeleteFolder(pub i64);
+impl Render for DragPreview {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded(cx.theme().radius)
+            .bg(cx.theme().popover)
+            .border_1()
+            .border_color(cx.theme().border)
+            .text_xs()
+            .text_color(cx.theme().foreground)
+            .child(self.label.clone())
+    }
+}
 
 /// What the sidebar asks the shell to do.
 #[derive(Debug, Clone)]
@@ -66,14 +100,8 @@ pub enum CollectionsEvent {
     Duplicate(i64),
     Delete(i64),
     New,
-}
-
-/// `MoveRequest` carries the destination as a number because an action's payload
-/// cannot be an `Option`. This is the one place that encoding is understood.
-const ROOT: i64 = -1;
-
-fn folder_of(encoded: i64) -> Option<i64> {
-    (encoded != ROOT).then_some(encoded)
+    /// Something the user tried that could not be done, for the console.
+    Complain(String),
 }
 
 pub struct CollectionsPanel {
@@ -82,13 +110,13 @@ pub struct CollectionsPanel {
     search: Entity<InputState>,
     /// Which request is highlighted, so the row reads as selected.
     selected: Option<i64>,
-    /// Folders the user has collapsed. Collapsed rather than expanded is stored
-    /// so a newly created folder starts open, which is what you want having just
-    /// made it.
+    /// Collections the user has collapsed. Collapsed rather than expanded is
+    /// stored so a newly created collection starts open, which is what you want
+    /// having just made it.
     collapsed: std::collections::HashSet<i64>,
-    /// The folder being renamed, and the field holding the new name.
+    /// The collection being renamed, and the field holding the new name.
     renaming: Option<i64>,
-    folder_name: Entity<InputState>,
+    collection_name: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -98,7 +126,8 @@ impl EventEmitter<PanelEvent> for CollectionsPanel {}
 impl CollectionsPanel {
     pub fn new(workspace: Entity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search requests"));
-        let folder_name = cx.new(|cx| InputState::new(window, cx).placeholder("Folder name"));
+        let collection_name =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Collection name"));
 
         let subscriptions = vec![
             cx.observe(&workspace, |_, _, cx| cx.notify()),
@@ -108,11 +137,11 @@ impl CollectionsPanel {
                 }
             }),
             // Enter commits the name; clicking away commits it too, because
-            // losing a folder's name by clicking elsewhere would be its own small
+            // losing a name by clicking elsewhere would be its own small
             // betrayal. Escape is not special here — there is nothing to go back
-            // to for a folder that was just created.
+            // to for a collection that was just created.
             cx.subscribe(
-                &folder_name,
+                &collection_name,
                 |this, _, event: &InputEvent, cx| match event {
                     InputEvent::PressEnter { .. } | InputEvent::Blur => this.commit_rename(cx),
                     _ => {}
@@ -127,7 +156,7 @@ impl CollectionsPanel {
             selected: None,
             collapsed: std::collections::HashSet::new(),
             renaming: None,
-            folder_name,
+            collection_name,
             _subscriptions: subscriptions,
         }
     }
@@ -143,9 +172,9 @@ impl CollectionsPanel {
         cx.notify();
     }
 
-    // ── folders ────────────────────────────────────────────────────────────────
+    // ── collections ────────────────────────────────────────────────────────────
 
-    fn toggle_folder(&mut self, id: i64, cx: &mut Context<Self>) {
+    fn toggle_collection(&mut self, id: i64, cx: &mut Context<Self>) {
         if !self.collapsed.remove(&id) {
             self.collapsed.insert(id);
         }
@@ -163,7 +192,7 @@ impl CollectionsPanel {
             .unwrap_or_default();
 
         self.renaming = Some(id);
-        self.folder_name.update(cx, |state, cx| {
+        self.collection_name.update(cx, |state, cx| {
             state.set_value(name, window, cx);
             // Selected, not just placed at the end: `set_value` leaves the caret
             // after the text, so typing a new name would append to the old one.
@@ -173,12 +202,11 @@ impl CollectionsPanel {
         cx.notify();
     }
 
-    /// Commits a rename, or creates the folder if this was a new one.
     fn commit_rename(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.renaming.take() else {
             return;
         };
-        let name = self.folder_name.read(cx).value().trim().to_string();
+        let name = self.collection_name.read(cx).value().trim().to_string();
         if !name.is_empty() {
             self.workspace
                 .update(cx, |workspace, cx| {
@@ -189,9 +217,17 @@ impl CollectionsPanel {
         cx.notify();
     }
 
-    fn new_folder(&mut self, parent: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
+    fn add_collection(&mut self, parent: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
+        let collections = self.workspace.read(cx).collections().to_vec();
+        if !tree::can_nest_inside(&collections, parent) {
+            return self.complain(
+                format!("Collections nest {} deep at most.", tree::MAX_DEPTH),
+                cx,
+            );
+        }
+
         let creating = self.workspace.update(cx, |workspace, cx| {
-            workspace.create_collection("New folder".to_string(), parent, cx)
+            workspace.create_collection("New collection".to_string(), parent, cx)
         });
 
         cx.spawn_in(window, async move |panel, window| {
@@ -202,8 +238,8 @@ impl CollectionsPanel {
                 .update(|window, cx| {
                     panel
                         .update(cx, |panel, cx| {
-                            // Straight into a rename: a folder called "New
-                            // folder" is not what anybody wanted, and making
+                            // Straight into a rename: a collection called "New
+                            // collection" is not what anybody wanted, and making
                             // them find the rename command is a second step for
                             // no reason.
                             panel.start_rename(collection.id, window, cx)
@@ -215,13 +251,51 @@ impl CollectionsPanel {
         .detach();
     }
 
-    fn folder_row(
+    /// Applies a drop. The tree decides whether it is allowed; this reports why
+    /// when it is not, because a drop that silently does nothing is the worst of
+    /// the three outcomes.
+    fn accept_drop(&mut self, dragged: &Dragged, onto: Option<i64>, cx: &mut Context<Self>) {
+        match dragged {
+            Dragged::Request { id, .. } => {
+                let id = *id;
+                self.workspace
+                    .update(cx, |workspace, cx| workspace.move_request(id, onto, cx))
+                    .detach();
+            }
+            Dragged::Collection { id, .. } => {
+                let id = *id;
+                let collections = self.workspace.read(cx).collections().to_vec();
+                match tree::check_move(&collections, id, onto) {
+                    Ok(()) => self
+                        .workspace
+                        .update(cx, |workspace, cx| workspace.move_collection(id, onto, cx))
+                        .detach(),
+                    Err(tree::Refusal::WouldDetachItself) => {
+                        self.complain("A collection cannot go inside itself.", cx)
+                    }
+                    Err(tree::Refusal::TooDeep) => self.complain(
+                        format!("That would nest deeper than {}.", tree::MAX_DEPTH),
+                        cx,
+                    ),
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn complain(&self, message: impl Into<String>, cx: &mut Context<Self>) {
+        cx.emit(CollectionsEvent::Complain(message.into()));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn collection_row(
         &self,
         id: i64,
         name: &str,
         depth: usize,
         total: usize,
         expanded: bool,
+        can_nest: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if self.renaming == Some(id) {
@@ -231,12 +305,14 @@ impl CollectionsPanel {
                 .pl(px(8. + depth as f32 * 14.))
                 .pr_2()
                 .items_center()
-                .child(Input::new(&self.folder_name).xsmall())
+                .child(Input::new(&self.collection_name).xsmall())
                 .into_any_element();
         }
 
+        let collections = self.workspace.read(cx).collections().to_vec();
+
         h_flex()
-            .id(("folder", id as usize))
+            .id(("collection", id as usize))
             .h(px(tokens::CONTROL_HEIGHT))
             .w_full()
             .pl(px(4. + depth as f32 * 14.))
@@ -245,6 +321,37 @@ impl CollectionsPanel {
             .items_center()
             .rounded(cx.theme().radius)
             .hover(|row| row.bg(cx.theme().list_hover))
+            // The target lights up only for a drop it would actually accept, so
+            // an impossible move looks impossible before it is attempted.
+            .drag_over::<Dragged>(move |style, dragged: &Dragged, _, cx| {
+                let allowed = match dragged {
+                    Dragged::Request { .. } => true,
+                    Dragged::Collection { id: dragged, .. } => {
+                        tree::can_move(&collections, *dragged, Some(id))
+                    }
+                };
+                if allowed {
+                    style
+                        .bg(cx.theme().list_active)
+                        .border_1()
+                        .border_color(cx.theme().ring)
+                } else {
+                    style
+                }
+            })
+            .on_drop(cx.listener(move |this, dragged: &Dragged, _, cx| {
+                this.accept_drop(dragged, Some(id), cx)
+            }))
+            .on_drag(
+                Dragged::Collection {
+                    id,
+                    name: name.to_string(),
+                },
+                |dragged, _, _, cx| {
+                    let label = dragged.name().to_string();
+                    cx.new(|_| DragPreview { label })
+                },
+            )
             .child(
                 gpui_component::Icon::new(if expanded {
                     IconName::ChevronDown
@@ -270,24 +377,20 @@ impl CollectionsPanel {
                     .text_color(cx.theme().muted_foreground)
                     .child(total.to_string()),
             )
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_folder(id, cx)))
-            .context_menu(move |menu, _window, _cx| {
-                menu.menu("New folder inside", Box::new(NewFolder(id)))
-                    .menu("Rename", Box::new(RenameFolder(id)))
+            .on_click(
+                cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_collection(id, cx)),
+            )
+            .context_menu(move |mut menu, _window, _cx| {
+                // Offered only where it is possible: a menu item that explains
+                // itself by failing is worse than one that is not there.
+                if can_nest {
+                    menu = menu.menu("New collection inside", Box::new(AddCollection(id)));
+                }
+                menu.menu("Rename", Box::new(RenameCollection(id)))
                     .separator()
-                    .menu("Delete folder", Box::new(DeleteFolder(id)))
+                    .menu("Delete collection", Box::new(DeleteCollection(id)))
             })
             .into_any_element()
-    }
-
-    /// The folders a request can be moved into, for its context menu.
-    fn destinations(&self, cx: &App) -> Vec<(i64, String)> {
-        self.workspace
-            .read(cx)
-            .collections()
-            .iter()
-            .map(|collection| (collection.id, collection.name.clone()))
-            .collect()
     }
 
     fn row(&self, request: &Request, depth: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -295,9 +398,6 @@ impl CollectionsPanel {
         let selected = self.selected == Some(id);
         let target = request.target.clone();
         let kind = request.kind;
-        let folders = self.destinations(cx);
-        let current = request.collection_id;
-
         h_flex()
             .id(("request", id as usize))
             .h(px(tokens::CONTROL_HEIGHT))
@@ -339,37 +439,23 @@ impl CollectionsPanel {
                 cx.emit(CollectionsEvent::Open(id));
                 cx.notify();
             }))
-            .context_menu(move |mut menu, _window, _cx| {
-                menu = menu
-                    .menu("Open", Box::new(OpenRequest(id)))
-                    .menu("Duplicate", Box::new(DuplicateRequest(id)));
-
-                if !folders.is_empty() || current.is_some() {
-                    menu = menu.separator().label("Move to");
-                    if current.is_some() {
-                        menu = menu.menu(
-                            "No folder",
-                            Box::new(MoveRequest {
-                                request: id,
-                                folder: ROOT,
-                            }),
-                        );
-                    }
-                    for (folder, name) in &folders {
-                        if current == Some(*folder) {
-                            continue;
-                        }
-                        menu = menu.menu(
-                            name.clone(),
-                            Box::new(MoveRequest {
-                                request: id,
-                                folder: *folder,
-                            }),
-                        );
-                    }
-                }
-
-                menu.separator().menu("Delete", Box::new(DeleteRequest(id)))
+            // Dragged, not moved through a submenu: a list of every folder in
+            // a menu is a workaround for not being able to point at one.
+            .on_drag(
+                Dragged::Request {
+                    id,
+                    name: request.name.clone(),
+                },
+                |dragged, _, _, cx| {
+                    let label = dragged.name().to_string();
+                    cx.new(|_| DragPreview { label })
+                },
+            )
+            .context_menu(move |menu, _window, _cx| {
+                menu.menu("Open", Box::new(OpenRequest(id)))
+                    .menu("Duplicate", Box::new(DuplicateRequest(id)))
+                    .separator()
+                    .menu("Delete", Box::new(DeleteRequest(id)))
             })
             .into_any_element()
     }
@@ -428,7 +514,7 @@ impl Render for CollectionsPanel {
         // Searching opens every folder: hiding a match behind a collapsed folder
         // makes the search look as though it found nothing.
         let collapsed = self.collapsed.clone();
-        let plan = crate::tree::rows(
+        let plan = tree::rows(
             &collections,
             &requests,
             |request| {
@@ -447,14 +533,15 @@ impl Render for CollectionsPanel {
         let rows: Vec<_> = plan
             .iter()
             .filter_map(|row| match row {
-                crate::tree::Row::Folder {
+                tree::Row::Collection {
                     id,
                     name,
                     depth,
                     total,
                     expanded,
-                } => Some(self.folder_row(*id, name, *depth, *total, *expanded, cx)),
-                crate::tree::Row::Request { id, depth } => {
+                    can_nest,
+                } => Some(self.collection_row(*id, name, *depth, *total, *expanded, *can_nest, cx)),
+                tree::Row::Request { id, depth } => {
                     by_id.get(id).map(|request| self.row(request, *depth, cx))
                 }
             })
@@ -474,22 +561,13 @@ impl Render for CollectionsPanel {
             .on_action(cx.listener(|_, action: &DeleteRequest, _, cx| {
                 cx.emit(CollectionsEvent::Delete(action.0));
             }))
-            .on_action(cx.listener(|this, action: &MoveRequest, _, cx| {
-                let folder = folder_of(action.folder);
-                let request = action.request;
-                this.workspace
-                    .update(cx, |workspace, cx| {
-                        workspace.move_request(request, folder, cx)
-                    })
-                    .detach();
+            .on_action(cx.listener(|this, action: &AddCollection, window, cx| {
+                this.add_collection(Some(action.0), window, cx);
             }))
-            .on_action(cx.listener(|this, action: &NewFolder, window, cx| {
-                this.new_folder(Some(action.0), window, cx);
-            }))
-            .on_action(cx.listener(|this, action: &RenameFolder, window, cx| {
+            .on_action(cx.listener(|this, action: &RenameCollection, window, cx| {
                 this.start_rename(action.0, window, cx);
             }))
-            .on_action(cx.listener(|this, action: &DeleteFolder, _, cx| {
+            .on_action(cx.listener(|this, action: &DeleteCollection, _, cx| {
                 let id = action.0;
                 this.collapsed.remove(&id);
                 this.workspace
@@ -509,13 +587,13 @@ impl Render for CollectionsPanel {
                             .child(Input::new(&self.search).small().cleanable(true)),
                     )
                     .child(
-                        Button::new("new-folder")
+                        Button::new("new-collection")
                             .ghost()
                             .small()
                             .icon(IconName::Folder)
-                            .tooltip("New folder")
+                            .tooltip("New collection")
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                this.new_folder(None, window, cx);
+                                this.add_collection(None, window, cx);
                             })),
                     )
                     .child(
@@ -540,6 +618,14 @@ impl Render for CollectionsPanel {
                     .overflow_y_scroll()
                     .p_2()
                     .gap_0p5()
+                    // The list's own background is the root, so dragging
+                    // something out of a collection is the same gesture as
+                    // dragging it in — there is no "move to top level" command to
+                    // find.
+                    .drag_over::<Dragged>(|style, _, _, cx| style.bg(cx.theme().list_hover))
+                    .on_drop(cx.listener(|this, dragged: &Dragged, _, cx| {
+                        this.accept_drop(dragged, None, cx)
+                    }))
                     .children(rows)
                     .when(requests.is_empty() && searching, |list| {
                         list.child(tokens::empty_state(

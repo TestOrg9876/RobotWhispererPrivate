@@ -1,0 +1,71 @@
+# Collections: creating one, naming it, and dragging a request into and out of it.
+#
+# Coordinates are relative to the app window, which GPUI opens at 1440x900.
+
+wait 900
+
+# Two requests to arrange.
+click 261 81
+wait 1400
+click 261 81
+wait 1400
+
+# A collection, named as it is created.
+click 232 81
+wait 900
+type Arm
+wait 400
+key Return
+wait 900
+shot 01-collection
+
+# Drag the second request onto it.
+drag 139 201 -> 100 125
+wait 1200
+shot 02-dragged-in
+
+# And back out, onto the list's own background.
+drag 160 163 -> 139 400
+wait 1200
+shot 03-dragged-out
+
+# A second collection, dragged inside the first.
+click 232 81
+wait 900
+type Wrist
+wait 400
+key Return
+wait 900
+drag 100 163 -> 100 125
+wait 1200
+shot 04-nested
+
+# A third level fits; the drag that would make a fourth is refused, and the
+# console says why.
+click 232 81
+wait 900
+type Joint
+wait 400
+key Return
+wait 900
+# Rows are 38px apart starting at y=125, so Joint sits at 239.
+drag 139 239 -> 139 163
+wait 1200
+shot 05-three-deep
+
+# A fourth level does not fit. The drop is refused, and the console says why
+# rather than the drag simply appearing to do nothing.
+click 38 888
+wait 700
+click 232 81
+wait 900
+type Tip
+wait 400
+key Return
+wait 900
+# Held over a target that will take it: the row lights up.
+dragover 139 277 -> 139 125
+wait 300
+shot 06-allowed
+release
+wait 1200

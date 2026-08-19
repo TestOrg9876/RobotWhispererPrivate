@@ -35,6 +35,19 @@ pub enum Step {
     Click { x: i32, y: i32 },
     /// Move and click the secondary button, which is how context menus open.
     RightClick { x: i32, y: i32 },
+    /// Press at one point, move to another, release — a drag.
+    ///
+    /// The intermediate moves matter: a press followed by a single jump does not
+    /// look like a drag to a UI toolkit, which starts one only after the pointer
+    /// has travelled while held.
+    Drag { from: (i32, i32), to: (i32, i32) },
+    /// The same, but hold the button at the end. Pair with `release`.
+    ///
+    /// This is how a drop target's own highlight gets photographed: by the time a
+    /// `drag` has finished there is nothing left to see.
+    DragOver { from: (i32, i32), to: (i32, i32) },
+    /// Release a held button.
+    Release,
     /// Type literal text.
     Type { text: String },
     /// Press a named key, in `xdotool` spelling: `Return`, `ctrl+s`, `Escape`.
@@ -116,6 +129,18 @@ impl FromStr for Step {
         };
 
         match verb {
+            "drag" | "dragover" => {
+                let (from, to) = rest
+                    .split_once("->")
+                    .with_context(|| format!("`{verb}` looks like `{verb} 10,20 -> 30,40`"))?;
+                let (from, to) = (coordinates(from.trim())?, coordinates(to.trim())?);
+                Ok(if verb == "drag" {
+                    Step::Drag { from, to }
+                } else {
+                    Step::DragOver { from, to }
+                })
+            }
+            "release" => Ok(Step::Release),
             "move" | "click" | "rightclick" => {
                 let (x, y) = coordinates(rest)?;
                 Ok(match verb {

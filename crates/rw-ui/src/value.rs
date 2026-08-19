@@ -115,6 +115,165 @@ fn indent(out: &mut String, depth: usize) {
     out.extend(std::iter::repeat_n(' ', depth * INDENT));
 }
 
+/// The most rows a field table shows.
+///
+/// Past this the table has stopped being something a person reads and become
+/// something they scroll past; the raw view is there for the whole thing.
+const MAX_LEAVES: usize = 400;
+
+/// Flattens a value into `(dotted path, rendered value)` rows.
+///
+/// One row per leaf, so a large message can be scanned for the one field that
+/// matters instead of read as nested text. Structures and arrays are not rows
+/// of their own — their leaves are.
+pub fn leaves(value: &CanonicalValue) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+    collect(value, &mut String::new(), &mut rows);
+    rows
+}
+
+fn collect(value: &CanonicalValue, path: &mut String, rows: &mut Vec<(String, String)>) {
+    if rows.len() >= MAX_LEAVES {
+        return;
+    }
+
+    match value {
+        CanonicalValue::Struct(fields) => {
+            for (name, field) in fields {
+                let mark = path.len();
+                if !path.is_empty() {
+                    path.push('.');
+                }
+                path.push_str(name);
+                collect(field, path, rows);
+                path.truncate(mark);
+            }
+        }
+        // A short array is worth expanding — `position[1]` is a field people
+        // look for. A long one is data, and is summarised instead.
+        CanonicalValue::Array(items) if items.len() <= 8 => {
+            for (index, item) in items.iter().enumerate() {
+                let mark = path.len();
+                let _ = write!(path, "[{index}]");
+                collect(item, path, rows);
+                path.truncate(mark);
+            }
+        }
+        CanonicalValue::Array(items) => {
+            rows.push((row_path(path), format!("[{} items]", items.len())))
+        }
+        CanonicalValue::Bytes(bytes) => {
+            rows.push((row_path(path), format!("[{} bytes]", bytes.len())))
+        }
+        leaf => rows.push((row_path(path), scalar(leaf))),
+    }
+}
+
+fn row_path(path: &str) -> String {
+    if path.is_empty() {
+        "value".to_string()
+    } else {
+        path.to_string()
+    }
+}
+
+/// One scalar, as it should read in a table cell.
+fn scalar(value: &CanonicalValue) -> String {
+    match value {
+        CanonicalValue::Null => "null".into(),
+        CanonicalValue::Bool(inner) => inner.to_string(),
+        CanonicalValue::Int(inner) => inner.to_string(),
+        CanonicalValue::Uint(inner) => inner.to_string(),
+        CanonicalValue::F32(inner) => inner.to_string(),
+        CanonicalValue::F64(inner) => inner.to_string(),
+        CanonicalValue::String(inner) => inner.clone(),
+        CanonicalValue::Time { sec, nanosec } | CanonicalValue::Duration { sec, nanosec } => {
+            format!("{sec}.{nanosec:09}")
+        }
+        // Handled by `collect`; here only so this is total.
+        CanonicalValue::Bytes(_) | CanonicalValue::Array(_) | CanonicalValue::Struct(_) => {
+            preview(value)
+        }
+    }
+}
+
+#[cfg(test)]
+mod leaf_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn structure(fields: [(&str, CanonicalValue); 2]) -> CanonicalValue {
+        CanonicalValue::Struct(BTreeMap::from(
+            fields.map(|(name, value)| (name.to_string(), value)),
+        ))
+    }
+
+    #[test]
+    fn a_scalar_is_one_row_named_value() {
+        assert_eq!(
+            leaves(&CanonicalValue::Int(3)),
+            [("value".to_string(), "3".to_string())]
+        );
+    }
+
+    #[test]
+    fn nesting_becomes_dotted_paths_not_indentation() {
+        let value = structure([
+            (
+                "position",
+                structure([
+                    ("x", CanonicalValue::F64(1.0)),
+                    ("y", CanonicalValue::F64(2.0)),
+                ]),
+            ),
+            ("frame", CanonicalValue::String("map".into())),
+        ]);
+        assert_eq!(
+            leaves(&value),
+            [
+                ("frame".to_string(), "map".to_string()),
+                ("position.x".to_string(), "1".to_string()),
+                ("position.y".to_string(), "2".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_short_array_expands_and_a_long_one_is_summarised() {
+        let short = CanonicalValue::Array(vec![CanonicalValue::Int(1), CanonicalValue::Int(2)]);
+        assert_eq!(
+            leaves(&short),
+            [
+                ("[0]".to_string(), "1".to_string()),
+                ("[1]".to_string(), "2".to_string()),
+            ]
+        );
+
+        let long = CanonicalValue::Array(vec![CanonicalValue::Int(0); 50]);
+        assert_eq!(
+            leaves(&long),
+            [("value".to_string(), "[50 items]".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_blob_reports_its_size_rather_than_its_contents() {
+        let value = CanonicalValue::Bytes(vec![0; 1024]);
+        assert_eq!(
+            leaves(&value),
+            [("value".to_string(), "[1024 bytes]".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_huge_message_stops_at_the_cap() {
+        let fields: BTreeMap<_, _> = (0..MAX_LEAVES + 100)
+            .map(|index| (format!("f{index:04}"), CanonicalValue::Int(index as i64)))
+            .collect();
+        assert_eq!(leaves(&CanonicalValue::Struct(fields)).len(), MAX_LEAVES);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

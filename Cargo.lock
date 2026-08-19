@@ -6141,6 +6141,7 @@ dependencies = [
  "futures-util",
  "gpui",
  "gpui-component",
+ "image",
  "rust-embed",
  "rw-canonical",
  "rw-core",

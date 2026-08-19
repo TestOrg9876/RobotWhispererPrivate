@@ -184,6 +184,23 @@ pub fn hairline(cx: &gpui::App) -> Div {
     div().h(px(1.)).w_full().bg(cx.theme().border)
 }
 
+/// Colours for one plotted series each, in the order they are handed out.
+///
+/// Ordered so neighbours stay apart in hue: a plot's lines are told apart by
+/// colour alone, and two greens next to each other are two lines nobody can
+/// separate. Read from the theme's chart ramp so they suit whichever theme is
+/// on rather than being a fixed set that fights half of them.
+pub fn series_colors(cx: &gpui::App) -> Vec<gpui::Hsla> {
+    let theme = cx.theme();
+    vec![
+        theme.chart_1,
+        theme.chart_3,
+        theme.chart_5,
+        theme.chart_2,
+        theme.chart_4,
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

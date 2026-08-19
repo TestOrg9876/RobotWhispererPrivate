@@ -325,11 +325,13 @@ impl WorkspaceView {
 
     // ── dialogs ────────────────────────────────────────────────────────────────
 
-    /// Shows the connections panel, docked to the right.
+    /// Shows the connections panel, docked to the right, or hides it if it is
+    /// already showing.
     ///
     /// A panel rather than a dialog: connecting to several ROS systems is
     /// something you do *while* working, watching them come up, not a modal
-    /// errand that blocks the window until it is dismissed.
+    /// errand that blocks the window until it is dismissed. Which is also why
+    /// it toggles — a dock you can only open is a dock in the way.
     fn open_connections(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let panel = self
             .connections
@@ -338,9 +340,7 @@ impl WorkspaceView {
 
         self.dock.update(cx, |dock, cx| {
             if dock.has_dock(DockPlacement::Right) {
-                if !dock.is_dock_open(DockPlacement::Right, cx) {
-                    dock.toggle_dock(DockPlacement::Right, window, cx);
-                }
+                dock.toggle_dock(DockPlacement::Right, window, cx);
             } else {
                 // Created rather than added, so it opens at a width the form
                 // actually fits in: `add_panel` would take the dock default.

@@ -5,6 +5,10 @@ edition = "2024"
 description = "The Robot Whisperer GPUI application"
 
 [dependencies]
+image-crate = { package = "image", version = "0.25", default-features = false, features = [
+    "jpeg",
+    "png",
+] }
 gpui.workspace = true
 gpui-component.workspace = true
 

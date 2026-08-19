@@ -13,6 +13,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window,
     deferred, div, px,
 };
+use gpui_component::chart::LineChart;
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
@@ -29,6 +30,8 @@ use rw_transport::ConnectionId;
 
 use crate::discovery::{self, Suggestion};
 use crate::form::{self, Field};
+use crate::image;
+use crate::series::{History, Series};
 use crate::session::{RobotWhisperer, Sessions};
 use crate::tokens;
 use crate::value;
@@ -41,6 +44,9 @@ struct Incoming {
     value: Option<CanonicalValue>,
     schema: Option<SharedString>,
     count: u64,
+    /// Numeric fields over time, for the plot. Accumulated as messages land
+    /// rather than derived at render: by then the earlier ones are gone.
+    history: History,
 }
 
 /// Why the request cannot run, and what the user can do about it.
@@ -450,6 +456,7 @@ impl RequestPanel {
                     let Ok(mut incoming) = incoming.lock() else {
                         return;
                     };
+                    incoming.history.observe(&frame.value);
                     incoming.value = Some(frame.value.clone());
                     incoming.schema = Some(frame.schema.name.clone().into());
                     incoming.count += 1;
@@ -489,6 +496,7 @@ impl RequestPanel {
                     match outcome {
                         Ok(response) => {
                             let mut incoming = panel.incoming.lock().expect("incoming mutex");
+                            incoming.history.observe(&response);
                             incoming.value = Some(response);
                             incoming.count += 1;
                         }
@@ -553,6 +561,7 @@ impl RequestPanel {
                 let Ok(mut incoming) = incoming.lock() else {
                     break;
                 };
+                incoming.history.observe(&feedback);
                 incoming.value = Some(feedback);
                 incoming.count += 1;
             }
@@ -563,6 +572,7 @@ impl RequestPanel {
                     match result {
                         Ok(Ok(value)) => {
                             let mut incoming = panel.incoming.lock().expect("incoming mutex");
+                            incoming.history.observe(&value);
                             incoming.value = Some(value);
                             incoming.count += 1;
                         }
@@ -1187,15 +1197,190 @@ impl RequestPanel {
         )
     }
 
+    /// The message as something readable.
+    ///
+    /// An image is shown as an image; anything else becomes a flat table of
+    /// leaf paths and values, which beats indented JSON for the thing people
+    /// actually do here — finding one field in a large message.
+    fn visualize(&self, value: &CanonicalValue, cx: &App) -> AnyElement {
+        if let Some(image) = image::decode(value) {
+            return self.image(image, cx);
+        }
+
+        let leaves = value::leaves(value);
+        if leaves.is_empty() {
+            return tokens::empty_state(
+                IconName::Inbox,
+                "Nothing to show",
+                "This message has no fields.",
+                cx,
+            )
+            .into_any_element();
+        }
+
+        v_flex()
+            .id("fields")
+            .size_full()
+            .gap_0p5()
+            .children(leaves.into_iter().map(|(path, shown)| {
+                h_flex()
+                    .w_full()
+                    .py_0p5()
+                    .gap_4()
+                    .items_baseline()
+                    .child(
+                        tokens::mono(cx)
+                            .w(px(240.))
+                            .flex_shrink_0()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .truncate()
+                            .child(path),
+                    )
+                    .child(
+                        tokens::mono(cx)
+                            .flex_1()
+                            .min_w_0()
+                            .text_xs()
+                            .text_color(cx.theme().foreground)
+                            .child(shown),
+                    )
+            }))
+            .into_any_element()
+    }
+
+    fn image(&self, image: image::Frame, cx: &App) -> AnyElement {
+        v_flex()
+            .size_full()
+            .gap_2()
+            .items_center()
+            .child(
+                gpui::img(image.source)
+                    .max_w_full()
+                    .max_h(px(420.))
+                    .rounded(cx.theme().radius),
+            )
+            .child(
+                tokens::mono(cx)
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(image.caption),
+            )
+            .into_any_element()
+    }
+
+    /// One line per numeric field, newest sample at the right.
+    ///
+    /// The x axis is the sample index rather than a wall clock: messages arrive
+    /// when the robot sends them, and pretending otherwise would draw a smooth
+    /// line over a gap where nothing came.
+    fn plot(&self, history: &History, cx: &App) -> AnyElement {
+        if history.is_empty() {
+            return tokens::empty_state(
+                IconName::ChartPie,
+                "Nothing to plot",
+                "This message has no numbers in it, or none that fit on a line chart.",
+                cx,
+            )
+            .into_any_element();
+        }
+
+        let palette = tokens::series_colors(cx);
+        let charts = history
+            .iter()
+            .enumerate()
+            .map(|(index, (path, series))| self.series_row(index, path, series, &palette, cx));
+
+        v_flex()
+            .id("plot")
+            .size_full()
+            .gap_3()
+            .children(charts)
+            .into_any_element()
+    }
+
+    fn series_row(
+        &self,
+        index: usize,
+        path: &str,
+        series: &Series,
+        palette: &[gpui::Hsla],
+        cx: &App,
+    ) -> AnyElement {
+        let stroke = palette[index % palette.len()];
+        let caption = match (series.last(), series.range()) {
+            (Some(last), Some((low, high))) => {
+                format!("{last:.4}  ·  {low:.4} to {high:.4}")
+            }
+            _ => String::new(),
+        };
+
+        // The x value is the sample's position in the window, as a string
+        // because that is what the chart's point scale keys on. It has to be
+        // distinct per sample — give them all the same label and every point
+        // lands on the same x, which draws the series as a single vertical
+        // stroke. The axis itself is off, so the numbers are never shown.
+        let points: Vec<(SharedString, f64)> = series
+            .samples
+            .iter()
+            .enumerate()
+            .map(|(index, sample)| (SharedString::from(index.to_string()), *sample))
+            .collect();
+
+        v_flex()
+            .flex_shrink_0()
+            .gap_1()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_baseline()
+                    .justify_between()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(tokens::status_dot(stroke))
+                            .child(
+                                tokens::mono(cx)
+                                    .text_xs()
+                                    .text_color(cx.theme().foreground)
+                                    .child(if path.is_empty() {
+                                        SharedString::from("value")
+                                    } else {
+                                        SharedString::from(path.to_string())
+                                    }),
+                            ),
+                    )
+                    .child(
+                        tokens::mono(cx)
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(caption),
+                    ),
+            )
+            .child(
+                div().h(px(96.)).w_full().child(
+                    LineChart::new(points)
+                        .x(|(label, _): &(SharedString, f64)| label.clone())
+                        .y(|(_, sample): &(SharedString, f64)| *sample)
+                        .stroke(stroke)
+                        .linear()
+                        .x_axis(false),
+                ),
+            )
+            .into_any_element()
+    }
+
     fn response(&self, cx: &mut Context<Self>) -> AnyElement {
         let active = self.tab;
         let running = self.running();
-        let (value, schema, count) = {
+        let (value, schema, count, history) = {
             let incoming = self.incoming.lock().expect("incoming mutex");
             (
                 incoming.value.clone(),
                 incoming.schema.clone(),
                 incoming.count,
+                incoming.history.clone(),
             )
         };
 
@@ -1226,11 +1411,8 @@ impl RequestPanel {
                 .text_color(cx.theme().foreground)
                 .child(value::preview(value))
                 .into_any_element(),
-            (Some(_), _) => div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child("This view arrives with the visualizer milestone.")
-                .into_any_element(),
+            (Some(_), ResponseTab::Plot) => self.plot(&history, cx),
+            (Some(value), ResponseTab::Visualize) => self.visualize(value, cx),
             (None, _) => tokens::empty_state(
                 IconName::Inbox,
                 if running {

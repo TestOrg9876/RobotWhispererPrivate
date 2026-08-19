@@ -33,6 +33,8 @@ pub enum Step {
     Move { x: i32, y: i32 },
     /// Move and click the primary button.
     Click { x: i32, y: i32 },
+    /// Move and click the secondary button, which is how context menus open.
+    RightClick { x: i32, y: i32 },
     /// Type literal text.
     Type { text: String },
     /// Press a named key, in `xdotool` spelling: `Return`, `ctrl+s`, `Escape`.
@@ -114,12 +116,12 @@ impl FromStr for Step {
         };
 
         match verb {
-            "move" | "click" => {
+            "move" | "click" | "rightclick" => {
                 let (x, y) = coordinates(rest)?;
-                Ok(if verb == "click" {
-                    Step::Click { x, y }
-                } else {
-                    Step::Move { x, y }
+                Ok(match verb {
+                    "click" => Step::Click { x, y },
+                    "rightclick" => Step::RightClick { x, y },
+                    _ => Step::Move { x, y },
                 })
             }
             "type" => {

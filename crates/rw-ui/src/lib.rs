@@ -17,6 +17,7 @@ pub mod session;
 pub mod theme;
 pub mod tick;
 pub mod tokens;
+pub mod tree;
 pub mod value;
 pub mod workspace;
 pub mod workspace_view;

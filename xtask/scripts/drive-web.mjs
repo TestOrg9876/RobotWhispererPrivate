@@ -116,7 +116,8 @@ function playwrightKey(key) {
 
 /// A short description of a step, for attributing a panic to it.
 function describe(step) {
-  if (step.step === "click") return ` ${step.x},${step.y}`;
+  if (step.step === "click" || step.step === "rightclick")
+    return ` ${step.x},${step.y}`;
   if (step.step === "type") return ` ${JSON.stringify(step.text)}`;
   if (step.step === "key") return ` ${step.key}`;
   if (step.step === "shot") return ` ${step.name}`;
@@ -152,6 +153,12 @@ try {
         await page.mouse.move(step.x, step.y);
         await page.waitForTimeout(150);
         await page.mouse.click(step.x, step.y);
+        await page.waitForTimeout(250);
+        break;
+      case "rightclick":
+        await page.mouse.move(step.x, step.y);
+        await page.waitForTimeout(50);
+        await page.mouse.click(step.x, step.y, { button: "right" });
         await page.waitForTimeout(250);
         break;
       case "type":

@@ -128,6 +128,11 @@ fn play(
                 // GPUI processes input on its own tick; give it one.
                 std::thread::sleep(Duration::from_millis(250));
             }
+            Step::RightClick { x, y } => {
+                point_at(display, window, *x, *y)?;
+                xdotool(display, &["click", "3"])?;
+                std::thread::sleep(Duration::from_millis(250));
+            }
             Step::Type { text } => {
                 xdotool(display, &["type", "--delay", "40", text])?;
                 std::thread::sleep(Duration::from_millis(250));

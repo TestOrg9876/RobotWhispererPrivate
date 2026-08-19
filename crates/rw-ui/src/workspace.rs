@@ -281,6 +281,165 @@ impl Workspace {
         })
     }
 
+    // ── folders ────────────────────────────────────────────────────────────────
+
+    pub fn create_collection(
+        &mut self,
+        name: String,
+        parent: Option<i64>,
+        cx: &mut Context<Self>,
+    ) -> Task<Option<Collection>> {
+        let storage = self.storage();
+        cx.spawn(async move |workspace, cx| {
+            let created = storage
+                .create_collection(rw_core::storage::NewCollection {
+                    parent_id: parent,
+                    name,
+                })
+                .await;
+            workspace
+                .update(cx, |workspace, cx| {
+                    cx.notify();
+                    match created {
+                        Ok(collection) => {
+                            workspace.collections.push(collection.clone());
+                            Some(collection)
+                        }
+                        Err(error) => {
+                            workspace.fail("create folder", error);
+                            None
+                        }
+                    }
+                })
+                .ok()
+                .flatten()
+        })
+    }
+
+    pub fn rename_collection(&mut self, id: i64, name: String, cx: &mut Context<Self>) -> Task<()> {
+        let storage = self.storage();
+        let Some(collection) = self
+            .collections
+            .iter_mut()
+            .find(|collection| collection.id == id)
+        else {
+            return Task::ready(());
+        };
+        collection.name = name;
+        let updated = collection.clone();
+        cx.notify();
+
+        cx.spawn(async move |workspace, cx| {
+            let outcome = storage.update_collection(&updated).await;
+            workspace
+                .update(cx, |workspace, cx| {
+                    if let Err(error) = outcome {
+                        workspace.fail("rename folder", error);
+                        cx.notify();
+                    }
+                })
+                .ok();
+        })
+    }
+
+    /// Deletes a folder, keeping what was inside it.
+    ///
+    /// The requests move up to where the folder was rather than going with it: a
+    /// folder is a way of arranging work, and removing the arrangement should
+    /// never remove the work.
+    pub fn delete_collection(&mut self, id: i64, cx: &mut Context<Self>) -> Task<()> {
+        let storage = self.storage();
+        let parent = self
+            .collections
+            .iter()
+            .find(|collection| collection.id == id)
+            .and_then(|collection| collection.parent_id);
+
+        let orphans: Vec<Request> = self
+            .requests
+            .iter_mut()
+            .filter(|request| request.collection_id == Some(id))
+            .map(|request| {
+                request.collection_id = parent;
+                request.clone()
+            })
+            .collect();
+        let children: Vec<Collection> = self
+            .collections
+            .iter_mut()
+            .filter(|collection| collection.parent_id == Some(id))
+            .map(|collection| {
+                collection.parent_id = parent;
+                collection.clone()
+            })
+            .collect();
+        self.collections.retain(|collection| collection.id != id);
+        cx.notify();
+
+        cx.spawn(async move |workspace, cx| {
+            let mut failure = None;
+            // Re-parented first: deleting the folder before its contents are
+            // moved out is what a cascading delete in the database would turn
+            // into lost requests.
+            for request in orphans {
+                if let Err(error) = storage.update_request(&request).await {
+                    failure = Some(error);
+                    break;
+                }
+            }
+            for child in children {
+                if failure.is_some() {
+                    break;
+                }
+                if let Err(error) = storage.update_collection(&child).await {
+                    failure = Some(error);
+                }
+            }
+            if failure.is_none()
+                && let Err(error) = storage.delete_collection(id).await
+            {
+                failure = Some(error);
+            }
+
+            workspace
+                .update(cx, |workspace, cx| {
+                    if let Some(error) = failure {
+                        workspace.fail("delete folder", error);
+                    }
+                    cx.notify();
+                })
+                .ok();
+        })
+    }
+
+    /// Moves a request into a folder, or out to the root with `None`.
+    pub fn move_request(
+        &mut self,
+        request: i64,
+        folder: Option<i64>,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        let storage = self.storage();
+        let Some(found) = self.requests.iter_mut().find(|entry| entry.id == request) else {
+            return Task::ready(());
+        };
+        found.collection_id = folder;
+        let moved = found.clone();
+        cx.notify();
+
+        cx.spawn(async move |workspace, cx| {
+            let outcome = storage.update_request(&moved).await;
+            workspace
+                .update(cx, |workspace, cx| {
+                    if let Err(error) = outcome {
+                        workspace.fail("move request", error);
+                        cx.notify();
+                    }
+                })
+                .ok();
+        })
+    }
+
     // ── import and export ──────────────────────────────────────────────────────
 
     /// The workspace as a shareable document.

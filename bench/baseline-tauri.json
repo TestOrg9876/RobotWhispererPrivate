@@ -1,0 +1,43 @@
+{
+  "$comment": "Tauri 2 release baseline, measured before the Electron port. Machine: 4 vCPU, 15 GiB RAM, Ubuntu 24.04 container. Reproduce with `bun run build:native && bun run tauri build --bundles deb,appimage` on the `main` branch.",
+  "revision": "bbfdb21",
+  "shell": "tauri-2",
+  "measuredAt": "2026-08-19",
+  "host": { "cpus": 4, "memGiB": 15, "os": "Ubuntu 24.04", "arch": "x86_64" },
+
+  "frontend": {
+    "buildSeconds": 37,
+    "outputBytes": 12582912,
+    "assetsBytes": 6606028,
+    "dracoDecoderBytes": 3774873,
+    "$comment": "static/ is 114 MB of .dae/.obj source meshes; vite/mesh-optimize.ts transcodes them to Draco GLB at closeBundle and deletes the sources, so only 12 MB ships. 76 .glb out, 0 source meshes remaining."
+  },
+
+  "rust": {
+    "releaseBuildSeconds": 253,
+    "binaryBytes": 28728600,
+    "cargoPackages": 556,
+    "$comment": "556 packages includes the whole tauri/wry/webkit2gtk/gtk/objc2 stack."
+  },
+
+  "packages": {
+    "deb": {
+      "bytes": 12494298,
+      "selfContained": false,
+      "$comment": "Small ONLY because it depends on the system libwebkit2gtk-4.1. That dependency is the Ubuntu 20.04 failure: 20.04 ships WebKitGTK too old to run the app."
+    },
+    "appimage": {
+      "bytes": 86391288,
+      "selfContained": true,
+      "$comment": "Self-contained, so it must bundle WebKitGTK + GTK via linuxdeploy-plugin-gtk. This is the honest apples-to-apples number against an Electron package: 82 MB, not 12 MB."
+    },
+    "snap": null,
+    "flatpak": null
+  },
+
+  "notes": [
+    "AppImage bundling initially failed for a missing /usr/bin/xdg-open; installing xdg-utils fixed it.",
+    "No snap or flatpak baseline: the repo never had configs for either, which is part of why the comparison was requested.",
+    "GPU-bound rendering was not measured. This container is headless with software GL, so any WebGL FPS number would describe swiftshader, not WebKitGTK vs Chromium."
+  ]
+}

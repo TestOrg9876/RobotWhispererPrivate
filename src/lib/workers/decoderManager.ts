@@ -1,4 +1,3 @@
-import { isTauri } from "$lib/core/platform";
 import type { DecodedFramePayload } from "./decoder.worker";
 
 export type DecodedFrame = DecodedFramePayload;
@@ -20,7 +19,9 @@ class DecoderWorkerManager {
 
   private ensureWorker(): Worker | null {
     if (this.worker) return this.worker;
-    if (!isTauri() && typeof Worker === "undefined") return null;
+    // Straightforwardly: no Worker constructor, no worker. The old form of this
+    // guard also consulted `isTauri()`, which could not change the outcome.
+    if (typeof Worker === "undefined") return null;
     try {
       this.worker = new Worker(new URL("./decoder.worker.ts", import.meta.url), { type: "module" });
       this.worker.onmessage = (event: MessageEvent) => this.onWorkerMessage(event);

@@ -1,0 +1,113 @@
+appId: com.mmarfeychuk.robot-whisperer
+productName: Robot Whisperer
+copyright: Copyright © Mykhaylo Marfeychuk
+
+directories:
+  output: dist
+  buildResources: build-resources
+
+# Only the compiled shell ships. The renderer and the daemon come in through
+# extraResources below; node_modules is deliberately absent because the shell
+# bundle is self-contained (esbuild inlines everything but `electron` itself).
+files:
+  - dist-electron/**/*
+  - package.json
+  # electron-builder ships `dependencies` into the asar by default. Nothing
+  # here needs them at runtime: esbuild inlines everything the shell uses
+  # (except `electron` itself), and Vite already bundled three.js, uplot and
+  # urdf-loader into the renderer. Shipping them again costs ~27 MB of asar
+  # for code that is never loaded.
+  - "!node_modules/**/*"
+
+extraResources:
+  # The SvelteKit SPA, already Draco-optimized by vite/mesh-optimize.ts:
+  # 114 MB of source meshes in static/ become ~12 MB of .glb here.
+  - from: build
+    to: build
+  # The Rust core. Must live outside the asar — a native binary cannot be
+  # exec'd from inside an archive.
+  #
+  # Built by `bun run build:daemon`, which targets glibc 2.28 via
+  # cargo-zigbuild. This is load-bearing, not incidental: a plain
+  # `cargo build` on Ubuntu 24.04 produces a binary needing GLIBC_2.34, which
+  # will not start on Ubuntu 20.04 (glibc 2.31) — and would have quietly
+  # undone the entire reason for leaving Tauri. Electron's own binary only
+  # needs 2.25, so the Rust side must not be the one raising the floor.
+  - from: core/target/x86_64-unknown-linux-gnu/release/rw-daemon
+    to: bin/rw-daemon
+
+asar: true
+compression: maximum
+
+# Ship one language. Chromium's 55 locale packs are 47 MB of the 313 MB
+# runtime and the app has no translations to match them.
+electronLanguages:
+  - en-US
+
+linux:
+  category: Development
+  synopsis: A Postman-style client for ROS
+  description: >
+    Robot Whisperer gives you one interface to connect to a robot, browse its
+    topics, services and actions, send and inspect messages, and build live
+    dashboards from the data.
+  icon: build-resources/icons
+  target:
+    - deb
+    - AppImage
+    - snap
+    - flatpak
+  # Electron links these dynamically. They are present on 20.04 through 24.04;
+  # the snap and flatpak carry their own copies via their runtimes.
+  desktop:
+    entry:
+      Name: Robot Whisperer
+      Comment: A Postman-style client for ROS
+      Categories: Development;Utility;
+
+deb:
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libuuid1
+    - libsecret-1-0
+
+snap:
+  # core22 is the key to "one snap for 20.04, 22.04 and 24.04": the snap carries
+  # its own runtime, so the host's own library versions never come into it.
+  # snapd pulls the core22 base on any supported host.
+  base: core22
+  grade: stable
+  confinement: strict
+  plugs:
+    - default
+    - network
+    - network-bind
+    - home
+    - opengl
+    - browser-support
+    - desktop
+    - desktop-legacy
+    - wayland
+    - x11
+
+flatpak:
+  runtime: org.freedesktop.Platform
+  runtimeVersion: "23.08"
+  sdk: org.freedesktop.Sdk
+  base: org.electronjs.Electron2.BaseApp
+  baseVersion: "23.08"
+  finishArgs:
+    - --share=ipc
+    - --socket=x11
+    - --socket=wayland
+    - --socket=pulseaudio
+    - --device=dri
+    # The daemon binds a loopback socket and the transports reach the robot.
+    - --share=network
+    - --filesystem=home

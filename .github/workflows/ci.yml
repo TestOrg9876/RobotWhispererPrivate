@@ -23,20 +23,36 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: src-tauri
+        working-directory: core
     steps:
       - uses: actions/checkout@v4
-      - name: Install Linux build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev
+      # No apt step. The Tauri port removed libwebkit2gtk-4.1-dev, libgtk-3-dev,
+      # librsvg2-dev and libayatana-appindicator3-dev: the Rust core has no GUI
+      # dependencies at all now, so this job needs nothing but a toolchain.
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: core
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - uses: taiki-e/install-action@nextest
       - run: cargo nextest run --workspace
+
+  daemon-smoke:
+    # Proves the Rust core is driveable with no frontend: spawns rw-daemon and
+    # exercises the JSON-RPC surface, the auth checks and the binary framing.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+      - run: cargo build --release -p rw-daemon
+        working-directory: core
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: node scripts/daemon-smoke.mjs core/target/release/rw-daemon

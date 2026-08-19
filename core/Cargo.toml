@@ -1,0 +1,47 @@
+[workspace]
+members = [
+    "crates/rw-core",
+    "crates/rw-canonical",
+    "crates/rw-codec-cdr",
+    "crates/rw-codec-json",
+    "crates/rw-codec-rosmsg",
+    "crates/rw-daemon",
+    "crates/rw-schema-foxglove",
+    "crates/rw-schema-ros1",
+    "crates/rw-schema-ros2",
+    "crates/rw-session",
+    "crates/rw-transport",
+    "crates/rw-pipeline",
+    "crates/rw-wasm",
+    "crates/rw-transport-dummy",
+    "crates/rw-transport-foxglove-ws",
+    "crates/rw-transport-rosbridge",
+    "crates/rw-wire",
+    "crates/rw-ws",
+    "crates/rw-validation",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+
+[workspace.dependencies]
+tokio = { version = "1", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tracing = "0.1"
+
+# Release profile for the shipped daemon binary. The desktop app ships exactly
+# one Rust artifact, so it is worth optimizing hard: fat LTO across the whole
+# 18-crate graph, a single codegen unit, and no unwinding tables. `strip` here
+# saves roughly 30% of the on-disk binary, which lands directly in the package.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+# Deliberately NOT `panic = "abort"`. It would save a few percent of binary
+# size, but tokio catches a panicking task and keeps the runtime alive, so
+# unwinding means one bad frame decode kills a single subscription instead of
+# the whole daemon. Robustness is worth more here than the bytes.

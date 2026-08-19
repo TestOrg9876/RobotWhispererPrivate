@@ -1,4 +1,5 @@
 import { SvelteMap } from "svelte/reactivity";
+import { daemonClient } from "./daemonClient";
 import { getWasmInstance } from "./pipelineRpc";
 import type {
   ArrayLength,
@@ -15,14 +16,13 @@ import type {
   Value,
 } from "./types";
 
-async function tauriInvoke<T>(name: string, args?: Record<string, unknown>): Promise<T> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<T>(name, args);
+function daemonInvoke<T>(name: string, args?: Record<string, unknown>): Promise<T> {
+  return daemonClient.call<T>(name, args);
 }
 
 export async function listSchemas(): Promise<SchemaSummary[]> {
   if (!import.meta.env.RW_WEB) {
-    return tauriInvoke<SchemaSummary[]>("list_schemas_summary");
+    return daemonInvoke<SchemaSummary[]>("list_schemas_summary");
   }
   try {
     const wasm = await getWasmInstance();
@@ -36,7 +36,7 @@ export async function listSchemas(): Promise<SchemaSummary[]> {
 export async function listSchemasByName(name: string): Promise<SchemaDefinition[]> {
   let defs: SchemaDefinition[] = [];
   if (!import.meta.env.RW_WEB) {
-    defs = await tauriInvoke<SchemaDefinition[]>("list_schemas_by_name", { name });
+    defs = await daemonInvoke<SchemaDefinition[]>("list_schemas_by_name", { name });
   } else {
     try {
       const wasm = await getWasmInstance();
@@ -72,7 +72,7 @@ export async function getSchema(hash: string): Promise<SchemaDefinition | null> 
   if (cached) return cached;
   let def: SchemaDefinition | null = null;
   if (!import.meta.env.RW_WEB) {
-    def = await tauriInvoke<SchemaDefinition | null>("get_schema_by_hash", { hash });
+    def = await daemonInvoke<SchemaDefinition | null>("get_schema_by_hash", { hash });
   } else {
     try {
       const wasm = await getWasmInstance();
@@ -92,7 +92,7 @@ export async function registerSchema(
   definition: string,
 ): Promise<SchemaRef> {
   if (!import.meta.env.RW_WEB) {
-    return tauriInvoke<SchemaRef>("register_schema", { name, kind, definition });
+    return daemonInvoke<SchemaRef>("register_schema", { name, kind, definition });
   }
   const wasm = await getWasmInstance();
   return JSON.parse(await wasm.registerSchema(name, kind, definition)) as SchemaRef;

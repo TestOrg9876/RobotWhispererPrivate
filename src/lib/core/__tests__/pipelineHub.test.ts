@@ -2,15 +2,21 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const invokeMock = vi.fn();
 
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: (...args: unknown[]) => invokeMock(...args),
-  Channel: class {
-    onmessage?: (buf: ArrayBuffer | unknown) => void;
+// `daemonClient.call(method, params)` has the same shape the old Tauri
+// `invoke(command, args)` had, so the assertions below on `c[0]` / `c[1]`
+// carry over unchanged.
+vi.mock("$lib/core/daemonClient", () => ({
+  daemonClient: {
+    call: (...args: unknown[]) => invokeMock(...args),
+    ingestUrl: () => "ws://127.0.0.1:54321/ingest?token=test",
+    onAction: () => {},
+    onStatus: () => {},
+    onDiscovery: () => {},
   },
 }));
 
 vi.mock("$lib/core/platform", () => ({
-  isTauri: () => true,
+  isDesktop: () => true,
   isBrowser: () => false,
 }));
 
@@ -37,7 +43,7 @@ beforeEach(() => {
   decoderUnregister.mockReset();
   lastWorkerCallback = null;
   invokeMock.mockImplementation((command: string) => {
-    if (command === "ingest_ws_port") return Promise.resolve(54321);
+    if (command === "pipeline_watch") return Promise.resolve(null);
     if (command === "pipeline_subscribe_topic") {
       return Promise.resolve({
         subscription_id: "sub-1",

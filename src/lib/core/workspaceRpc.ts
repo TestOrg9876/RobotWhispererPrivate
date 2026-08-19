@@ -1,3 +1,4 @@
+import { daemonClient } from "./daemonClient";
 import { getWasmInstance } from "./pipelineRpc";
 import type {
   Collection,
@@ -35,10 +36,9 @@ export interface WorkspaceRpc {
   importWorkspace(file: WorkspaceFile, mode: ImportMode): Promise<ImportReport>;
 }
 
-class TauriWorkspaceRpc implements WorkspaceRpc {
-  private async invoke<T>(name: string, args?: Record<string, unknown>): Promise<T> {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<T>(name, args);
+class DaemonWorkspaceRpc implements WorkspaceRpc {
+  private invoke<T>(name: string, args?: Record<string, unknown>): Promise<T> {
+    return daemonClient.call<T>(name, args);
   }
   listRequests() {
     return this.invoke<Request[]>("list_requests");
@@ -168,4 +168,4 @@ class WasmWorkspaceRpc implements WorkspaceRpc {
 
 export const workspaceRpc: WorkspaceRpc = import.meta.env.RW_WEB
   ? new WasmWorkspaceRpc()
-  : new TauriWorkspaceRpc();
+  : new DaemonWorkspaceRpc();

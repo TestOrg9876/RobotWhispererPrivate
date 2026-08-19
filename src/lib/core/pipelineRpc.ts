@@ -26,7 +26,7 @@ function getImpl(): Promise<PipelineRpc> {
         const mod = await import("./pipelineRpc.wasm");
         return mod.create();
       }
-      const mod = await import("./pipelineRpc.tauri");
+      const mod = await import("./pipelineRpc.electron");
       return mod.create();
     })();
   }

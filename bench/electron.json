@@ -1,0 +1,71 @@
+{
+  "$comment": "Electron port, release build. Same machine and method as baseline-tauri.json. Reproduce with `bun run package:deb && bun run package:appimage`.",
+  "shell": "electron-43.4.1",
+  "measuredAt": "2026-08-19",
+  "host": { "cpus": 4, "memGiB": 15, "os": "Ubuntu 24.04", "arch": "x86_64" },
+
+  "frontend": {
+    "buildSeconds": 37,
+    "outputBytes": 12582912,
+    "$comment": "Unchanged by the port. vite/mesh-optimize.ts still transcodes 114 MB of source meshes to 12 MB of Draco GLB."
+  },
+
+  "rust": {
+    "releaseBuildSeconds": 132,
+    "binaryBytes": 6911504,
+    "cargoPackages": 180,
+    "glibcFloor": "2.28",
+    "buildCommand": "cargo zigbuild --release -p rw-daemon --target x86_64-unknown-linux-gnu.2.28",
+    "$comment": "556 -> 180 packages after dropping tauri/wry/webkit2gtk/gtk/objc2. The zigbuild target is load-bearing: a plain cargo build on 24.04 needs GLIBC_2.34 and will not start on Ubuntu 20.04."
+  },
+
+  "packages": {
+    "deb": {
+      "bytes": 96709704,
+      "installedSizeBytes": 297872384,
+      "selfContained": true,
+      "$comment": "Not comparable to Tauri's 11.9 MB deb, which depends on system libwebkit2gtk-4.1-0 and is uninstallable on Ubuntu 20.04 (which ships 4.0)."
+    },
+    "appimage": {
+      "bytes": 96956570,
+      "selfContained": true,
+      "$comment": "The fair comparison: Tauri's self-contained AppImage is 86391288 bytes, so this is +12%."
+    },
+    "snap": null,
+    "flatpak": null
+  },
+
+  "sizeReductions": {
+    "localesPrunedBytes": 48234496,
+    "asarNodeModulesRemovedBytes": 28311552,
+    "asarBytesAfter": 9216,
+    "unpackedBytes": 298844160,
+    "keptDeliberately": ["libvk_swiftshader.so", "libvulkan.so.1", "LICENSES.chromium.html"]
+  },
+
+  "runtime": {
+    "windowMs": 213,
+    "processes": 11,
+    "rssMB": 585.0,
+    "pssMB": 277.6,
+    "daemonRssMB": 7.7,
+    "$comment": "PSS is the honest figure for multi-process Chromium. windowMs is not directly comparable to Tauri's: this shell waits for ready-to-show, Tauri maps an empty window immediately."
+  },
+
+  "verification": {
+    "rustTests": "181 passed, 0 failed",
+    "vitest": "179 passed (23 files)",
+    "svelteCheck": "0 errors, 0 warnings",
+    "clippy": "clean, -D warnings, whole workspace",
+    "daemonSmoke": "18 passed, 0 failed (no frontend involved)",
+    "packagedAppLaunch": "daemon listening + renderer connected over loopback",
+    "glibcFloorAllShippedElf": "2.28",
+    "glibcxxDeps": "none (libstdc++ statically linked)"
+  },
+
+  "notMeasured": [
+    "GPU/WebGL frame rate: container is headless with software GL, so any number would describe llvmpipe rather than WebKitGTK vs Chromium. This is the largest expected win and it is unverified.",
+    "snap and flatpak packages: snapcraft needs snapd and flatpak-builder needs flathub, which this environment's egress policy blocks. Built in CI.",
+    "Runtime install-and-launch on Ubuntu 20.04/22.04/24.04: Docker Hub blob CDN is blocked here. Verified statically via ELF symbol analysis; the release workflow runs the real matrix."
+  ]
+}

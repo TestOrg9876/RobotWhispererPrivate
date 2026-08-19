@@ -1,0 +1,34 @@
+[package]
+name = "rw-daemon"
+version = "0.1.0"
+description = "Robot Whisperer core daemon: the Rust pipeline exposed over a loopback WebSocket"
+authors = ["Mykhaylo Marfeychuk"]
+edition.workspace = true
+publish = false
+
+[[bin]]
+name = "rw-daemon"
+path = "src/main.rs"
+
+[dependencies]
+rw-core = { path = "../rw-core" }
+rw-canonical = { path = "../rw-canonical" }
+rw-pipeline = { path = "../rw-pipeline" }
+rw-transport = { path = "../rw-transport" }
+rw-wire = { path = "../rw-wire" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+tokio-tungstenite = "0.23"
+futures-util = "0.3"
+uuid = { version = "1", features = ["v4", "serde"] }
+directories = "5"
+getrandom = "0.2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }

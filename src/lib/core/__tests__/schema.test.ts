@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   defaultValueFor,
   filterByRequestKind,
@@ -132,19 +132,16 @@ describe("primaryMessage", () => {
 });
 
 const mockInvoke = vi.fn();
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: (...args: unknown[]) => mockInvoke(...args),
+vi.mock("$lib/core/daemonClient", () => ({
+  daemonClient: {
+    call: (...args: unknown[]) => mockInvoke(...args),
+  },
 }));
 
 describe("resolveSchemaByName", () => {
   beforeEach(() => {
     clearSchemaCache();
     vi.clearAllMocks();
-    (window as any).__TAURI_INTERNALS__ = {};
-  });
-
-  afterEach(() => {
-    delete (window as any).__TAURI_INTERNALS__;
   });
 
   const mockDefinition: SchemaDefinition = {

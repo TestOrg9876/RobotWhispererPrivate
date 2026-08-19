@@ -3,6 +3,10 @@ node_modules
 /build
 /.svelte-kit
 /package
+
+# electron shell bundle and packaged artifacts
+/dist-electron
+/dist
 .env
 .env.*
 !.env.example

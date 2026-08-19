@@ -11,10 +11,10 @@ pre-commit:
       glob: "*.{svelte,ts}"
       run: bun run check
     rustfmt:
-      root: "src-tauri/"
+      root: "core/"
       glob: "*.rs"
       run: cargo fmt --check
     clippy:
-      root: "src-tauri/"
+      root: "core/"
       glob: "*.rs"
       run: cargo clippy --workspace --all-targets -- -D warnings

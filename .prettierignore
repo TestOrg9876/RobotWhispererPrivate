@@ -2,6 +2,8 @@ build
 .svelte-kit
 package
 node_modules
-src-tauri/target
+core/target
+dist
+dist-electron
 src/lib/wasm/generated
 bun.lock

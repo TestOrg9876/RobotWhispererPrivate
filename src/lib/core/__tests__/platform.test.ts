@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { isMobileDevice } from "../platform";
+import { isBrowser, isDesktop, isMobileDevice } from "../platform";
 
 interface FakeNavigator {
   userAgent: string;
@@ -30,6 +30,42 @@ afterEach(() => {
   Object.defineProperty(globalThis, "navigator", {
     value: { userAgent: WINDOWS_DESKTOP, maxTouchPoints: 0 },
     configurable: true,
+  });
+});
+
+describe("isDesktop / isBrowser", () => {
+  // The desktop shell is identified by the `__RW_NATIVE__` bridge the Electron
+  // preload installs. This replaced a `__TAURI_INTERNALS__` sniff, so it is
+  // worth pinning: if the preload ever stops exposing the bridge under this
+  // name, the app silently decides it is a browser and never reaches the daemon.
+  const clearBridge = () => {
+    delete (globalThis as Record<string, unknown>).__RW_NATIVE__;
+  };
+
+  afterEach(clearBridge);
+
+  it("reports desktop when the preload bridge is present", () => {
+    (globalThis as Record<string, unknown>).__RW_NATIVE__ = {
+      rpcUrl: "ws://127.0.0.1:1/rpc",
+      ingestUrl: "ws://127.0.0.1:1/ingest",
+    };
+    expect(isDesktop()).toBe(true);
+    expect(isBrowser()).toBe(false);
+  });
+
+  it("reports browser when the bridge is absent", () => {
+    clearBridge();
+    expect(isDesktop()).toBe(false);
+    expect(isBrowser()).toBe(true);
+  });
+
+  it("never reports mobile on the desktop shell", () => {
+    (globalThis as Record<string, unknown>).__RW_NATIVE__ = {
+      rpcUrl: "ws://127.0.0.1:1/rpc",
+      ingestUrl: "ws://127.0.0.1:1/ingest",
+    };
+    setNavigator({ userAgent: ANDROID_PHONE, maxTouchPoints: 5 });
+    expect(isMobileDevice()).toBe(false);
   });
 });
 

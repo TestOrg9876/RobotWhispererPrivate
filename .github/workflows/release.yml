@@ -1,0 +1,132 @@
+name: Release packages
+
+# Builds every Linux package format. This is the supported way to get builds:
+# deb and AppImage need nothing special, snap needs snapd, and flatpak needs
+# flathub — so all four are produced here rather than on a developer machine.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      formats:
+        description: "Space-separated electron-builder targets"
+        default: "deb AppImage snap flatpak"
+        required: false
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+
+      - name: Install packaging toolchains
+        run: |
+          sudo apt-get update
+          # squashfs-tools: snap/AppImage assembly. flatpak-builder: flatpak.
+          sudo apt-get install -y --no-install-recommends \
+            squashfs-tools fakeroot xdg-utils flatpak flatpak-builder
+          sudo flatpak remote-add --if-not-exists flathub \
+            https://flathub.org/repo/flathub.flatpakrepo
+          # The Electron base app and the runtime the manifest targets.
+          sudo flatpak install -y --noninteractive flathub \
+            org.freedesktop.Platform//23.08 \
+            org.freedesktop.Sdk//23.08 \
+            org.electronjs.Electron2.BaseApp//23.08
+          sudo snap install snapcraft --classic
+
+      - name: Install cargo-zigbuild
+        # The daemon is built against glibc 2.28 so it runs on Ubuntu 20.04.
+        # A plain cargo build on this runner would need GLIBC_2.34+.
+        run: |
+          pip install ziglang
+          printf '#!/bin/sh\nexec python3 -m ziglang "$@"\n' | sudo tee /usr/local/bin/zig >/dev/null
+          sudo chmod +x /usr/local/bin/zig
+          cargo install cargo-zigbuild --locked
+
+      - run: bun install --frozen-lockfile
+
+      - name: Build renderer, daemon and shell
+        run: bun run build:desktop
+
+      - name: Assert the daemon's glibc floor
+        # Regression guard. Ubuntu 20.04 ships glibc 2.31; Electron's own binary
+        # needs only 2.25. If the Rust binary drifts above 2.31 the app stops
+        # starting on 20.04, which is the specific failure this port exists to
+        # fix — so fail the build here rather than in a user's hands.
+        run: |
+          BIN=core/target/x86_64-unknown-linux-gnu/release/rw-daemon
+          MAX=$(readelf -V "$BIN" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -V | tail -1)
+          echo "rw-daemon requires at most glibc $MAX"
+          if [ "$(printf '%s\n2.31\n' "$MAX" | sort -V | tail -1)" != "2.31" ]; then
+            echo "::error::rw-daemon needs glibc $MAX, above Ubuntu 20.04's 2.31"
+            exit 1
+          fi
+
+      - name: Verify the daemon works headless before packaging it
+        run: node scripts/daemon-smoke.mjs core/target/release/rw-daemon
+
+      - name: Package
+        env:
+          # Build the snap in place instead of spinning up LXD/multipass, which
+          # is not available on a hosted runner.
+          SNAPCRAFT_BUILD_ENVIRONMENT: host
+        run: |
+          bunx electron-builder --linux ${{ github.event.inputs.formats || 'deb AppImage snap flatpak' }}
+
+      - name: Report artifact sizes
+        run: |
+          echo "### Package sizes" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          ls -lh dist/*.deb dist/*.AppImage dist/*.snap dist/*.flatpak 2>/dev/null \
+            | awk '{print $9, $5}' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: robot-whisperer-linux
+          path: |
+            dist/*.deb
+            dist/*.AppImage
+            dist/*.snap
+            dist/*.flatpak
+          if-no-files-found: error
+
+  # The whole point of leaving Tauri: one build that runs on old and new
+  # distros alike. Assert it rather than assuming it.
+  compat:
+    needs: linux
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["20.04", "22.04", "24.04"]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: robot-whisperer-linux
+          path: dist
+      - name: Install and launch on Ubuntu ${{ matrix.release }}
+        run: |
+          docker run --rm -v "$PWD/dist:/dist" ubuntu:${{ matrix.release }} bash -eux -c '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq xvfb libgtk-3-0 libnss3 libxss1 libasound2 \
+              libgbm1 libatk-bridge2.0-0 libcups2 libxkbcommon0 libxdamage1 \
+              libxrandr2 libxcomposite1 libxfixes3 2>/dev/null || true
+            apt-get install -y -qq /dist/*.deb || { apt-get -f install -y -qq; }
+            xvfb-run -a /opt/Robot\ Whisperer/robot-whisperer --no-sandbox \
+              --disable-gpu --headless=new &
+            APP=$!
+            sleep 25
+            kill -0 $APP
+            echo "Robot Whisperer stayed up on Ubuntu ${{ matrix.release }}"
+          '

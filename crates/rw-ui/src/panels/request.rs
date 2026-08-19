@@ -28,11 +28,13 @@ use rw_canonical::CanonicalValue;
 use rw_core::domain::{Request, RequestKind, Value};
 use rw_transport::ConnectionId;
 
+use crate::cloud;
 use crate::discovery::{self, Suggestion};
 use crate::docking::Home;
 use crate::form::{self, Field};
 use crate::image;
 use crate::runs::{RunState, Runs};
+use crate::scene_view::{self, SceneView};
 use crate::series::{History, Series};
 use crate::session::{RobotWhisperer, Sessions};
 use crate::tokens;
@@ -198,6 +200,12 @@ pub struct RequestPanel {
     runs: Entity<Runs>,
     tab: ResponseTab,
     problem: Option<Problem>,
+    /// The 3D pane, built the first time a message turns out to be a point
+    /// cloud: most requests never need a GPU and should not open one.
+    scene: Option<Entity<SceneView>>,
+    /// Which message the scene is showing, so a cloud is uploaded once rather
+    /// than on every repaint.
+    scene_at: u64,
     /// The tab group this editor is sitting in, which changes whenever the user
     /// drags its tab somewhere else.
     home: Home,
@@ -283,6 +291,8 @@ impl RequestPanel {
             runs,
             tab: ResponseTab::Raw,
             problem: None,
+            scene: None,
+            scene_at: 0,
             home: Home::default(),
             _repaint: None,
             _subscriptions: subscriptions,
@@ -1298,14 +1308,58 @@ impl RequestPanel {
         )
     }
 
+    /// Hands the newest cloud to the 3D pane, building it on first sight.
+    ///
+    /// Driven from `render` rather than from the subscription, because it needs
+    /// a context that can create an entity and because a pane nobody is looking
+    /// at should not be uploading megabytes.
+    fn sync_scene(&mut self, cx: &mut Context<Self>) {
+        if self.tab != ResponseTab::Visualize {
+            return;
+        }
+        let (value, count) = {
+            let incoming = self.incoming.lock().expect("incoming mutex");
+            (incoming.value.clone(), incoming.count)
+        };
+        if count == self.scene_at {
+            return;
+        }
+        let Some(value) = value else { return };
+        let Some(cloud) = cloud::decode(&value) else {
+            return;
+        };
+        self.scene_at = count;
+        let scene = match &self.scene {
+            Some(scene) => scene.clone(),
+            None => {
+                let scene = SceneView::view(cx);
+                self.scene = Some(scene.clone());
+                scene
+            }
+        };
+        scene.update(cx, |scene, cx| scene.show(cloud.into(), cx));
+    }
+
     /// The message as something readable.
     ///
     /// An image is shown as an image; anything else becomes a flat table of
     /// leaf paths and values, which beats indented JSON for the thing people
     /// actually do here — finding one field in a large message.
-    fn visualize(&self, value: &CanonicalValue, cx: &App) -> AnyElement {
+    fn visualize(&self, value: &CanonicalValue, cx: &mut Context<Self>) -> AnyElement {
         if let Some(image) = image::decode(value) {
             return self.image(image, cx);
+        }
+
+        if let Some(scene) = self.scene.clone()
+            && scene.read(cx).point_count() > 0
+        {
+            return v_flex()
+                .size_full()
+                .min_h_0()
+                .gap_2()
+                .child(scene_view::controls(&scene, cx))
+                .child(div().flex_1().min_h_0().child(scene))
+                .into_any_element();
         }
 
         let leaves = value::leaves(value);
@@ -1601,6 +1655,7 @@ impl Panel for RequestPanel {
 impl Render for RequestPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_payload(window, cx);
+        self.sync_scene(cx);
         let header = self.header(cx);
         let bar = self.request_bar(cx);
         // Shown for topics too: a topic request that can only be watched is half

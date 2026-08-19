@@ -1,0 +1,45 @@
+# A live lidar sweep, orbited by dragging.
+
+wait 900
+click 105 888
+wait 900
+click 1403 81
+wait 700
+click 1384 158
+wait 500
+click 1269 211
+type Simulator
+wait 500
+click 1395 242
+wait 1500
+click 1327 16
+wait 600
+click 1272 102
+wait 900
+
+# The point cloud topic, subscribed.
+click 244 49
+wait 1400
+click 700 133
+wait 700
+type /dummy/points
+wait 700
+key Return
+wait 600
+click 1266 131
+wait 2000
+
+# Visualize, which is where the 3D pane lives.
+click 400 291
+wait 2500
+shot 01-cloud
+
+# Drag across the pane to orbit the camera.
+drag 700 600 -> 950 520
+wait 900
+shot 02-orbited
+
+# Colour by intensity instead of height.
+click 386 331
+wait 900
+shot 03-intensity

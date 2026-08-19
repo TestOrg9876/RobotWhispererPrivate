@@ -10,6 +10,7 @@ pub mod cloud;
 pub mod discovery;
 pub mod docking;
 pub mod form;
+pub mod gpu;
 pub mod image;
 pub mod layout;
 pub mod nesting;
@@ -17,6 +18,7 @@ pub mod palette;
 pub mod panels;
 pub mod prefs;
 pub mod runs;
+pub mod scene_view;
 pub mod series;
 pub mod session;
 pub mod theme;
@@ -47,11 +49,13 @@ pub fn init(storage: SharedStorage, pipeline: Arc<CanonicalPipeline>, cx: &mut A
     let workspace = cx.new(|_| Workspace::new(storage));
     let sessions = cx.new(|_| Sessions::new(pipeline));
     let runs = cx.new(|_| runs::Runs::default());
+    let gpu = gpu::Gpu::spawn(cx);
     cx.set_global(docking::Restored::default());
     cx.set_global(RobotWhisperer {
         workspace,
         sessions,
         runs,
+        gpu,
     });
 
     Ok(())

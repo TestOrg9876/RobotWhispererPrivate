@@ -314,6 +314,8 @@ pub struct RobotWhisperer {
     /// What each request is doing, so the sidebar can show it without owning the
     /// panels that know.
     pub runs: Entity<crate::runs::Runs>,
+    /// The graphics device every 3D pane draws with.
+    pub gpu: Entity<crate::gpu::Gpu>,
 }
 
 impl gpui::Global for RobotWhisperer {}

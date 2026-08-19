@@ -6159,6 +6159,7 @@ dependencies = [
  "rw-canonical",
  "rw-core",
  "rw-pipeline",
+ "rw-render",
  "rw-transport",
  "serde",
  "serde_json",

@@ -275,6 +275,19 @@ fn bytes(value: &CanonicalValue) -> Option<Vec<u8>> {
     }
 }
 
+/// The renderer wants the same three things, so the hand-off is a move rather
+/// than a copy: a sweep is megabytes and this happens every frame.
+impl From<Cloud> for rw_render::Points {
+    fn from(cloud: Cloud) -> Self {
+        Self {
+            positions: cloud.points,
+            rgb: cloud.rgb,
+            intensity: cloud.intensity,
+            coloring: rw_render::Coloring::default(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

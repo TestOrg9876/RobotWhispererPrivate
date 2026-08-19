@@ -90,6 +90,7 @@ impl DummyTransport {
             build_schema("std_msgs/Float64", "float64 data\n", PrimitiveType::Float64);
         let image_schema = build_image_schema();
         let markers_schema = build_markers_schema();
+        let points_schema = build_points_schema();
 
         let mut schemas = HashMap::new();
         schemas.insert("/dummy/counter".to_string(), counter_schema.clone());
@@ -97,6 +98,7 @@ impl DummyTransport {
         schemas.insert("/dummy/wave".to_string(), wave_schema.clone());
         schemas.insert("/dummy/image".to_string(), image_schema.clone());
         schemas.insert("/dummy/markers".to_string(), markers_schema.clone());
+        schemas.insert("/dummy/points".to_string(), points_schema.clone());
 
         let discovery = Discovery {
             topics: vec![
@@ -129,6 +131,12 @@ impl DummyTransport {
                     schema_name: markers_schema.name.clone(),
                     schema_id: Some(markers_schema.id.clone()),
                     schema_definition: Some(markers_schema.definition.clone()),
+                },
+                TopicDescriptor {
+                    name: "/dummy/points".into(),
+                    schema_name: points_schema.name.clone(),
+                    schema_id: Some(points_schema.id.clone()),
+                    schema_definition: Some(points_schema.definition.clone()),
                 },
             ],
             services: vec![TargetDescriptor {
@@ -209,6 +217,7 @@ fn build_string_schema() -> Arc<CanonicalSchema> {
 
 const IMAGE_DEF: &str = "std_msgs/Header header\nuint32 height\nuint32 width\nstring encoding\nuint8 is_bigendian\nuint32 step\nuint8[] data\n";
 const MARKERS_DEF: &str = "visualization_msgs/Marker[] markers\n";
+const POINTS_DEF: &str = "std_msgs/Header header\nuint32 height\nuint32 width\nsensor_msgs/PointField[] fields\nbool is_bigendian\nuint32 point_step\nuint32 row_step\nuint8[] data\nbool is_dense\n";
 
 fn build_image_schema() -> Arc<CanonicalSchema> {
     let fields = vec![
@@ -237,6 +246,43 @@ fn build_image_schema() -> Arc<CanonicalSchema> {
         IMAGE_DEF,
         fields,
         VisualizationRole::Image,
+    )
+}
+
+fn build_points_schema() -> Arc<CanonicalSchema> {
+    let fields = vec![
+        primitive_field("height", PrimitiveType::Uint32),
+        primitive_field("width", PrimitiveType::Uint32),
+        FieldDef {
+            name: "fields".into(),
+            field_type: FieldType::Array {
+                element: Box::new(FieldType::Complex {
+                    type_name: "sensor_msgs/PointField".into(),
+                }),
+                length: ArrayLength::Unbounded,
+            },
+            default: None,
+            comment: None,
+        },
+        primitive_field("is_bigendian", PrimitiveType::Bool),
+        primitive_field("point_step", PrimitiveType::Uint32),
+        primitive_field("row_step", PrimitiveType::Uint32),
+        FieldDef {
+            name: "data".into(),
+            field_type: FieldType::Array {
+                element: Box::new(FieldType::Primitive(PrimitiveType::Uint8)),
+                length: ArrayLength::Unbounded,
+            },
+            default: None,
+            comment: None,
+        },
+        primitive_field("is_dense", PrimitiveType::Bool),
+    ];
+    build_viz_schema(
+        "sensor_msgs/PointCloud2",
+        POINTS_DEF,
+        fields,
+        VisualizationRole::PointCloud2,
     )
 }
 
@@ -464,6 +510,7 @@ async fn publish_tick(inner: &Arc<Inner>, tick: i64) {
     .await;
     publish_one(inner, "/dummy/image", make_image_value(tick, 96, 64)).await;
     publish_one(inner, "/dummy/markers", make_markers_value(tick)).await;
+    publish_one(inner, "/dummy/points", make_points_value(tick)).await;
 }
 
 fn make_image_value(tick: i64, width: u32, height: u32) -> CanonicalValue {
@@ -514,6 +561,88 @@ fn make_markers_value(tick: i64) -> CanonicalValue {
         "markers",
         CanonicalValue::Array(vec![CanonicalValue::Struct(marker)]),
     )
+}
+
+/// A synthetic lidar sweep: a room with four walls and a floor, seen from a
+/// sensor that turns. Enough structure that a broken camera or a mixed-up axis
+/// is obvious on sight, rather than a blob that looks the same either way.
+fn make_points_value(tick: i64) -> CanonicalValue {
+    const RINGS: usize = 24;
+    const PER_RING: usize = 220;
+    const ROOM: f32 = 6.;
+    let spin = tick as f32 * 0.02;
+
+    // x, y, z as float32 and intensity after them: the layout a real driver
+    // publishes, so the decoder is exercised rather than humoured.
+    let mut data = Vec::with_capacity(RINGS * PER_RING * 16);
+    for ring in 0..RINGS {
+        // From below the horizon to well above it, so the beam sweeps the floor
+        // near the sensor and the walls further out.
+        let elevation = -0.55 + ring as f32 * 0.045;
+        for step in 0..PER_RING {
+            let azimuth = spin + step as f32 / PER_RING as f32 * std::f32::consts::TAU;
+            let (dx, dy) = azimuth.sin_cos();
+            let (dz, horizontal) = elevation.sin_cos();
+            let direction = [horizontal * dy, horizontal * dx, dz];
+
+            // Where the beam first meets the floor or one of the four walls.
+            let mut range = f32::INFINITY;
+            for (component, limit) in [
+                (direction[0], ROOM),
+                (direction[1], ROOM),
+                (direction[2], 2.5),
+            ] {
+                if component.abs() > 1e-4 {
+                    let hit = limit / component.abs();
+                    range = range.min(hit);
+                }
+            }
+            if direction[2] < -1e-4 {
+                range = range.min(1.6 / -direction[2]);
+            }
+            if !range.is_finite() {
+                continue;
+            }
+
+            for component in direction {
+                data.extend_from_slice(&(component * range).to_le_bytes());
+            }
+            // Near returns come back stronger, which is what intensity means.
+            data.extend_from_slice(&(200. / (1. + range)).to_le_bytes());
+        }
+    }
+
+    let mut map = BTreeMap::new();
+    map.insert("height".into(), CanonicalValue::Uint(1));
+    map.insert(
+        "width".into(),
+        CanonicalValue::Uint((data.len() / 16) as u64),
+    );
+    map.insert(
+        "fields".into(),
+        CanonicalValue::Array(vec![
+            point_field("x", 0),
+            point_field("y", 4),
+            point_field("z", 8),
+            point_field("intensity", 12),
+        ]),
+    );
+    map.insert("is_bigendian".into(), CanonicalValue::Bool(false));
+    map.insert("point_step".into(), CanonicalValue::Uint(16));
+    map.insert("row_step".into(), CanonicalValue::Uint(data.len() as u64));
+    map.insert("data".into(), CanonicalValue::Bytes(data));
+    map.insert("is_dense".into(), CanonicalValue::Bool(true));
+    CanonicalValue::Struct(map)
+}
+
+/// One `sensor_msgs/PointField`; datatype 7 is FLOAT32.
+fn point_field(name: &str, offset: u64) -> CanonicalValue {
+    let mut field = BTreeMap::new();
+    field.insert("name".into(), CanonicalValue::String(name.into()));
+    field.insert("offset".into(), CanonicalValue::Uint(offset));
+    field.insert("datatype".into(), CanonicalValue::Uint(7));
+    field.insert("count".into(), CanonicalValue::Uint(1));
+    CanonicalValue::Struct(field)
 }
 
 fn struct_one(field: &str, value: CanonicalValue) -> CanonicalValue {

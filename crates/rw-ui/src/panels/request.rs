@@ -148,7 +148,6 @@ pub struct RequestPanel {
     saved: Request,
     draft: Request,
 
-    name: Entity<InputState>,
     target: Entity<InputState>,
 
     /// Whether the target field's offer list is showing, and which row the
@@ -197,11 +196,6 @@ impl RequestPanel {
             )
         };
 
-        let name = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Request name")
-                .default_value(&request.name)
-        });
         let target = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("/topic, /service or /action")
@@ -210,12 +204,6 @@ impl RequestPanel {
 
         let subscriptions = vec![
             cx.observe(&sessions, |_, _, cx| cx.notify()),
-            cx.subscribe(&name, |this, state, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    this.draft.name = state.read(cx).value().to_string();
-                    cx.notify();
-                }
-            }),
             cx.subscribe_in(
                 &target,
                 window,
@@ -251,7 +239,6 @@ impl RequestPanel {
             sessions,
             saved: request.clone(),
             draft: request.clone(),
-            name,
             target,
             highlighted: 0,
             offers_open: false,
@@ -886,50 +873,6 @@ impl RequestPanel {
 
     // ── chrome ─────────────────────────────────────────────────────────────────
 
-    fn header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let dirty = self.dirty();
-
-        h_flex()
-            .w_full()
-            .items_center()
-            .gap_3()
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .font_semibold()
-                    // The name is the largest text in the window: 20px, per the
-                    // type scale. `Input` derives its own size, so it is asked
-                    // rather than styled from outside.
-                    .child(Input::new(&self.name).appearance(false).with_size(px(23.))),
-            )
-            .when(dirty, |row| {
-                row.child(
-                    h_flex()
-                        .gap_1p5()
-                        .items_center()
-                        .child(div().size(px(6.)).rounded_full().bg(cx.theme().warning))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child("Unsaved"),
-                        ),
-                )
-            })
-            .child(
-                Button::new("save")
-                    .ghost()
-                    .small()
-                    .icon(IconName::Check)
-                    .label("Save")
-                    .disabled(!dirty)
-                    .tooltip("Save request")
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.save(cx))),
-            )
-            .into_any_element()
-    }
-
     /// The prominent row: kind, target, environment, primary action.
     fn request_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         let offers = self.offers(cx);
@@ -1018,6 +961,16 @@ impl RequestPanel {
                             cx.notify();
                         }),
                     )
+                    // And a click anywhere else puts it away. Blur is what this
+                    // used to rely on, and blur never arrives without a window
+                    // manager — leaving a list of topics sitting over the pane
+                    // with no way to dismiss it.
+                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        if this.offers_open {
+                            this.offers_open = false;
+                            cx.notify();
+                        }
+                    }))
                     .child(Input::new(&self.target).appearance(false)),
             )
             .child(
@@ -1052,6 +1005,15 @@ impl RequestPanel {
                         }
                         menu
                     }),
+            )
+            .child(
+                Button::new("save")
+                    .ghost()
+                    .small()
+                    .icon(IconName::Check)
+                    .disabled(!self.dirty())
+                    .tooltip("Save request")
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.save(cx))),
             )
             .child(
                 Button::new("send")
@@ -1283,6 +1245,27 @@ impl RequestPanel {
         )
     }
 
+    /// Takes on a rename made in the sidebar.
+    ///
+    /// The editor has no name field of its own any more — the tab above it is
+    /// the name — so the stored one is simply adopted, and a rename can never
+    /// show up here as an unsaved change.
+    fn sync_name(&mut self, cx: &mut Context<Self>) {
+        let Some(stored) = self
+            .workspace
+            .read(cx)
+            .request(self.saved.id)
+            .map(|request| request.name.clone())
+        else {
+            return;
+        };
+        if stored != self.saved.name {
+            self.saved.name = stored.clone();
+            self.draft.name = stored;
+            cx.notify();
+        }
+    }
+
     /// Hands the newest cloud to the 3D pane, building it on first sight.
     ///
     /// Driven from `render` rather than from the subscription, because it needs
@@ -1440,8 +1423,8 @@ impl Panel for RequestPanel {
 impl Render for RequestPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_payload(window, cx);
+        self.sync_name(cx);
         self.sync_scene(cx);
-        let header = self.header(cx);
         let bar = self.request_bar(cx);
         // Shown for topics too: a topic request that can only be watched is half
         // a request, and the message you publish is the same form. Absent
@@ -1454,12 +1437,18 @@ impl Render for RequestPanel {
             .size_full()
             .min_h_0()
             .bg(cx.theme().background)
+            // Both of these put the offer list away. It is drawn deferred, so
+            // it paints over the dropdown that opened the menu these came from
+            // — leaving the user looking at a list of topics where they expected
+            // their choice to appear.
             .on_action(cx.listener(|this, action: &SetKind, _, cx| {
                 this.draft.kind = kind_from_discriminant(action.0);
+                this.offers_open = false;
                 cx.notify();
             }))
             .on_action(cx.listener(|this, action: &UseEnvironment, _, cx| {
                 this.draft.connection_id = Some(action.0);
+                this.offers_open = false;
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &crate::actions::SaveRequest, _, cx| this.save(cx)))
@@ -1486,14 +1475,17 @@ impl Render for RequestPanel {
             // also sits on the panel surface, continuing the tab strip above it,
             // so chrome and canvas are two visibly different bands.
             .child(
+                // Only the bar. The request's name is the tab above this, and a
+                // headline repeating it cost a row of every editor; renaming
+                // lives in the sidebar, where you can see the name you are
+                // changing beside its neighbours.
                 v_flex()
                     .flex_shrink_0()
-                    .p_4()
-                    .gap_3()
+                    .px_4()
+                    .py_2()
                     .bg(cx.theme().tab_bar)
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .child(header)
                     .child(bar),
             )
             .children(problem)

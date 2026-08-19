@@ -20,17 +20,17 @@ wait 900
 # The point cloud topic, subscribed.
 click 244 49
 wait 1400
-click 700 133
+click 700 100
 wait 700
 type /dummy/points
 wait 700
 key Return
 wait 600
-click 1266 131
+click 1266 100
 wait 2000
 
 # Visualize, which is where the 3D pane lives.
-click 400 291
+click 400 155
 wait 2500
 shot 01-cloud
 
@@ -40,6 +40,6 @@ wait 900
 shot 02-orbited
 
 # Colour by intensity instead of height.
-click 386 331
+click 381 194
 wait 900
 shot 03-intensity

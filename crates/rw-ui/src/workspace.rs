@@ -742,6 +742,15 @@ impl Workspace {
         })
     }
 
+    /// Renames a request, from the sidebar.
+    pub fn rename_request(&mut self, id: i64, name: String, cx: &mut Context<Self>) -> Task<()> {
+        let Some(mut request) = self.requests.iter().find(|entry| entry.id == id).cloned() else {
+            return Task::ready(());
+        };
+        request.name = name;
+        self.save_request(request, cx)
+    }
+
     /// Writes an edited request back to storage and to the in-memory list.
     pub fn save_request(&mut self, request: Request, cx: &mut Context<Self>) -> Task<()> {
         let storage = self.storage();

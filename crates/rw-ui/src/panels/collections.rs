@@ -47,6 +47,10 @@ pub struct DeleteRequest(pub i64);
 
 #[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
 #[action(namespace = robot_whisperer, no_json)]
+pub struct RenameRequest(pub i64);
+
+#[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
 pub struct AddCollection(pub i64);
 
 #[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
@@ -192,7 +196,8 @@ pub struct CollectionsPanel {
     selected_dashboard: Option<i64>,
 
     /// The collection being renamed, and the field holding the new name.
-    renaming: Option<i64>,
+    /// The row being renamed, whichever kind it is.
+    renaming: Option<Row>,
     collection_name: Entity<InputState>,
 
     _subscriptions: Vec<Subscription>,
@@ -381,7 +386,7 @@ impl CollectionsPanel {
                     name: collection.name.clone().into(),
                     kind: None,
                     state: RunState::Idle,
-                    renaming: self.renaming == Some(collection.id),
+                    renaming: self.renaming == Some(Row::Collection(collection.id)),
                 },
             )
         });
@@ -393,7 +398,7 @@ impl CollectionsPanel {
                     name: request.name.clone().into(),
                     kind: Some(request.kind),
                     state: runs.get(request.id),
-                    renaming: false,
+                    renaming: self.renaming == Some(Row::Request(request.id)),
                 },
             )
         });
@@ -403,17 +408,26 @@ impl CollectionsPanel {
 
     // ── collections ────────────────────────────────────────────────────────────
 
-    fn start_rename(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
-        let name = self
-            .workspace
-            .read(cx)
-            .collections()
-            .iter()
-            .find(|collection| collection.id == id)
-            .map(|collection| collection.name.clone())
-            .unwrap_or_default();
+    /// Renames a row in place. Collections and requests alike: a name is a
+    /// name, and the sidebar is where you can see the one you are changing
+    /// next to its neighbours.
+    fn start_rename(&mut self, row: Row, window: &mut Window, cx: &mut Context<Self>) {
+        let workspace = self.workspace.read(cx);
+        let name = match row {
+            Row::Collection(id) => workspace
+                .collections()
+                .iter()
+                .find(|collection| collection.id == id)
+                .map(|collection| collection.name.clone()),
+            Row::Request(id) => workspace
+                .requests()
+                .iter()
+                .find(|request| request.id == id)
+                .map(|request| request.name.clone()),
+        }
+        .unwrap_or_default();
 
-        self.renaming = Some(id);
+        self.renaming = Some(row);
         self.collection_name.update(cx, |state, cx| {
             state.set_value(name, window, cx);
             // Selected, not just placed at the end: `set_value` leaves the caret
@@ -425,14 +439,15 @@ impl CollectionsPanel {
     }
 
     fn commit_rename(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.renaming.take() else {
+        let Some(row) = self.renaming.take() else {
             return;
         };
         let name = self.collection_name.read(cx).value().trim().to_string();
         if !name.is_empty() {
             self.workspace
-                .update(cx, |workspace, cx| {
-                    workspace.rename_collection(id, name, cx)
+                .update(cx, |workspace, cx| match row {
+                    Row::Collection(id) => workspace.rename_collection(id, name, cx),
+                    Row::Request(id) => workspace.rename_request(id, name, cx),
                 })
                 .detach();
         }
@@ -469,7 +484,7 @@ impl CollectionsPanel {
                             // collection" is not what anybody wanted, and making
                             // them find the rename command is a step with no
                             // decision in it.
-                            panel.start_rename(collection.id, window, cx)
+                            panel.start_rename(Row::Collection(collection.id), window, cx)
                         })
                         .ok();
                 })
@@ -850,6 +865,7 @@ impl Render for CollectionsPanel {
                 match row {
                     Row::Request(id) => menu
                         .menu("Open", Box::new(OpenRequest(id)))
+                        .menu("Rename", Box::new(RenameRequest(id)))
                         .menu("Duplicate", Box::new(DuplicateRequest(id)))
                         .separator()
                         .menu("Delete", Box::new(DeleteRequest(id))),
@@ -887,7 +903,10 @@ impl Render for CollectionsPanel {
                 this.add_collection(Some(action.0), window, cx);
             }))
             .on_action(cx.listener(|this, action: &RenameCollection, window, cx| {
-                this.start_rename(action.0, window, cx);
+                this.start_rename(Row::Collection(action.0), window, cx);
+            }))
+            .on_action(cx.listener(|this, action: &RenameRequest, window, cx| {
+                this.start_rename(Row::Request(action.0), window, cx);
             }))
             .on_action(cx.listener(|this, action: &DeleteCollection, _, cx| {
                 let id = action.0;

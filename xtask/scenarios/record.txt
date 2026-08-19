@@ -20,13 +20,13 @@ wait 900
 # Watch the counter.
 click 244 49
 wait 1400
-click 700 133
+click 700 100
 wait 700
 type /dummy/counter
 wait 700
 key Return
 wait 600
-click 1266 131
+click 1266 100
 wait 1500
 
 # Start recording from the footer, let some messages land, stop.
@@ -48,22 +48,22 @@ click 595 391
 wait 2500
 shot 03-replay-connection
 
-# A new request against the replayed system, on the topic that was captured.
+# A new request against the replayed system. The system is chosen first and
+# the topic second, which is the order a person works in — and it keeps the
+# target field's suggestion list from covering the selector.
 click 244 49
 wait 1400
-click 700 133
+click 1128 100
+wait 700
+shot 04-pick-connection
+click 1150 160
+wait 900
+click 700 100
 wait 700
 type /dummy/counter
 wait 700
 key Return
 wait 600
-click 1163 139
-wait 700
-shot 04-pick-connection
-
-# Point the request at the recording rather than the live system, and run it.
-click 1206 196
-wait 700
-click 1266 139
+click 1266 100
 wait 2500
 shot 05-replaying

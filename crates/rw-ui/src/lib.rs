@@ -7,6 +7,7 @@
 pub mod actions;
 pub mod assets;
 pub mod discovery;
+pub mod docking;
 pub mod form;
 pub mod image;
 pub mod nesting;

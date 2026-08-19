@@ -30,15 +30,24 @@ pub enum WelcomeEvent {
 
 pub struct WelcomePanel {
     focus_handle: FocusHandle,
+    /// The tab group this panel sits in; it is dismissed once there is
+    /// something real to look at, and by then the user may have moved it.
+    home: crate::docking::Home,
 }
 
 impl EventEmitter<WelcomeEvent> for WelcomePanel {}
 impl EventEmitter<PanelEvent> for WelcomePanel {}
 
 impl WelcomePanel {
+    /// The tab group this panel is in, so the shell can take it out again.
+    pub fn home(&self) -> Option<gpui::WeakEntity<gpui_component::dock::TabPanel>> {
+        self.home.tab_panel()
+    }
+
     pub fn view(cx: &mut App) -> Entity<Self> {
         cx.new(|cx| Self {
             focus_handle: cx.focus_handle(),
+            home: Default::default(),
         })
     }
 }
@@ -52,6 +61,15 @@ impl Focusable for WelcomePanel {
 impl Panel for WelcomePanel {
     fn panel_name(&self) -> &'static str {
         "Welcome"
+    }
+
+    fn on_added_to(
+        &mut self,
+        tab_panel: gpui::WeakEntity<gpui_component::dock::TabPanel>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        self.home.moved_to(tab_panel);
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {

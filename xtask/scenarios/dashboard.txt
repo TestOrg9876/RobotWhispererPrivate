@@ -1,0 +1,60 @@
+# Two live requests side by side: a dashboard, built by dragging a tab.
+
+wait 900
+click 105 888
+wait 900
+click 1403 81
+wait 700
+click 1384 158
+wait 500
+click 1269 211
+type Simulator
+wait 500
+click 1395 242
+wait 1500
+click 1327 16
+wait 600
+click 1272 102
+wait 900
+
+# The wave topic, subscribed.
+click 244 49
+wait 1400
+click 700 133
+wait 700
+type /dummy/wave
+wait 700
+key Return
+wait 600
+click 1266 131
+wait 1200
+
+# The counter topic, subscribed, in a second tab.
+click 244 49
+wait 1400
+click 700 133
+wait 700
+type /dummy/counter
+wait 700
+key Return
+wait 600
+click 1266 131
+wait 1500
+shot 01-two-tabs
+
+# Drag the second tab to the right edge, which splits the pane.
+# Held at the pane's right edge first: the dock works out which half it is
+# over as the pointer moves, and a drop that arrives in the same instant as
+# the pointer gives it nothing to work with.
+dragover 490 49 -> 1425 450
+wait 700
+shot 02-drop-target
+release
+wait 1500
+shot 02-split
+
+# Clicking the split-off request in the sidebar must reveal it where it now
+# lives, not add a second copy to the pane it was dragged out of.
+click 105 134
+wait 800
+shot 03-reveal-after-split

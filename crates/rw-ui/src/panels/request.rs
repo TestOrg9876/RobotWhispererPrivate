@@ -29,6 +29,7 @@ use rw_core::domain::{Request, RequestKind, Value};
 use rw_transport::ConnectionId;
 
 use crate::discovery::{self, Suggestion};
+use crate::docking::Home;
 use crate::form::{self, Field};
 use crate::image;
 use crate::runs::{RunState, Runs};
@@ -197,6 +198,9 @@ pub struct RequestPanel {
     runs: Entity<Runs>,
     tab: ResponseTab,
     problem: Option<Problem>,
+    /// The tab group this editor is sitting in, which changes whenever the user
+    /// drags its tab somewhere else.
+    home: Home,
     _repaint: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -279,6 +283,7 @@ impl RequestPanel {
             runs,
             tab: ResponseTab::Raw,
             problem: None,
+            home: Home::default(),
             _repaint: None,
             _subscriptions: subscriptions,
         }
@@ -311,6 +316,12 @@ impl RequestPanel {
     }
 
     /// True while the draft differs from what is stored.
+    /// The tab group this editor is in, so the shell can reveal or close it
+    /// after the user has dragged it into a pane of their own making.
+    pub fn home(&self) -> Option<gpui::WeakEntity<gpui_component::dock::TabPanel>> {
+        self.home.tab_panel()
+    }
+
     pub fn dirty(&self) -> bool {
         self.draft.name != self.saved.name
             || self.draft.target != self.saved.target
@@ -1545,6 +1556,15 @@ impl Focusable for RequestPanel {
 impl Panel for RequestPanel {
     fn panel_name(&self) -> &'static str {
         "Request"
+    }
+
+    fn on_added_to(
+        &mut self,
+        tab_panel: gpui::WeakEntity<gpui_component::dock::TabPanel>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        self.home.moved_to(tab_panel);
     }
 
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

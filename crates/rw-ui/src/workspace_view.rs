@@ -28,6 +28,7 @@ use crate::actions::{
     CommandPalette, Connect, Disconnect, ExportWorkspace, ImportWorkspace, ManageConnections,
     NewRequest, OpenSettings, ToggleConsole, ToggleSidebar,
 };
+use crate::docking;
 use crate::palette::{Choice, Entry};
 use crate::panels::{
     CollectionsEvent, CollectionsPanel, ConnectionsPanel, ConsolePanel, PaletteEvent, PaletteView,
@@ -83,8 +84,17 @@ impl WorkspaceView {
         let left = DockItem::tab(collections.clone(), &weak, window, cx);
         let bottom = DockItem::tab(console.clone(), &weak, window, cx);
         let welcome = WelcomePanel::view(cx);
-        let centre = DockItem::tabs(
-            vec![Arc::new(welcome.clone()) as Arc<dyn PanelView>],
+        // Wrapped in a split, not handed to `set_center` bare. A `TabPanel`
+        // with no parent `StackPanel` reports itself locked, and a locked tab
+        // strip is neither draggable nor droppable — so dragging a tab to a
+        // pane edge to split the view would do nothing at all.
+        let centre = DockItem::v_split(
+            vec![DockItem::tabs(
+                vec![Arc::new(welcome.clone()) as Arc<dyn PanelView>],
+                &weak,
+                window,
+                cx,
+            )],
             &weak,
             window,
             cx,
@@ -127,16 +137,19 @@ impl WorkspaceView {
             return;
         };
 
-        // Re-opening an already-open request has to bring its tab to the front,
-        // and `TabPanel::add_panel` returns early for a panel it already holds
-        // rather than activating it. Taking it out and putting it back is the
-        // only way to do that through the dock's public API.
+        // Re-opening an already-open request brings its tab to the front. Asked
+        // of the panel's own tab group rather than of the dock, because the
+        // dock's item tree still describes the layout the shell built and knows
+        // nothing about panes the user has since split off.
         if let Some(existing) = self.open.get(&id).cloned() {
+            let home = existing.read(cx).home();
             let panel = Arc::new(existing) as Arc<dyn PanelView>;
-            self.dock.update(cx, |dock, cx| {
-                dock.remove_panel(panel.clone(), DockPlacement::Center, window, cx);
-                dock.add_panel(panel, DockPlacement::Center, None, window, cx);
-            });
+            if !docking::reveal(home, panel.clone(), window, cx) {
+                self.dock.update(cx, |dock, cx| {
+                    dock.remove_panel(panel.clone(), DockPlacement::Center, window, cx);
+                    dock.add_panel(panel, DockPlacement::Center, None, window, cx);
+                });
+            }
         } else {
             let panel = RequestPanel::view(&request, window, cx);
             self.open.insert(id, panel.clone());
@@ -161,14 +174,13 @@ impl WorkspaceView {
         let Some(panel) = self.open.remove(&id) else {
             return;
         };
-        self.dock.update(cx, |dock, cx| {
-            dock.remove_panel(
-                Arc::new(panel) as Arc<dyn PanelView>,
-                DockPlacement::Center,
-                window,
-                cx,
-            )
-        });
+        let home = panel.read(cx).home();
+        let panel = Arc::new(panel) as Arc<dyn PanelView>;
+        if !docking::close(home, panel.clone(), window, cx) {
+            self.dock.update(cx, |dock, cx| {
+                dock.remove_panel(panel, DockPlacement::Center, window, cx)
+            });
+        }
         cx.notify();
     }
 
@@ -177,14 +189,13 @@ impl WorkspaceView {
         let Some(welcome) = self.welcome.take() else {
             return;
         };
-        self.dock.update(cx, |dock, cx| {
-            dock.remove_panel(
-                Arc::new(welcome) as Arc<dyn PanelView>,
-                DockPlacement::Center,
-                window,
-                cx,
-            )
-        });
+        let home = welcome.read(cx).home();
+        let panel = Arc::new(welcome) as Arc<dyn PanelView>;
+        if !docking::close(home, panel.clone(), window, cx) {
+            self.dock.update(cx, |dock, cx| {
+                dock.remove_panel(panel, DockPlacement::Center, window, cx)
+            });
+        }
     }
 
     fn on_welcome_event(

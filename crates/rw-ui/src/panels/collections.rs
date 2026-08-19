@@ -551,12 +551,15 @@ fn render_row(
                 );
         }
         // A request: a space where the arrow would be, so names line up whether
-        // or not the row above can be opened.
+        // or not the row above can be opened, then the kind.
         Some(kind) => {
             row = row.child(div().w(px(12.)).flex_none()).child(
-                Icon::new(kind_icon(kind))
-                    .size_3p5()
-                    .text_color(tokens::kind_color(kind, cx)),
+                tokens::mono(cx)
+                    .flex_none()
+                    .w(px(tokens::KIND_WIDTH))
+                    .text_size(px(9.))
+                    .text_color(tokens::kind_color(kind, cx))
+                    .child(tokens::kind_short(kind)),
             );
         }
     }
@@ -565,19 +568,6 @@ fn render_row(
         row.child(div().flex_1().min_w_0().truncate().child(data.name.clone()))
             .when_some(state_dot(&data.state, cx), |row, dot| row.child(dot)),
     )
-}
-
-/// The icon that stands for a request's kind.
-///
-/// Icons rather than a badge: a file manager identifies a row's type with a glyph
-/// beside its name, and a coloured chip in a list of thirty rows is thirty chips.
-fn kind_icon(kind: RequestKind) -> IconName {
-    match kind {
-        // Pub/sub, a request answered once, and a goal that runs.
-        RequestKind::Topic => IconName::Network,
-        RequestKind::Service => IconName::Replace,
-        RequestKind::Action => IconName::Play,
-    }
 }
 
 /// A dot on the row's right, and only when there is something to say.
@@ -796,14 +786,22 @@ impl Render for CollectionsPanel {
                     .update(cx, |workspace, cx| workspace.delete_collection(id, cx))
                     .detach();
             }))
+            // Flush against the panel rather than floating in it: a search row
+            // in a file tree is part of the chrome, not a control sitting on top
+            // of it. The hairline below is what separates it from the rows.
             .child(
-                div().flex_shrink_0().px_2().pt_2().pb_1p5().child(
-                    Input::new(&self.search).xsmall().cleanable(true).prefix(
-                        Icon::new(IconName::Search)
-                            .size_3()
-                            .text_color(cx.theme().muted_foreground),
+                div()
+                    .flex_shrink_0()
+                    .px_2p5()
+                    .py_1p5()
+                    .border_b_1()
+                    .border_color(cx.theme().sidebar_border)
+                    .child(
+                        Input::new(&self.search)
+                            .xsmall()
+                            .appearance(false)
+                            .cleanable(true),
                     ),
-                ),
             )
             .child(if empty {
                 tokens::empty_state(

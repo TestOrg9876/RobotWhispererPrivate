@@ -92,6 +92,23 @@ pub fn kind_label(kind: RequestKind) -> &'static str {
     }
 }
 
+/// The short label that names a request's kind in a list.
+///
+/// Four characters at most, in a monospaced face and a fixed-width column, so
+/// every name after it starts at the same x — a ragged left edge is what makes a
+/// long list tiring to scan. The full word is [`kind_label`], for the selector
+/// where there is room for it.
+pub fn kind_short(kind: RequestKind) -> &'static str {
+    match kind {
+        RequestKind::Topic => "TOP",
+        RequestKind::Service => "SERV",
+        RequestKind::Action => "ACT",
+    }
+}
+
+/// How wide the kind column is: four monospaced characters and a little air.
+pub const KIND_WIDTH: f32 = 30.;
+
 /// Colour standing for a request kind, taken from the palette's `base.*` slots so
 /// it moves with the theme instead of being hard-coded here.
 pub fn kind_color(kind: RequestKind, cx: &gpui::App) -> Hsla {

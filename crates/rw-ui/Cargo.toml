@@ -5,6 +5,10 @@ edition = "2024"
 description = "The Robot Whisperer GPUI application"
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = [
+    "clock",
+    "wasmbind",
+] }
 image-crate = { package = "image", version = "0.25", default-features = false, features = [
     "jpeg",
     "png",

@@ -67,6 +67,9 @@ pub struct Live {
     pub status: Status,
     pub session: Option<ConnectionId>,
     pub discovery: Discovery,
+    /// The connection's name, kept here so events can say which system they are
+    /// about without the session store having to reach into the workspace.
+    pub name: String,
 }
 
 /// Something worth putting in the console.
@@ -134,7 +137,9 @@ impl Sessions {
         let config = connection.config.clone();
         let pipeline = self.pipeline();
 
-        self.live.entry(id).or_default().status = Status::Connecting;
+        let live = self.live.entry(id).or_default();
+        live.status = Status::Connecting;
+        live.name = name.clone();
         cx.emit(SessionEvent(Notice::Info(format!("connecting to {name}"))));
         cx.notify();
 
@@ -264,7 +269,12 @@ impl Sessions {
     /// Closes the transport and forgets the session.
     pub fn disconnect(&mut self, connection: i64, cx: &mut Context<Self>) -> Task<()> {
         let pipeline = self.pipeline();
-        let session = self.live.remove(&connection).and_then(|live| live.session);
+        let removed = self.live.remove(&connection);
+        let name = removed
+            .as_ref()
+            .map(|live| live.name.clone())
+            .unwrap_or_default();
+        let session = removed.and_then(|live| live.session);
         cx.notify();
 
         cx.spawn(async move |sessions, cx| {
@@ -273,9 +283,13 @@ impl Sessions {
             sessions
                 .update(cx, |_, cx| {
                     match outcome {
-                        Ok(()) => cx.emit(SessionEvent(Notice::Info("disconnected".into()))),
+                        // Named, because with several systems connected at once
+                        // a bare "disconnected" says nothing worth logging.
+                        Ok(()) => cx.emit(SessionEvent(Notice::Info(format!(
+                            "disconnected from {name}"
+                        )))),
                         Err(error) => cx.emit(SessionEvent(Notice::Error(format!(
-                            "close failed: {error}"
+                            "{name}: close failed: {error}"
                         )))),
                     }
                     cx.notify();

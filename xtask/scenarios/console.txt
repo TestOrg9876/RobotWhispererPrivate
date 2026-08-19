@@ -1,0 +1,35 @@
+# The console, with real events in it.
+#
+# Coordinates are relative to the app window, which GPUI opens at 1440x900.
+
+# Two connections, so there is something to log.
+wait 900
+click 789 484
+wait 900
+click 1403 81
+wait 700
+click 1384 158
+wait 500
+click 1269 211
+type Simulator
+wait 500
+click 1395 242
+wait 1400
+click 1403 81
+wait 700
+click 1384 158
+wait 500
+click 1269 211
+type Bag replay
+wait 500
+click 1395 242
+wait 1600
+
+# Disconnect one, to log that too.
+click 1313 128
+wait 1000
+
+# Open the console from the footer's toggle.
+click 38 888
+wait 900
+shot 01-console

@@ -17,7 +17,7 @@ use gpui::{
 use gpui_component::dock::{DockArea, DockItem, DockPlacement, PanelView};
 use gpui_component::menu::DropdownMenu as _;
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, Root, Sizable as _, TitleBar, WindowExt as _,
+    ActiveTheme as _, IconName, Root, Sizable as _, TitleBar, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     status_bar::StatusBar,
@@ -300,77 +300,6 @@ impl WorkspaceView {
             .detach();
     }
 
-    /// The connection status in the title bar.
-    ///
-    /// Several ROS systems can be connected at once, so this counts them rather
-    /// than naming one: which system a *request* talks to is that request's
-    /// business, shown in its own bar.
-    fn connections_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        let workspace = self.workspace.read(cx);
-        let sessions = self.sessions.read(cx);
-        let total = workspace.connections().len();
-        let connected = sessions.connected_count();
-
-        let colour = if total == 0 {
-            cx.theme().muted_foreground
-        } else if connected == 0 {
-            cx.theme().danger
-        } else if connected < total {
-            cx.theme().warning
-        } else {
-            cx.theme().success
-        };
-
-        let label = match (total, connected) {
-            (0, _) => "No connections".to_string(),
-            (total, connected) if connected == total => format!("{connected} connected"),
-            (total, connected) => format!("{connected}/{total} connected"),
-        };
-
-        let entries: Vec<_> = workspace
-            .connections()
-            .iter()
-            .map(|connection| {
-                (
-                    connection.id,
-                    connection.name.clone(),
-                    sessions.status(connection.id).is_connected(),
-                )
-            })
-            .collect();
-
-        Button::new("connections")
-            .ghost()
-            .small()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(tokens::status_dot(colour))
-                    .child(div().text_sm().child(label))
-                    .child(
-                        Icon::new(IconName::ChevronDown)
-                            .xsmall()
-                            .text_color(cx.theme().muted_foreground),
-                    ),
-            )
-            .dropdown_menu(move |mut menu, _window, _cx| {
-                for (id, name, connected) in &entries {
-                    let action: Box<dyn gpui::Action> = if *connected {
-                        Box::new(Disconnect(*id))
-                    } else {
-                        Box::new(Connect(*id))
-                    };
-                    menu = menu.menu_with_check(name.clone(), *connected, action);
-                }
-                if !entries.is_empty() {
-                    menu = menu.separator();
-                }
-                menu.menu("Manage connections…", Box::new(ManageConnections))
-            })
-            .into_any_element()
-    }
-
     /// Everything that is not a per-request control, behind one button.
     ///
     /// A theme picker permanently occupying the title bar is a setting wearing a
@@ -589,9 +518,46 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    /// The footer: what is happening right now.
+    ///
+    /// Live state only. A count of saved requests is already the request list's
+    /// tab, and a version string never changes — neither is worth a permanent
+    /// strip along the bottom of the window.
     fn status_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         let workspace = self.workspace.read(cx);
-        let requests = workspace.requests().len();
+        let sessions = self.sessions.read(cx);
+
+        let chips: Vec<_> = workspace
+            .connections()
+            .iter()
+            .map(|connection| {
+                let id = connection.id;
+                let status = sessions.status(id);
+                let colour = status_colour(&status, cx);
+                let detail = status.detail().unwrap_or(status.label());
+
+                Button::new(("connection", id as usize))
+                    .ghost()
+                    .xsmall()
+                    .tooltip(format!("{}: {detail}", connection.name))
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .child(tokens::status_dot(colour))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().foreground)
+                                    .child(connection.name.clone()),
+                            ),
+                    )
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.toggle_connection(id, cx)
+                    }))
+            })
+            .collect();
+        let nothing_connected = chips.is_empty();
 
         StatusBar::new()
             .left(
@@ -614,11 +580,34 @@ impl WorkspaceView {
                         this.on_toggle_console(&ToggleConsole, window, cx);
                     })),
             )
-            .child(tokens::meta("Requests", requests.to_string(), cx))
+            // Every ROS system, always in view: which are up, which are not, and
+            // one click to change that. This is the reason the footer exists.
+            // On the left with the toggles, because it is the app's own state;
+            // the right is left free for whatever has just gone wrong.
+            .left(h_flex().gap_1().items_center().children(chips))
+            .when(nothing_connected, |bar| {
+                // States the fact rather than repeating the welcome screen's
+                // call to action. The footer reports; it does not recruit.
+                bar.left(
+                    Button::new("add-connection")
+                        .ghost()
+                        .xsmall()
+                        .tooltip("Manage connections")
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("No connections"),
+                        )
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                            this.open_connections(window, cx)
+                        })),
+                )
+            })
             // A storage failure used to leave the sidebar empty with no
             // explanation, which looks exactly like a click that did nothing.
             .when_some(workspace.error().map(str::to_owned), |bar, error| {
-                bar.child(
+                bar.right(
                     h_flex()
                         .gap_1p5()
                         .items_center()
@@ -633,12 +622,6 @@ impl WorkspaceView {
                         ),
                 )
             })
-            .right(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(concat!("v", env!("CARGO_PKG_VERSION"))),
-            )
             .into_any_element()
     }
 }
@@ -661,7 +644,6 @@ impl Focusable for WorkspaceView {
 
 impl Render for WorkspaceView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let connections = self.connections_button(cx);
         let menu = self.app_menu();
         let status_bar = self.status_bar(cx);
         // Dialogs and notifications live on `Root` but are placed by the view:
@@ -685,13 +667,9 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_toggle_console))
             .child(
-                TitleBar::new().child(div().flex_1()).child(
-                    h_flex()
-                        .gap_1()
-                        .items_center()
-                        .child(connections)
-                        .child(menu),
-                ),
+                TitleBar::new()
+                    .child(div().flex_1())
+                    .child(h_flex().gap_1().items_center().child(menu)),
             )
             .child(div().flex_1().min_h_0().child(self.dock.clone()))
             .child(status_bar)

@@ -1,0 +1,35 @@
+# The footer, carrying live connection state rather than static counts.
+#
+# Coordinates are relative to the app window, which GPUI opens at 1440x900.
+
+wait 900
+shot 01-empty-footer
+
+# Two ROS systems, both shown in the footer as they come up.
+click 789 484
+wait 900
+click 1403 81
+wait 700
+click 1384 158
+wait 500
+click 1269 211
+type Simulator
+wait 500
+click 1395 242
+wait 1400
+
+click 1403 81
+wait 700
+click 1384 158
+wait 500
+click 1269 211
+type Bag replay
+wait 500
+click 1395 242
+wait 1600
+shot 02-two-in-footer
+
+# Clicking one in the footer disconnects it.
+click 90 888
+wait 1200
+shot 03-one-disconnected

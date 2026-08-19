@@ -166,22 +166,17 @@ impl CollectionsPanel {
             .into_any_element()
     }
 
+    /// No button here on purpose.
+    ///
+    /// The + above this is two centimetres away and the welcome screen offers
+    /// the same action; a third copy of it just makes the reader work out
+    /// whether the three do different things.
     fn empty_state(&self, cx: &mut Context<Self>) -> AnyElement {
         tokens::empty_state(
             IconName::Inbox,
             "No requests yet",
             "Save a topic, service or action call to reuse it later.",
             cx,
-        )
-        .child(
-            Button::new("empty-new-request")
-                .primary()
-                .small()
-                .icon(IconName::Plus)
-                .label("New request")
-                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                    cx.emit(CollectionsEvent::New);
-                })),
         )
         .into_any_element()
     }

@@ -99,19 +99,43 @@ impl Render for SettingsView {
             })
             .collect();
 
-        v_flex().id("settings").w_full().gap_3().child(
-            v_flex()
-                .gap_1()
-                .child(tokens::section_label("Theme", cx))
-                .child(
-                    v_flex()
-                        .id("theme-list")
-                        .max_h(px(340.))
-                        .overflow_y_scroll()
-                        .gap_0p5()
-                        .child(system)
-                        .children(themes),
-                ),
-        )
+        v_flex()
+            .id("settings")
+            .w_full()
+            .gap_3()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(tokens::section_label("Theme", cx))
+                    .child(
+                        v_flex()
+                            .id("theme-list")
+                            .max_h(px(340.))
+                            .overflow_y_scroll()
+                            .gap_0p5()
+                            .child(system)
+                            .children(themes),
+                    ),
+            )
+            .child(tokens::hairline(cx))
+            .child(
+                // Where a version belongs: looked up when it is wanted, rather
+                // than occupying a strip of the window forever.
+                h_flex()
+                    .justify_between()
+                    .items_baseline()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Robot Whisperer"),
+                    )
+                    .child(
+                        tokens::mono(cx)
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(concat!("v", env!("CARGO_PKG_VERSION"))),
+                    ),
+            )
     }
 }

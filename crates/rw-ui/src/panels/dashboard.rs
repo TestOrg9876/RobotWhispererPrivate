@@ -49,6 +49,14 @@ pub struct DashboardPanel {
     pane_subscriptions: Vec<Subscription>,
     /// The tab group this panel sits in, so the shell can bring it forward.
     home: crate::docking::Home,
+    /// Whether this panel's tab is the one showing in its group.
+    ///
+    /// Recorded rather than asked for: the chip is drawn by [`Panel::title`],
+    /// which the dock calls from inside its own update, and reading the tab
+    /// group from there is a double lease. `set_active` is dispatched outside
+    /// that update precisely so a panel can keep this.
+    tab_active: bool,
+
     _subscriptions: Vec<Subscription>,
 }
 
@@ -90,6 +98,7 @@ impl DashboardPanel {
                 panes: Vec::new(),
                 pane_subscriptions: Vec::new(),
                 home: Default::default(),
+                tab_active: false,
                 _subscriptions: vec![cx.subscribe_in(
                     &dock,
                     window,
@@ -215,8 +224,19 @@ impl gpui_component::dock::Panel for DashboardPanel {
         "Dashboard"
     }
 
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        self.name.clone()
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::tokens::tab_chip(self.tab_active, cx)
+            .child(gpui_component::Icon::new(IconName::LayoutDashboard).xsmall())
+            .child(self.name.clone())
+    }
+
+    /// The dock's own tab is transparent here; the chip inside it is what shows
+    /// selection, so the panel has to be told.
+    fn set_active(&mut self, active: bool, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.tab_active != active {
+            self.tab_active = active;
+            cx.notify();
+        }
     }
 
     fn on_added_to(

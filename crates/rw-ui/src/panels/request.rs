@@ -206,6 +206,14 @@ pub struct RequestPanel {
     /// The tab group this editor is sitting in, which changes whenever the user
     /// drags its tab somewhere else.
     home: Home,
+    /// Whether this panel's tab is the one showing in its group.
+    ///
+    /// Recorded rather than asked for: the chip is drawn by [`Panel::title`],
+    /// which the dock calls from inside its own update, and reading the tab
+    /// group from there is a double lease. `set_active` is dispatched outside
+    /// that update precisely so a panel can keep this.
+    tab_active: bool,
+
     _repaint: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -281,6 +289,7 @@ impl RequestPanel {
             scene_at: 0,
             frozen: None,
             home: Home::default(),
+            tab_active: false,
             _repaint: None,
             _subscriptions: subscriptions,
         }
@@ -1573,7 +1582,7 @@ impl RequestPanel {
         // A segmented bar rather than document tabs: these are three views of one
         // response, not three things that can be closed.
         let tabs = TabBar::new("response-views")
-            .with_variant(tokens::tab_variant())
+            .segmented()
             .selected_index(active.index())
             .children(View::ALL.map(|tab| Tab::new().label(tab.label())))
             .on_click(cx.listener(|this, index: &usize, _, cx| {
@@ -1770,6 +1779,15 @@ impl Panel for RequestPanel {
         "Request"
     }
 
+    /// The dock's own tab is transparent here; the chip inside it is what shows
+    /// selection, so the panel has to be told.
+    fn set_active(&mut self, active: bool, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.tab_active != active {
+            self.tab_active = active;
+            cx.notify();
+        }
+    }
+
     fn on_added_to(
         &mut self,
         tab_panel: gpui::WeakEntity<gpui_component::dock::TabPanel>,
@@ -1788,9 +1806,7 @@ impl Panel for RequestPanel {
     }
 
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex()
-            .gap_2()
-            .items_center()
+        tokens::tab_chip(self.tab_active, cx)
             .child(tokens::status_dot(tokens::kind_color(self.draft.kind, cx)))
             .child(RequestPanel::title(self))
     }

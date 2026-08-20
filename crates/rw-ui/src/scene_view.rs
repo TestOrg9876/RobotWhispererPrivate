@@ -17,7 +17,7 @@ use gpui::{
 };
 use gpui_component::{ActiveTheme as _, IconName, h_flex, v_flex};
 use image_crate::{Frame, RgbaImage};
-use rw_render::{Camera, Coloring, Grid, Points, Scene, Solid};
+use rw_render::{Camera, Coloring, Content, Grid, Layer, Scene};
 
 use crate::gpu::Gpu;
 use crate::session::RobotWhisperer;
@@ -59,6 +59,10 @@ pub struct SceneView {
     /// Whether the camera has been pointed at the data yet. Done once, on the
     /// first cloud: re-framing on every message would fight the user's drag.
     framed: bool,
+    /// How points are coloured. Kept here rather than read back off the scene
+    /// so it survives every layer in it being replaced, which happens on each
+    /// message.
+    coloring: Coloring,
     dragging: Option<Point<Pixels>>,
 }
 
@@ -74,32 +78,36 @@ impl SceneView {
                 rendered: (0, 0),
                 dirty: true,
                 framed: false,
+                coloring: Coloring::default(),
                 dragging: None,
             }
         })
     }
 
-    /// Hands the pane a new cloud. Frames the camera on the first one.
-    pub fn show(&mut self, points: Points, cx: &mut Context<Self>) {
+    /// Replaces everything the pane draws.
+    ///
+    /// The whole list at once rather than one layer at a time: the caller knows
+    /// which layers exist and which of them resolved this frame, and a partial
+    /// update would leave a layer whose transform has just gone stale still
+    /// drawn where it last was.
+    pub fn set_layers(&mut self, mut layers: Vec<Layer>, cx: &mut Context<Self>) {
         // The colouring is the user's choice, so it survives the new data — as
         // long as the new data still offers it.
-        let wanted = self.scene.points.coloring;
-        self.scene.points = points;
-        if self.scene.points.available().contains(&wanted) {
-            self.scene.points.coloring = wanted;
+        for layer in &mut layers {
+            if let Content::Points(points) = &mut layer.content {
+                points.coloring = if points.available().contains(&self.coloring) {
+                    self.coloring
+                } else {
+                    Coloring::default()
+                };
+            }
         }
+        self.scene.layers = layers;
         if !self.framed
-            && let Some((min, max)) = bounds_of(&self.scene.points)
+            && let Some((min, max)) = bounds_of(&self.scene)
         {
             self.frame(min, max, cx);
         }
-        self.dirty = true;
-        cx.notify();
-    }
-
-    /// Replaces the lit surfaces the pane draws.
-    pub fn set_solids(&mut self, solids: Vec<Solid>, cx: &mut Context<Self>) {
-        self.scene.solids = solids;
         self.dirty = true;
         cx.notify();
     }
@@ -127,15 +135,33 @@ impl SceneView {
     }
 
     pub fn coloring(&self) -> Coloring {
-        self.scene.points.coloring
+        self.coloring
     }
 
+    /// Every colouring some cloud in the scene can offer, in the order shown.
     pub fn available(&self) -> Vec<Coloring> {
-        self.scene.points.available()
+        let mut available = Vec::new();
+        for layer in &self.scene.layers {
+            if let Content::Points(points) = &layer.content {
+                for coloring in points.available() {
+                    if !available.contains(&coloring) {
+                        available.push(coloring);
+                    }
+                }
+            }
+        }
+        available
     }
 
     pub fn set_coloring(&mut self, coloring: Coloring, cx: &mut Context<Self>) {
-        self.scene.points.coloring = coloring;
+        self.coloring = coloring;
+        for layer in &mut self.scene.layers {
+            if let Content::Points(points) = &mut layer.content
+                && points.available().contains(&coloring)
+            {
+                points.coloring = coloring;
+            }
+        }
         self.dirty = true;
         cx.notify();
     }
@@ -143,9 +169,7 @@ impl SceneView {
     /// Points the camera back at whatever the pane is showing.
     pub fn reset(&mut self, cx: &mut Context<Self>) {
         self.scene.camera = Camera::default();
-        if let Some((min, max)) =
-            bounds_of(&self.scene.points).or_else(|| solid_bounds(&self.scene))
-        {
+        if let Some((min, max)) = bounds_of(&self.scene) {
             // Through `frame`, so the ground grid is resized too: a grid left at
             // its ten-metre default with the camera a metre away puts lines
             // behind the near plane, which rasterise as wedges across the pane.
@@ -156,7 +180,22 @@ impl SceneView {
     }
 
     pub fn point_count(&self) -> usize {
-        self.scene.points.positions.len()
+        self.scene
+            .layers
+            .iter()
+            .filter_map(|layer| match &layer.content {
+                Content::Points(points) => Some(points.positions.len()),
+                _ => None,
+            })
+            .sum()
+    }
+
+    /// Whether there is anything at all to look at.
+    pub fn is_empty(&self) -> bool {
+        self.scene
+            .layers
+            .iter()
+            .all(|layer| !layer.visible || layer.content.is_empty())
     }
 
     fn orbit(&mut self, delta: Point<Pixels>, cx: &mut Context<Self>) {
@@ -182,9 +221,9 @@ impl SceneView {
     /// view. No count and no "drag to orbit" hint — a line of instructions
     /// teaches once and then costs part of the picture forever.
     fn overlay(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let active = self.scene.points.coloring;
+        let active = self.coloring;
         // One entry is not a choice, so it is not offered.
-        let available = self.scene.points.available();
+        let available = self.available();
         let choices = if available.len() > 1 {
             available
         } else {
@@ -271,35 +310,59 @@ impl SceneView {
     }
 }
 
-/// The box the pane's lit surfaces occupy, in world space.
-fn solid_bounds(scene: &Scene) -> Option<([f32; 3], [f32; 3])> {
+/// The box everything in the scene occupies, in the fixed frame.
+///
+/// Every layer's own transform is folded in, which is what makes framing
+/// correct once TF is in play: a robot ten metres from a cloud has to be inside
+/// the camera's box, not beside it.
+fn bounds_of(scene: &Scene) -> Option<([f32; 3], [f32; 3])> {
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
     let mut any = false;
-    for solid in &scene.solids {
-        for vertex in solid.vertices.iter() {
-            any = true;
-            let point = rw_render::transform_point(solid.transform, vertex.position);
-            for axis in 0..3 {
-                min[axis] = min[axis].min(point[axis]);
-                max[axis] = max[axis].max(point[axis]);
-            }
-        }
-    }
-    any.then_some((min, max))
-}
-
-fn bounds_of(points: &Points) -> Option<([f32; 3], [f32; 3])> {
-    let first = *points.positions.first()?;
-    let mut min = first;
-    let mut max = first;
-    for point in &points.positions {
+    let mut stretch = |point: [f32; 3]| {
+        any = true;
         for axis in 0..3 {
             min[axis] = min[axis].min(point[axis]);
             max[axis] = max[axis].max(point[axis]);
         }
+    };
+
+    for layer in &scene.layers {
+        if !layer.visible {
+            continue;
+        }
+        let place = |point: [f32; 3]| rw_render::transform_point(layer.transform, point);
+        match &layer.content {
+            Content::Points(points) => {
+                for point in &points.positions {
+                    stretch(place(*point));
+                }
+            }
+            Content::Solids(solids) => {
+                for solid in solids {
+                    for vertex in solid.vertices.iter() {
+                        stretch(place(rw_render::transform_point(
+                            solid.transform,
+                            vertex.position,
+                        )));
+                    }
+                }
+            }
+            Content::Lines(sets) => {
+                for set in sets {
+                    for point in &set.points {
+                        stretch(place(*point));
+                    }
+                }
+            }
+            Content::Axes(axes) => {
+                for axis in axes {
+                    stretch(place(rw_render::transform_point(axis.transform, [0.; 3])));
+                }
+            }
+        }
     }
-    Some((min, max))
+    any.then_some((min, max))
 }
 
 impl Render for SceneView {
@@ -375,6 +438,15 @@ impl Render for SceneView {
 mod tests {
     use super::*;
 
+    use rw_render::Points;
+
+    fn cloud(positions: Vec<[f32; 3]>) -> Content {
+        Content::Points(Points {
+            positions,
+            ..Points::default()
+        })
+    }
+
     #[test]
     fn a_cloud_with_one_colouring_offers_no_choice() {
         // The chips are only worth their pixels when there is something to
@@ -385,5 +457,38 @@ mod tests {
             ..Points::default()
         };
         assert_eq!(points.available().len(), 1);
+    }
+
+    #[test]
+    fn framing_covers_every_layer_where_its_transform_puts_it() {
+        // The regression this guards: before layers, a robot ten metres away
+        // from a cloud framed on whichever of the two the pane happened to
+        // hold, and the other was off screen.
+        let mut here = Layer::new(cloud(vec![[0., 0., 0.]]));
+        here.transform = rw_render::IDENTITY;
+        let mut far = Layer::new(cloud(vec![[0., 0., 0.]]));
+        far.transform[3] = [10., 0., 0., 1.];
+
+        let scene = Scene {
+            layers: vec![here, far],
+            ..Scene::default()
+        };
+        assert_eq!(bounds_of(&scene), Some(([0., 0., 0.], [10., 0., 0.])));
+    }
+
+    #[test]
+    fn a_hidden_layer_does_not_drag_the_camera_out_to_meet_it() {
+        let mut hidden = Layer::new(cloud(vec![[1000., 0., 0.]]));
+        hidden.visible = false;
+        let scene = Scene {
+            layers: vec![Layer::new(cloud(vec![[1., 1., 1.]])), hidden],
+            ..Scene::default()
+        };
+        assert_eq!(bounds_of(&scene), Some(([1., 1., 1.], [1., 1., 1.])));
+    }
+
+    #[test]
+    fn an_empty_scene_has_no_bounds_rather_than_a_box_at_infinity() {
+        assert_eq!(bounds_of(&Scene::default()), None);
     }
 }

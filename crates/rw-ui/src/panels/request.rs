@@ -25,6 +25,7 @@ use gpui_component::{
 };
 use rw_canonical::CanonicalValue;
 use rw_core::domain::{Request, RequestKind, Value};
+use rw_render::{Content, Layer};
 use rw_transport::ConnectionId;
 
 use crate::cloud;
@@ -1295,7 +1296,9 @@ impl RequestPanel {
                 scene
             }
         };
-        scene.update(cx, |scene, cx| scene.show(cloud.into(), cx));
+        scene.update(cx, |scene, cx| {
+            scene.set_layers(vec![Layer::new(Content::Points(cloud.into()))], cx)
+        });
     }
 
     fn response(&self, cx: &mut Context<Self>) -> AnyElement {

@@ -25,7 +25,7 @@ use rw_assets::catalog::{Catalog, Entry, Loaded};
 use rw_assets::kinematics::{self, Pose};
 use rw_assets::math;
 use rw_assets::mesh::Part;
-use rw_render::{MeshVertex, Solid};
+use rw_render::{Content, Layer, MeshVertex, Solid};
 
 use crate::scene_view::SceneView;
 use crate::tokens;
@@ -250,8 +250,9 @@ impl RobotPanel {
                 })
             })
             .collect();
-        self.scene
-            .update(cx, |scene, cx| scene.set_solids(solids, cx));
+        self.scene.update(cx, |scene, cx| {
+            scene.set_layers(vec![Layer::new(Content::Solids(solids))], cx)
+        });
         cx.notify();
     }
 

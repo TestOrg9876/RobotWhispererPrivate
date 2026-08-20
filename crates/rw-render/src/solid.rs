@@ -32,7 +32,7 @@ impl MeshVertex {
 }
 
 /// One drawable piece, and where it currently is.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Solid {
     /// Identifies the geometry so it is uploaded once. Two solids sharing a key
     /// must have identical vertices — it is what the buffer cache is keyed on.

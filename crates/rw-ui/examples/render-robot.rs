@@ -8,7 +8,7 @@ use std::sync::Arc;
 use rw_assets::catalog::Catalog;
 use rw_assets::kinematics::{self, Pose};
 use rw_assets::math;
-use rw_render::{Camera, Grid, MeshVertex, Renderer, Scene, Solid};
+use rw_render::{Camera, Content, Grid, Layer, MeshVertex, Renderer, Scene, Solid};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -89,7 +89,7 @@ fn main() {
         }
         let keys: Vec<u64> = warmup.iter().map(|solid| solid.key).collect();
         let warm = Scene {
-            solids: warmup,
+            layers: vec![Layer::new(Content::Solids(warmup))],
             ..Scene::default()
         };
         renderer.render(&warm, 900, 700).expect("renders");
@@ -98,7 +98,7 @@ fn main() {
     }
     let scene = Scene {
         camera,
-        solids,
+        layers: vec![Layer::new(Content::Solids(solids))],
         grid: with_grid.then(|| Grid::for_size(widest)),
         ..Scene::default()
     };

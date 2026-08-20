@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 pub use camera::{Camera, IDENTITY, Mat4, transform_point};
-pub use scene::{Coloring, Grid, Points, Scene};
+pub use scene::{AXIS_COLORS, Axis, Coloring, Content, Grid, Layer, LineSet, Points, Scene};
 pub use solid::{MeshVertex, Solid};
 
 /// One rendered image, in RGBA order, tightly packed.
@@ -371,13 +371,15 @@ impl Renderer {
         let lines = self.vertex_buffer("lines", &vertices.lines);
 
         // One buffer holding every solid's model matrix, drawn one instance at
-        // a time from its own offset.
-        let geometry: Vec<(wgpu::Buffer, u32)> = scene
-            .solids
+        // a time from its own offset. The matrix is the layer's placement times
+        // the solid's own, composed here rather than stored, so a robot that
+        // moves costs a handful of multiplies and no upload at all.
+        let placed = scene.placed_solids();
+        let geometry: Vec<(wgpu::Buffer, u32)> = placed
             .iter()
-            .map(|solid| self.geometry(solid))
+            .map(|(solid, _)| self.geometry(solid))
             .collect();
-        let models: Vec<Mat4> = scene.solids.iter().map(|solid| solid.transform).collect();
+        let models: Vec<Mat4> = placed.iter().map(|(_, transform)| *transform).collect();
         let instances = self.instance_buffer(&models);
 
         let target = self.device.create_texture(&wgpu::TextureDescriptor {

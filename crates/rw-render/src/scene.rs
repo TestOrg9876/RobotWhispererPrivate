@@ -1,11 +1,12 @@
 //! What one pane is showing.
 //!
-//! A scene is plain data: points, a ground grid and a camera. It is turned into
-//! vertices only at draw time, so the pane can hand in a new cloud without
-//! knowing that a GPU exists.
+//! A scene is plain data: a camera, a ground grid, and a list of layers. Each
+//! layer carries the matrix that places its content in the scene's fixed frame,
+//! and nothing is turned into vertices until draw time — so a pane can hand in
+//! a new cloud, or move a robot, without knowing that a GPU exists.
 
 use crate::Vertex;
-use crate::camera::Camera;
+use crate::camera::{Camera, Mat4, multiply, transform_point};
 
 /// The ground plane drawn under everything, for a sense of scale.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -174,13 +175,106 @@ fn ramp(t: f32) -> [f32; 4] {
     ]
 }
 
+/// A run of line segments in one colour.
+///
+/// `strip` is the difference between a path — where each point continues from
+/// the last — and a marker's line list, where the points are read in pairs.
+/// Both arrive often enough that guessing would be wrong half the time.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LineSet {
+    pub points: Vec<[f32; 3]>,
+    pub color: [f32; 4],
+    pub strip: bool,
+}
+
+/// A frame drawn as its three axes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Axis {
+    /// Where the frame sits inside its layer.
+    pub transform: Mat4,
+    /// How long the arms are, in metres.
+    pub length: f32,
+}
+
+impl Default for Axis {
+    fn default() -> Self {
+        Self {
+            transform: crate::IDENTITY,
+            length: 0.25,
+        }
+    }
+}
+
+/// Red x, green y, blue z: the colours every robotics tool uses, and the reason
+/// nobody has to be told which arm is which.
+pub const AXIS_COLORS: [[f32; 4]; 3] = [
+    [0.95, 0.27, 0.23, 1.],
+    [0.32, 0.80, 0.35, 1.],
+    [0.29, 0.53, 0.96, 1.],
+];
+
+/// What a layer is made of.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Content {
+    Points(Points),
+    /// Lit surfaces: robot links, and anything else with a skin.
+    Solids(Vec<crate::Solid>),
+    Lines(Vec<LineSet>),
+    /// Frames, as triads.
+    Axes(Vec<Axis>),
+}
+
+impl Content {
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Points(points) => points.positions.is_empty(),
+            Self::Solids(solids) => solids.is_empty(),
+            Self::Lines(lines) => lines.iter().all(|set| set.points.len() < 2),
+            Self::Axes(axes) => axes.is_empty(),
+        }
+    }
+}
+
+/// One thing in the world, and the transform that puts it where it belongs.
+///
+/// The transform is applied at draw time rather than baked into the content,
+/// which is what lets a moving robot cost a matrix a frame instead of a
+/// re-upload of its meshes — the geometry cache in `lib.rs`, keyed by
+/// `Solid.key`, already relies on exactly that.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Layer {
+    /// Where this layer's content sits in the scene's fixed frame.
+    pub transform: Mat4,
+    pub content: Content,
+    /// Drawn at all. A layer switched off keeps its place in the list, and its
+    /// geometry stays uploaded, so turning it back on is instant.
+    pub visible: bool,
+}
+
+impl Layer {
+    pub fn new(content: Content) -> Self {
+        Self {
+            transform: crate::IDENTITY,
+            content,
+            visible: true,
+        }
+    }
+
+    pub fn at(mut self, transform: Mat4) -> Self {
+        self.transform = transform;
+        self
+    }
+}
+
 /// Everything one pane draws.
+///
+/// A list of layers rather than one of each thing: RViz's model is one world
+/// with many displays in it, and a scene that held a single cloud and a single
+/// set of solids could not express a scan beside a robot beside a path.
 #[derive(Debug, Clone)]
 pub struct Scene {
     pub camera: Camera,
-    pub points: Points,
-    /// Lit surfaces: robot links, and anything else with a skin.
-    pub solids: Vec<crate::Solid>,
+    pub layers: Vec<Layer>,
     pub grid: Option<Grid>,
     pub background: [f32; 3],
     /// Point diameter, in pixels.
@@ -191,8 +285,7 @@ impl Default for Scene {
     fn default() -> Self {
         Self {
             camera: Camera::default(),
-            points: Points::default(),
-            solids: Vec::new(),
+            layers: Vec::new(),
             grid: Some(Grid::default()),
             background: [0.055, 0.063, 0.078],
             point_size: 3.,
@@ -217,17 +310,93 @@ const QUAD: [[f32; 2]; 6] = [
 ];
 
 impl Scene {
+    /// The layers that will actually be drawn.
+    fn drawn(&self) -> impl Iterator<Item = &Layer> {
+        self.layers
+            .iter()
+            .filter(|layer| layer.visible && !layer.content.is_empty())
+    }
+
+    /// Every solid in the scene, with its layer's placement already folded in.
+    ///
+    /// Two matrices multiplied per link per frame, against megabytes of mesh
+    /// that never move off the GPU — which is the whole point of keeping the
+    /// layer's transform separate from its content.
+    pub fn placed_solids(&self) -> Vec<(&crate::Solid, Mat4)> {
+        self.drawn()
+            .filter_map(|layer| match &layer.content {
+                Content::Solids(solids) => Some((layer, solids)),
+                _ => None,
+            })
+            .flat_map(|(layer, solids)| {
+                solids
+                    .iter()
+                    .map(move |solid| (solid, multiply(layer.transform, solid.transform)))
+            })
+            .collect()
+    }
+
     pub fn vertices(&self) -> Vertices {
-        let span = self.points.span();
-        let mut points = Vec::with_capacity(self.points.positions.len() * QUAD.len());
-        for (index, position) in self.points.positions.iter().enumerate() {
-            let color = self.points.color(index, span);
-            for corner in QUAD {
-                points.push(Vertex::new(*position, color, corner));
+        let mut points = Vec::new();
+        for layer in self.drawn() {
+            let Content::Points(cloud) = &layer.content else {
+                continue;
+            };
+            // Each cloud's colour ramp is stretched across its own range: two
+            // lidars with different intensity scales must each stay readable,
+            // and a shared span would flatten the quieter one to one colour.
+            let span = cloud.span();
+            points.reserve(cloud.positions.len() * QUAD.len());
+            for (index, position) in cloud.positions.iter().enumerate() {
+                let color = cloud.color(index, span);
+                let placed = transform_point(layer.transform, *position);
+                for corner in QUAD {
+                    points.push(Vertex::new(placed, color, corner));
+                }
             }
         }
 
         let mut lines = Vec::new();
+        for layer in self.drawn() {
+            match &layer.content {
+                Content::Lines(sets) => {
+                    for set in sets {
+                        let placed: Vec<[f32; 3]> = set
+                            .points
+                            .iter()
+                            .map(|point| transform_point(layer.transform, *point))
+                            .collect();
+                        if set.strip {
+                            for pair in placed.windows(2) {
+                                lines.push(Vertex::new(pair[0], set.color, [0.; 2]));
+                                lines.push(Vertex::new(pair[1], set.color, [0.; 2]));
+                            }
+                        } else {
+                            // Read in pairs, and an odd trailing point is
+                            // dropped rather than joined to nothing.
+                            for pair in placed.chunks_exact(2) {
+                                lines.push(Vertex::new(pair[0], set.color, [0.; 2]));
+                                lines.push(Vertex::new(pair[1], set.color, [0.; 2]));
+                            }
+                        }
+                    }
+                }
+                Content::Axes(axes) => {
+                    for axis in axes {
+                        let placed = multiply(layer.transform, axis.transform);
+                        let origin = transform_point(placed, [0.; 3]);
+                        for (index, color) in AXIS_COLORS.iter().enumerate() {
+                            let mut arm = [0f32; 3];
+                            arm[index] = axis.length;
+                            lines.push(Vertex::new(origin, *color, [0.; 2]));
+                            lines.push(Vertex::new(transform_point(placed, arm), *color, [0.; 2]));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
         if let Some(grid) = self.grid {
             let reach = grid.step * grid.extent as f32;
             for step in -grid.extent..=grid.extent {
@@ -259,13 +428,18 @@ mod tests {
         }
     }
 
-    #[test]
-    fn every_point_becomes_one_quad() {
-        let scene = Scene {
-            points: cloud(vec![[0., 0., 0.], [1., 1., 1.]]),
+    /// A scene of one layer at the origin, with no grid under it.
+    fn one(content: Content) -> Scene {
+        Scene {
+            layers: vec![Layer::new(content)],
             grid: None,
             ..Scene::default()
-        };
+        }
+    }
+
+    #[test]
+    fn every_point_becomes_one_quad() {
+        let scene = one(Content::Points(cloud(vec![[0., 0., 0.], [1., 1., 1.]])));
         let vertices = scene.vertices();
         assert_eq!(vertices.points.len(), 2 * 6);
         assert!(vertices.lines.is_empty());
@@ -273,11 +447,7 @@ mod tests {
 
     #[test]
     fn a_quad_covers_all_four_corners_around_its_point() {
-        let scene = Scene {
-            points: cloud(vec![[3., 4., 5.]]),
-            grid: None,
-            ..Scene::default()
-        };
+        let scene = one(Content::Points(cloud(vec![[3., 4., 5.]])));
         let vertices = scene.vertices();
         assert!(
             vertices
@@ -345,7 +515,6 @@ mod tests {
             ..Grid::default()
         };
         let scene = Scene {
-            points: Points::default(),
             grid: Some(grid),
             ..Scene::default()
         };
@@ -447,5 +616,194 @@ mod tests {
         let vertices = Scene::default().vertices();
         assert!(vertices.points.is_empty());
         assert!(!vertices.lines.is_empty());
+    }
+
+    /// Half a turn about z, then five metres along x — the sort of placement a
+    /// transform lookup hands back.
+    fn placed() -> Mat4 {
+        [
+            [0., 1., 0., 0.],
+            [-1., 0., 0., 0.],
+            [0., 0., 1., 0.],
+            [5., 0., 0., 1.],
+        ]
+    }
+
+    #[test]
+    fn a_layers_transform_moves_its_points_without_touching_the_data() {
+        let cloud = cloud(vec![[1., 0., 0.]]);
+        let scene = Scene {
+            layers: vec![Layer::new(Content::Points(cloud.clone())).at(placed())],
+            grid: None,
+            ..Scene::default()
+        };
+        let vertices = scene.vertices();
+        assert!(
+            vertices
+                .points
+                .iter()
+                .all(|vertex| vertex.position == [5., 1., 0.]),
+            "got {:?}",
+            vertices.points.first().map(|vertex| vertex.position)
+        );
+        let Content::Points(kept) = &scene.layers[0].content else {
+            panic!("the layer still holds points");
+        };
+        assert_eq!(
+            kept.positions, cloud.positions,
+            "the layer's own data is left in its own frame"
+        );
+    }
+
+    #[test]
+    fn two_layers_land_in_different_places_from_the_same_geometry() {
+        // The whole point of TF, in one assertion: before this, both of these
+        // sat on top of one another at the origin.
+        let scene = Scene {
+            layers: vec![
+                Layer::new(Content::Points(cloud(vec![[0., 0., 0.]]))),
+                Layer::new(Content::Points(cloud(vec![[0., 0., 0.]]))).at(placed()),
+            ],
+            grid: None,
+            ..Scene::default()
+        };
+        let positions: Vec<[f32; 3]> = scene
+            .vertices()
+            .points
+            .iter()
+            .map(|vertex| vertex.position)
+            .collect();
+        assert!(positions.contains(&[0., 0., 0.]));
+        assert!(positions.contains(&[5., 0., 0.]));
+    }
+
+    #[test]
+    fn a_solids_layer_composes_its_placement_with_each_solids_own() {
+        let solid = crate::Solid {
+            key: 7,
+            vertices: std::sync::Arc::new(vec![crate::MeshVertex::new(
+                [0.; 3],
+                [0., 0., 1.],
+                [1.; 4],
+            )]),
+            transform: crate::camera::multiply(
+                crate::IDENTITY,
+                [
+                    [1., 0., 0., 0.],
+                    [0., 1., 0., 0.],
+                    [0., 0., 1., 0.],
+                    [0., 2., 0., 1.],
+                ],
+            ),
+        };
+        let scene = Scene {
+            layers: vec![Layer::new(Content::Solids(vec![solid])).at(placed())],
+            grid: None,
+            ..Scene::default()
+        };
+        let placed_solids = scene.placed_solids();
+        assert_eq!(placed_solids.len(), 1);
+        let (solid, matrix) = placed_solids[0];
+        assert_eq!(
+            solid.key, 7,
+            "the cache key is untouched, so nothing re-uploads"
+        );
+        // Two metres along the solid's own y, turned into the layer's frame,
+        // then shifted five along x: (5, 0, 0) + (-2, 0, 0).
+        assert_eq!(transform_point(matrix, [0.; 3]), [3., 0., 0.]);
+    }
+
+    #[test]
+    fn a_hidden_or_empty_layer_draws_nothing() {
+        let mut hidden = Layer::new(Content::Points(cloud(vec![[1., 2., 3.]])));
+        hidden.visible = false;
+        let scene = Scene {
+            layers: vec![hidden, Layer::new(Content::Points(cloud(vec![])))],
+            grid: None,
+            ..Scene::default()
+        };
+        assert!(scene.vertices().points.is_empty());
+        assert!(scene.placed_solids().is_empty());
+    }
+
+    #[test]
+    fn a_line_strip_joins_its_points_and_a_line_list_reads_them_in_pairs() {
+        let path = LineSet {
+            points: vec![[0., 0., 0.], [1., 0., 0.], [2., 0., 0.]],
+            color: [1., 1., 1., 1.],
+            strip: true,
+        };
+        let list = LineSet {
+            strip: false,
+            ..path.clone()
+        };
+        // Three points: two joined segments as a strip, one pair as a list with
+        // the odd point dropped rather than joined to nothing.
+        assert_eq!(one(Content::Lines(vec![path])).vertices().lines.len(), 4);
+        assert_eq!(one(Content::Lines(vec![list])).vertices().lines.len(), 2);
+    }
+
+    #[test]
+    fn an_axis_is_three_coloured_arms_from_its_own_origin() {
+        let scene = one(Content::Axes(vec![Axis {
+            transform: placed(),
+            length: 0.5,
+        }]));
+        let lines = scene.vertices().lines;
+        assert_eq!(lines.len(), 6, "three arms, two vertices each");
+        for (index, color) in AXIS_COLORS.iter().enumerate() {
+            assert!(
+                lines.iter().any(|vertex| vertex.color == *color),
+                "axis {index} is missing its colour"
+            );
+        }
+        // Every arm starts at the frame's own origin, wherever that landed.
+        let origin = transform_point(placed(), [0.; 3]);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|vertex| vertex.position == origin)
+                .count(),
+            3
+        );
+        // And x reaches half a metre along the placed frame's x, which the half
+        // turn has pointed down the world's y.
+        assert!(
+            lines.iter().any(|vertex| vertex.position == [5., 0.5, 0.]),
+            "the x arm followed its frame's rotation"
+        );
+    }
+
+    #[test]
+    fn each_cloud_is_coloured_across_its_own_range() {
+        // A layer of tall points and a layer of short ones: sharing a span
+        // would flatten the short one to a single colour.
+        let low = Points {
+            positions: vec![[0., 0., 0.], [0., 0., 1.]],
+            ..Points::default()
+        };
+        let high = Points {
+            positions: vec![[0., 0., 100.], [0., 0., 200.]],
+            ..Points::default()
+        };
+        let scene = Scene {
+            layers: vec![
+                Layer::new(Content::Points(low)),
+                Layer::new(Content::Points(high)),
+            ],
+            grid: None,
+            ..Scene::default()
+        };
+        let colors: Vec<[f32; 4]> = scene
+            .vertices()
+            .points
+            .iter()
+            .map(|vertex| vertex.color)
+            .collect();
+        assert_ne!(
+            colors[0], colors[6],
+            "the low layer spans its own two points"
+        );
+        assert_ne!(colors[12], colors[18], "and so does the high one");
     }
 }

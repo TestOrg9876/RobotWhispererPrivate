@@ -6,7 +6,9 @@
 
 use std::sync::Arc;
 
-use rw_render::{Camera, Coloring, Grid, MeshVertex, Points, Renderer, Scene, Solid};
+use rw_render::{
+    Camera, Coloring, Content, Grid, Layer, MeshVertex, Points, Renderer, Scene, Solid,
+};
 
 fn renderer() -> Option<Renderer> {
     match pollster::block_on(Renderer::new()) {
@@ -73,12 +75,12 @@ fn points_are_drawn_in_the_colour_the_cloud_asked_for() {
         grid: None,
         // Large enough that a point cannot fall between sample positions.
         point_size: 40.,
-        points: Points {
+        layers: vec![Layer::new(Content::Points(Points {
             positions: vec![[0., 0., 0.]],
             rgb: Some(vec![[255, 0, 0]]),
             coloring: Coloring::Rgb,
             ..Points::default()
-        },
+        }))],
         ..Scene::default()
     };
     let frame = renderer.render(&scene, 200, 200).expect("renders");
@@ -156,7 +158,7 @@ fn a_lit_surface_is_drawn_and_shaded() {
     let scene = Scene {
         camera,
         grid: None,
-        solids: vec![solid],
+        layers: vec![Layer::new(Content::Solids(vec![solid]))],
         background: [0., 0., 0.],
         ..Scene::default()
     };
@@ -190,11 +192,11 @@ fn an_instance_transform_moves_the_geometry_it_places() {
     let scene = |transform| Scene {
         camera,
         grid: None,
-        solids: vec![Solid {
+        layers: vec![Layer::new(Content::Solids(vec![Solid {
             key: 2,
             vertices: vertices.clone(),
             transform,
-        }],
+        }]))],
         background: [0., 0., 0.],
         ..Scene::default()
     };
@@ -231,7 +233,7 @@ fn geometry_is_uploaded_once_and_can_be_forgotten() {
     };
     let scene = Scene {
         grid: None,
-        solids: vec![solid],
+        layers: vec![Layer::new(Content::Solids(vec![solid]))],
         ..Scene::default()
     };
     // Twice over the same key, then again after forgetting it: all three must

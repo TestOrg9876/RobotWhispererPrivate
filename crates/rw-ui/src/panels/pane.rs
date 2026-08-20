@@ -22,6 +22,7 @@ use gpui_component::{
     h_flex, v_flex,
 };
 use rw_canonical::CanonicalValue;
+use rw_render::{Content, Layer};
 
 use crate::cloud;
 use crate::scene_view::SceneView;
@@ -231,7 +232,9 @@ impl VizPanel {
                 scene
             }
         };
-        scene.update(cx, |scene, cx| scene.show(cloud.into(), cx));
+        scene.update(cx, |scene, cx| {
+            scene.set_layers(vec![Layer::new(Content::Points(cloud.into()))], cx)
+        });
     }
 
     /// The connection and topic pickers, and the view switcher.

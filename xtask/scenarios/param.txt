@@ -54,31 +54,22 @@ move 700 550
 wait 400
 shot 03-read
 
-# Two edits, both typed into the form the node's own answer built.
-# `log_directory` is a parameter the node has no value for — giving it one is
-# how it stops being unset — and `controller_frequency` gains a nought.
-#
-# Both append rather than replace: this harness does not reliably deliver a
-# `key` and a `type` to the same field, so the scenario asks for nothing that
-# needs a backspace. It also does not freeze the reading first, tempting as the
-# diff would be: a click on Freeze leaves the window refusing input for the
-# rest of the run under Xvfb, and a scenario that photographs a lie is worse
-# than one that photographs less.
-click 975 289
-wait 700
-type /tmp/planner-logs
-wait 700
-click 975 203
-wait 700
-type 0
-wait 700
+# Dropping a row from `footprint` — a click rather than typing, which is what
+# an array editor is for: the third number is a row you can remove, not a
+# substring you have to find in a line of commas.
+click 1406 309
+wait 900
+move 1295 92
+wait 400
+move 700 700
+wait 400
+shot 04-dropped
 
-# Write, then read back. What the node holds afterwards is the answer: the form
-# and the response below it both show what came back, not what was typed.
+# Written, and read back: the node holds three now.
 click 1380 92
 wait 2500
 move 1295 92
 wait 400
 move 700 700
 wait 500
-shot 04-written
+shot 05-written

@@ -142,6 +142,31 @@ impl Activity {
     }
 }
 
+/// What one field of the form is edited with.
+///
+/// An array is a list of editors rather than one box of commas: `0.2, 0.2,
+/// -0.2, -0.2` is a value you have to parse in your head before you can change
+/// the third number. The single box survives only as the fallback for an array
+/// longer than [`form::MAX_ROWS`], which is data rather than something anybody
+/// edits by hand.
+enum Inputs {
+    One(Entity<InputState>),
+    List {
+        element: form::Element,
+        rows: Vec<Entity<InputState>>,
+    },
+}
+
+impl Inputs {
+    /// Every editor in the field, for the passes that treat them all alike.
+    fn each(&self) -> impl Iterator<Item = &Entity<InputState>> {
+        match self {
+            Inputs::One(input) => std::slice::from_ref(input).iter(),
+            Inputs::List { rows, .. } => rows.iter(),
+        }
+    }
+}
+
 /// A node's parameters as they were last read, and what they were declared as.
 ///
 /// The kinds travel with the values because a write has to name the type it is
@@ -175,7 +200,7 @@ pub struct RequestPanel {
 
     /// The payload form: one input per leaf of the request or goal message,
     /// rebuilt whenever the schema behind the target changes.
-    payload: Vec<(Field, Entity<InputState>)>,
+    payload: Vec<(Field, Inputs)>,
     /// The schema the current form was built from, so it is only rebuilt when
     /// it actually changes rather than on every render.
     payload_schema: Option<String>,
@@ -925,36 +950,78 @@ impl RequestPanel {
 
         // Existing text survives a rebuild when the leaf is still there, so
         // reconnecting to a robot does not clear a half-filled form.
-        let filled: Vec<(String, String)> = self
+        let filled: Vec<(String, Vec<String>)> = self
             .payload
             .iter()
-            .map(|(field, input)| (field.path.clone(), input.read(cx).value().to_string()))
+            .map(|(field, inputs)| {
+                (
+                    field.path.clone(),
+                    inputs
+                        .each()
+                        .map(|input| input.read(cx).value().to_string())
+                        .collect(),
+                )
+            })
             .collect();
 
         self.payload = fields
             .into_iter()
             .map(|field| {
-                let existing = (!from_a_reading)
+                let typed = (!from_a_reading)
                     .then(|| {
                         filled
                             .iter()
                             .find(|(path, _)| *path == field.path)
-                            .map(|(_, text)| text.clone())
+                            .map(|(_, texts)| texts.clone())
                     })
-                    .flatten()
-                    .or_else(|| form::text_at(&stored, &field.path, field.editor));
-                let placeholder = field.editor.placeholder();
-                let input = cx.new(|cx| {
-                    let state = InputState::new(window, cx).placeholder(placeholder);
-                    match existing {
-                        Some(text) => state.default_value(text),
-                        None => state,
+                    .flatten();
+
+                // A list gets a row per element — unless the stored value is
+                // longer than anyone would edit by hand, in which case the
+                // single comma box is the honest way to show it.
+                if let form::Editor::List(element) = field.editor {
+                    let rows = typed
+                        .clone()
+                        .or_else(|| form::rows_at(&stored, &field.path, element));
+                    if let Some(rows) = rows.filter(|rows| rows.len() <= form::MAX_ROWS) {
+                        let rows = rows
+                            .into_iter()
+                            .map(|text| {
+                                Self::editor(form::element_editor(element), Some(text), window, cx)
+                            })
+                            .collect();
+                        return (field, Inputs::List { element, rows });
                     }
-                });
-                (field, input)
+                }
+
+                let existing = typed
+                    .and_then(|texts| texts.into_iter().next())
+                    .or_else(|| form::text_at(&stored, &field.path, field.editor));
+                let editor = field.editor;
+                (
+                    field,
+                    Inputs::One(Self::editor(editor, existing, window, cx)),
+                )
             })
             .collect();
         self.payload_schema = wanted;
+    }
+
+    /// One editor, with whatever text it starts life holding.
+    fn editor(
+        editor: form::Editor,
+        text: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<InputState> {
+        let placeholder = editor.placeholder();
+        cx.new(|cx| {
+            let state = InputState::new(window, cx).placeholder(placeholder);
+            match text {
+                Some(text) => state.default_value(text),
+                None => state,
+            }
+        })
     }
 
     /// The message definition a form should be built from: a service's request
@@ -986,8 +1053,18 @@ impl RequestPanel {
     /// case at every call site.
     fn payload_value(&self, cx: &App) -> Result<Value, String> {
         let mut leaves = Vec::new();
-        for (field, input) in &self.payload {
-            match form::parse(field.editor, &input.read(cx).value()) {
+        for (field, inputs) in &self.payload {
+            let parsed = match inputs {
+                Inputs::One(input) => form::parse(field.editor, &input.read(cx).value()),
+                Inputs::List { element, rows } => {
+                    let texts: Vec<String> = rows
+                        .iter()
+                        .map(|row| row.read(cx).value().to_string())
+                        .collect();
+                    form::parse_list(*element, &texts)
+                }
+            };
+            match parsed {
                 Ok(Some(value)) => leaves.push((field.path.clone(), value)),
                 Ok(None) => {}
                 Err(reason) => return Err(format!("{}: {reason}", field.path)),
@@ -1390,7 +1467,8 @@ impl RequestPanel {
                         .children(
                             self.payload
                                 .iter()
-                                .map(|(field, input)| self.row(field, input, cx)),
+                                .enumerate()
+                                .map(|(index, (field, inputs))| self.row(index, field, inputs, cx)),
                         ),
                 )
                 .into_any_element(),
@@ -1402,16 +1480,35 @@ impl RequestPanel {
     /// The label carries the full dotted path rather than only the leaf name.
     /// Flattening `geometry_msgs/PoseStamped` produces two fields called `x` and
     /// three called `sec`, and a column of those is unreadable.
-    fn row(&self, field: &Field, input: &Entity<InputState>, cx: &App) -> AnyElement {
+    fn row(
+        &self,
+        index: usize,
+        field: &Field,
+        inputs: &Inputs,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let editors = match inputs {
+            Inputs::One(input) => div()
+                .flex_1()
+                .min_w_0()
+                .child(Input::new(input).small())
+                .into_any_element(),
+            Inputs::List { rows, .. } => self.list(index, rows, cx),
+        };
+
         h_flex()
             .w_full()
             .gap_3()
-            .items_center()
+            .items_start()
             .child(
                 v_flex()
                     .w(px(220.))
                     .flex_shrink_0()
                     .gap_0p5()
+                    // Aligned with the first editor rather than the middle of a
+                    // list that may be six rows tall.
+                    .h(px(tokens::CONTROL_HEIGHT))
+                    .justify_center()
                     .child(
                         tokens::mono(cx)
                             .text_xs()
@@ -1427,8 +1524,96 @@ impl RequestPanel {
                             .child(field.type_name.clone()),
                     ),
             )
-            .child(div().flex_1().min_w_0().child(Input::new(input).small()))
+            .child(editors)
             .into_any_element()
+    }
+
+    /// A list field: an editor per element, and the two buttons that change how
+    /// many there are.
+    ///
+    /// The index of the field rather than its path, because a click has to find
+    /// the field again in a form that may have been rebuilt under it, and the
+    /// index is what the row was drawn from.
+    fn list(
+        &self,
+        field: usize,
+        rows: &[Entity<InputState>],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let elements = rows.iter().enumerate().map(|(index, input)| {
+            h_flex()
+                .w_full()
+                .gap_2()
+                .items_center()
+                .child(
+                    div()
+                        .w(px(24.))
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!("{index}")),
+                )
+                .child(div().flex_1().min_w_0().child(Input::new(input).small()))
+                .child(
+                    Button::new(("drop", index))
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Close)
+                        .tooltip("Remove")
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.drop_element(field, index, cx)
+                        })),
+                )
+        });
+
+        v_flex()
+            .flex_1()
+            .min_w_0()
+            .gap_1()
+            .children(elements)
+            .child(
+                // Indented to the editors rather than centred under them: the
+                // index column is 24px and the gap 8.
+                h_flex().w_full().pl(px(32.)).child(
+                    Button::new(("add", field))
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Plus)
+                        .label("Add")
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.add_element(field, window, cx)
+                        })),
+                ),
+            )
+            .into_any_element()
+    }
+
+    /// Adds an empty row to a list field.
+    fn add_element(&mut self, field: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((_, Inputs::List { element, rows })) = self.payload.get(field) else {
+            return;
+        };
+        if rows.len() >= form::MAX_ROWS {
+            return;
+        }
+        let editor = form::element_editor(*element);
+        let input = Self::editor(editor, None, window, cx);
+        let Some((_, Inputs::List { rows, .. })) = self.payload.get_mut(field) else {
+            return;
+        };
+        rows.push(input);
+        cx.notify();
+    }
+
+    /// Takes one row out of a list field.
+    fn drop_element(&mut self, field: usize, index: usize, cx: &mut Context<Self>) {
+        let Some((_, Inputs::List { rows, .. })) = self.payload.get_mut(field) else {
+            return;
+        };
+        if index < rows.len() {
+            rows.remove(index);
+            cx.notify();
+        }
     }
 
     /// The banner explaining why the request will not run, with the fix attached

@@ -170,6 +170,54 @@ fn describe(field_type: &FieldType) -> String {
     }
 }
 
+/// How many rows a list is ever given.
+///
+/// Past this the field stays the one comma-separated box it used to be:
+/// nobody edits ten thousand numbers a row at a time, and building an editor
+/// per element would cost more than the message did to arrive. It is a
+/// fallback for data, not a second way to edit a list.
+pub const MAX_ROWS: usize = 128;
+
+/// Reads a list's rows into an array.
+///
+/// A blank row is dropped rather than becoming an empty string: a row added
+/// and not filled in is a row the user is still thinking about. All rows blank
+/// means the same as an empty field — leave it at its default.
+pub fn parse_list(element: Element, rows: &[String]) -> Result<Option<Value>, String> {
+    let mut items = Vec::new();
+    for row in rows {
+        let row = row.trim();
+        if row.is_empty() {
+            continue;
+        }
+        items.push(parse_element(element, row)?);
+    }
+    Ok((!items.is_empty()).then_some(Value::Array(items)))
+}
+
+/// The rows a stored value fills a list with, one per element.
+///
+/// `None` when the path holds something that is not a list, which is what
+/// tells the caller to fall back to the single box.
+pub fn rows_at(value: &Value, path: &str, element: Element) -> Option<Vec<String>> {
+    let mut current = value;
+    for segment in path.split('.') {
+        let Value::Struct(fields) = current else {
+            return None;
+        };
+        current = fields.get(segment)?;
+    }
+    let Value::Array(items) = current else {
+        return None;
+    };
+    Some(
+        items
+            .iter()
+            .map(|item| show(item, element_editor(element)))
+            .collect(),
+    )
+}
+
 /// Reads one leaf's text into a value.
 ///
 /// An empty field is not an error: it means "leave this at its default", which
@@ -313,12 +361,87 @@ fn show(value: &Value, editor: Editor) -> String {
     }
 }
 
-fn element_editor(element: Element) -> Editor {
+/// One element of a list, as the editor a single row of it uses.
+pub fn element_editor(element: Element) -> Editor {
     match element {
         Element::Text => Editor::Text,
         Element::Integer => Editor::Integer,
         Element::Decimal => Editor::Decimal,
         Element::Bool => Editor::Bool,
+    }
+}
+
+#[cfg(test)]
+mod list_tests {
+    use super::*;
+
+    fn rows(texts: &[&str]) -> Vec<String> {
+        texts.iter().map(|text| text.to_string()).collect()
+    }
+
+    #[test]
+    fn every_row_becomes_an_element() {
+        assert_eq!(
+            parse_list(Element::Decimal, &rows(&["0.2", "-0.2"])),
+            Ok(Some(Value::Array(vec![Value::F64(0.2), Value::F64(-0.2)])))
+        );
+    }
+
+    /// A row added and not filled in is a row someone is still thinking about,
+    /// not an empty string bound for the robot.
+    #[test]
+    fn a_blank_row_is_left_out() {
+        assert_eq!(
+            parse_list(Element::Text, &rows(&["spin", "  ", "back_up"])),
+            Ok(Some(Value::Array(vec![
+                Value::String("spin".into()),
+                Value::String("back_up".into()),
+            ])))
+        );
+    }
+
+    #[test]
+    fn a_list_of_nothing_but_blanks_is_left_at_its_default() {
+        assert_eq!(parse_list(Element::Integer, &rows(&["", " "])), Ok(None));
+        assert_eq!(parse_list(Element::Integer, &[]), Ok(None));
+    }
+
+    #[test]
+    fn a_row_that_is_not_a_number_says_so_rather_than_being_dropped() {
+        assert!(parse_list(Element::Integer, &rows(&["1", "two"])).is_err());
+    }
+
+    #[test]
+    fn a_stored_array_comes_back_a_row_at_a_time() {
+        let stored = assemble([(
+            "footprint".to_string(),
+            Value::Array(vec![Value::F64(0.2), Value::F64(-0.2)]),
+        )]);
+
+        assert_eq!(
+            rows_at(&stored, "footprint", Element::Decimal),
+            Some(rows(&["0.2", "-0.2"]))
+        );
+    }
+
+    /// What tells the caller to fall back to the single box: the stored value
+    /// is not a list at all, so there are no rows to lay out.
+    #[test]
+    fn something_that_is_not_a_list_has_no_rows() {
+        let stored = assemble([("name".to_string(), Value::String("navfn".into()))]);
+
+        assert_eq!(rows_at(&stored, "name", Element::Text), None);
+        assert_eq!(rows_at(&stored, "missing", Element::Text), None);
+    }
+
+    #[test]
+    fn an_empty_stored_array_is_no_rows_rather_than_no_list() {
+        let stored = assemble([("footprint".to_string(), Value::Array(Vec::new()))]);
+
+        assert_eq!(
+            rows_at(&stored, "footprint", Element::Decimal),
+            Some(vec![])
+        );
     }
 }
 

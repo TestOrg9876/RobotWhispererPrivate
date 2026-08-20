@@ -1,5 +1,6 @@
 #![deny(missing_debug_implementations)]
 
+mod params;
 pub mod world;
 
 use std::collections::{BTreeMap, HashMap};
@@ -35,6 +36,12 @@ const SCAN_DEF: &str = "std_msgs/Header header\nfloat32 angle_min\nfloat32 angle
 const PATH_DEF: &str = "std_msgs/Header header\ngeometry_msgs/PoseStamped[] poses\n";
 const POSE_DEF: &str = "std_msgs/Header header\ngeometry_msgs/Pose pose\n";
 const ROSOUT_DEF: &str = "builtin_interfaces/Time stamp\nuint8 level\nstring name\nstring msg\nstring file\nstring function\nuint32 line\n";
+
+/// The services a node answers for its parameters. Named exactly as ROS 2
+/// names them, because that is how the editor finds nodes that have any.
+const LIST_PARAMETERS: &str = "list_parameters";
+const GET_PARAMETERS: &str = "get_parameters";
+const SET_PARAMETERS: &str = "set_parameters";
 
 const FIBONACCI: &str = "/dummy/fibonacci";
 const FIBONACCI_SCHEMA: &str = "example_interfaces/Fibonacci";
@@ -86,6 +93,9 @@ struct Inner {
     schemas: HashMap<String, Arc<CanonicalSchema>>,
     subscribers: Mutex<HashMap<String, Vec<mpsc::Sender<Frame>>>>,
     publisher: Mutex<Option<SpawnedTask>>,
+    /// The parameters `/dummy/planner` declares. Held here rather than rebuilt
+    /// per call so a value that was written stays written.
+    params: params::Params,
     /// The simulated clock, in ticks of 100 ms.
     ///
     /// Every message is stamped from it, which is what lets the transform
@@ -183,12 +193,21 @@ impl DummyTransport {
                 advertise(POSE, &pose_schema),
                 advertise(ROSOUT, &rosout_schema),
             ],
-            services: vec![TargetDescriptor {
-                name: ADD_TWO_INTS.into(),
-                schema_name: ADD_TWO_INTS_SCHEMA.into(),
-                schema_id: Some(canonical_schema_id(ADD_TWO_INTS_DEF)),
-                schema_definition: Some(ADD_TWO_INTS_DEF.into()),
-            }],
+            services: vec![
+                TargetDescriptor {
+                    name: ADD_TWO_INTS.into(),
+                    schema_name: ADD_TWO_INTS_SCHEMA.into(),
+                    schema_id: Some(canonical_schema_id(ADD_TWO_INTS_DEF)),
+                    schema_definition: Some(ADD_TWO_INTS_DEF.into()),
+                },
+                // No definitions: a node advertises the parameter services by
+                // type and nothing reads a schema for them — the editor learns
+                // what the node has by asking it, which is the only way, since
+                // two nodes of the same type can declare different parameters.
+                parameter_service(LIST_PARAMETERS, "rcl_interfaces/srv/ListParameters"),
+                parameter_service(GET_PARAMETERS, "rcl_interfaces/srv/GetParameters"),
+                parameter_service(SET_PARAMETERS, "rcl_interfaces/srv/SetParameters"),
+            ],
             actions: vec![TargetDescriptor {
                 name: FIBONACCI.into(),
                 schema_name: FIBONACCI_SCHEMA.into(),
@@ -210,9 +229,20 @@ impl DummyTransport {
                 schemas,
                 subscribers: Mutex::new(HashMap::new()),
                 publisher: Mutex::new(None),
+                params: params::Params::new(),
                 tick: AtomicI64::new(0),
             }),
         }
+    }
+}
+
+/// One of the three services the parameter node answers.
+fn parameter_service(which: &str, schema: &str) -> TargetDescriptor {
+    TargetDescriptor {
+        name: format!("{}/{which}", params::NODE),
+        schema_name: schema.into(),
+        schema_id: None,
+        schema_definition: None,
     }
 }
 
@@ -589,6 +619,16 @@ impl Transport for DummyTransport {
         service: &str,
         request: CanonicalValue,
     ) -> TransportResult<CanonicalValue> {
+        if let Some(which) = service.strip_prefix(&format!("{}/", params::NODE)) {
+            return match which {
+                LIST_PARAMETERS => Ok(self.inner.params.list()),
+                GET_PARAMETERS => Ok(self.inner.params.get(&request)),
+                SET_PARAMETERS => Ok(self.inner.params.set(&request)),
+                _ => Err(TransportError::Other(format!(
+                    "unknown dummy service {service}"
+                ))),
+            };
+        }
         if service != ADD_TWO_INTS {
             return Err(TransportError::Other(format!(
                 "unknown dummy service {service}"

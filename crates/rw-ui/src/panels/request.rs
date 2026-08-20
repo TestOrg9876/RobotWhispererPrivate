@@ -4,6 +4,7 @@
 //! (kind, target, environment, send), then the payload form for services and
 //! actions, then the response.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use gpui::prelude::FluentBuilder as _;
@@ -30,6 +31,7 @@ use rw_transport::ConnectionId;
 use crate::discovery::{self, Suggestion};
 use crate::docking::Home;
 use crate::form::{self, Field};
+use crate::param;
 use crate::runs::{RunState, Runs};
 use crate::scene_view::SceneView;
 use crate::series::History;
@@ -93,6 +95,7 @@ fn kind_from_discriminant(value: u8) -> RequestKind {
     match value {
         1 => RequestKind::Service,
         2 => RequestKind::Action,
+        3 => RequestKind::Param,
         _ => RequestKind::Topic,
     }
 }
@@ -102,6 +105,7 @@ fn discriminant_of(kind: RequestKind) -> u8 {
         RequestKind::Topic => 0,
         RequestKind::Service => 1,
         RequestKind::Action => 2,
+        RequestKind::Param => 3,
     }
 }
 
@@ -138,6 +142,19 @@ impl Activity {
     }
 }
 
+/// A node's parameters as they were last read, and what they were declared as.
+///
+/// The kinds travel with the values because a write has to name the type it is
+/// setting and it must be the declared one — a node refuses a `double` where it
+/// declared an `integer`, however reasonable the number looks.
+struct Parameters {
+    values: CanonicalValue,
+    kinds: BTreeMap<String, param::Kind>,
+    /// Bumped on every read, so the form is rebuilt from what just came back
+    /// rather than left showing the previous reading.
+    generation: u64,
+}
+
 pub struct RequestPanel {
     focus_handle: FocusHandle,
     workspace: Entity<Workspace>,
@@ -162,6 +179,11 @@ pub struct RequestPanel {
     /// The schema the current form was built from, so it is only rebuilt when
     /// it actually changes rather than on every render.
     payload_schema: Option<String>,
+
+    /// The last parameter reading, for a request of kind `Param`. `None` until
+    /// the node has been read: there is nothing to offer editors for before
+    /// that, because what a node declares is not in any schema.
+    parameters: Option<Parameters>,
 
     incoming: Arc<Mutex<Incoming>>,
     activity: Activity,
@@ -203,7 +225,7 @@ impl RequestPanel {
 
         let target = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("/topic, /service or /action")
+                .placeholder("/topic, /service, /action or /node")
                 .default_value(&request.target)
         });
 
@@ -249,6 +271,7 @@ impl RequestPanel {
             offers_open: false,
             payload: Vec::new(),
             payload_schema: None,
+            parameters: None,
             incoming: Arc::new(Mutex::new(Incoming::default())),
             activity: Activity::default(),
             runs,
@@ -472,6 +495,7 @@ impl RequestPanel {
             RequestKind::Topic => self.subscribe(session, target, cx),
             RequestKind::Service => self.call(session, target, payload, cx),
             RequestKind::Action => self.send_goal(session, target, payload, cx),
+            RequestKind::Param => self.read_parameters(session, target, cx),
         }
         cx.notify();
     }
@@ -687,6 +711,136 @@ impl RequestPanel {
         .detach();
     }
 
+    // ── parameters ─────────────────────────────────────────────────────────────
+
+    /// Reads every parameter a node declares.
+    ///
+    /// Two calls, which is exactly what `ros2 param dump` is: ask the node what
+    /// it has, then ask for the values. Nothing here is a new transport —
+    /// parameters are ordinary services on the node, so this works over
+    /// rosbridge and Foxglove today.
+    fn read_parameters(&mut self, session: ConnectionId, node: String, cx: &mut Context<Self>) {
+        let pipeline = self.sessions.read(cx).pipeline();
+        self.set_activity(Activity::Calling, cx);
+
+        cx.spawn(async move |panel, cx| {
+            let outcome = read_parameters(&pipeline, session, &node).await;
+            panel
+                .update(cx, |panel, cx| {
+                    match outcome {
+                        Ok((values, kinds)) => panel.parameters_arrived(values, kinds),
+                        Err(error) => panel.failed(error, cx),
+                    }
+                    panel.set_activity(Activity::Idle, cx);
+                    panel._repaint = None;
+                    cx.notify();
+                })
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Files a reading: into the response, so every view already built works on
+    /// parameters, and into `parameters`, so the form can be rebuilt from it.
+    fn parameters_arrived(&mut self, values: CanonicalValue, kinds: BTreeMap<String, param::Kind>) {
+        let generation = self
+            .parameters
+            .as_ref()
+            .map_or(0, |parameters| parameters.generation)
+            + 1;
+
+        {
+            let mut incoming = self.incoming.lock().expect("incoming mutex");
+            incoming.history.observe(&values);
+            incoming.value = Some(values.clone());
+            incoming.count += 1;
+        }
+
+        self.parameters = Some(Parameters {
+            values,
+            kinds,
+            generation,
+        });
+    }
+
+    /// Sets the parameters currently in the form on the node, then reads them
+    /// back.
+    ///
+    /// The read back is not politeness: `SetParameters` reports per parameter
+    /// whether it was accepted, and a node is free to accept a value and hold a
+    /// different one. What it holds afterwards is the answer.
+    fn write_parameters(&mut self, cx: &mut Context<Self>) {
+        let node = self.draft.target.trim().to_string();
+        if node.is_empty() {
+            self.problem = Some(Problem::new("Enter a node first"));
+            cx.notify();
+            return;
+        }
+        let Some(session) = self.session(cx) else {
+            self.problem = Some(self.why_not_connected(cx));
+            cx.notify();
+            return;
+        };
+        let values: CanonicalValue = match self.payload_value(cx) {
+            Ok(values) => values.into(),
+            Err(error) => {
+                self.problem = Some(Problem::new(error));
+                cx.notify();
+                return;
+            }
+        };
+
+        let kinds = self
+            .parameters
+            .as_ref()
+            .map(|parameters| parameters.kinds.clone())
+            .unwrap_or_default();
+
+        self.problem = None;
+        self.set_activity(Activity::Calling, cx);
+        let pipeline = self.sessions.read(cx).pipeline();
+
+        cx.spawn(async move |panel, cx| {
+            let outcome = write_parameters(&pipeline, session, &node, &values, &kinds).await;
+            // Read back whatever happened: a partial refusal leaves the node
+            // holding a mixture, and showing the old form beside it would be a
+            // lie about what the robot has.
+            let reading = read_parameters(&pipeline, session, &node).await;
+
+            panel
+                .update(cx, |panel, cx| {
+                    panel.set_activity(Activity::Idle, cx);
+                    panel._repaint = None;
+                    if let Ok((values, kinds)) = reading {
+                        panel.parameters_arrived(values, kinds);
+                    }
+                    match outcome {
+                        Ok(count) => panel.say(format!("set {count} on {node}"), cx),
+                        Err(error) => panel.failed(error, cx),
+                    }
+                    cx.notify();
+                })
+                .ok();
+        })
+        .detach();
+    }
+
+    /// The form for a node's parameters: one editor per parameter, shaped by
+    /// the type the node declared it with.
+    ///
+    /// Built from what the node answered rather than from a schema, because a
+    /// parameter list is not a message type — two nodes running the same
+    /// executable can declare different parameters. `form::fields` still draws
+    /// it, so the editors, the parsing and the placeholders are the ones every
+    /// other request already uses.
+    fn parameter_fields(&self) -> Vec<Field> {
+        let Some(parameters) = &self.parameters else {
+            return Vec::new();
+        };
+        let message = param::message_def(&parameters.values, &parameters.kinds);
+        form::fields(&message, &|_: &str| None)
+    }
+
     // ── the payload form ───────────────────────────────────────────────────────
 
     /// The schema name the target implies, from discovery.
@@ -717,8 +871,20 @@ impl RequestPanel {
                     .map(|topic| topic.schema_name.clone()),
                 RequestKind::Service => named(&discovery.services),
                 RequestKind::Action => named(&discovery.actions),
+                // A node's parameters are not in any schema, so the key the
+                // form is rebuilt on is the reading itself: a fresh one has to
+                // replace the boxes, and nothing else may.
+                RequestKind::Param => None,
             }
         });
+
+        if self.draft.kind == RequestKind::Param {
+            let generation = self
+                .parameters
+                .as_ref()
+                .map_or(0, |parameters| parameters.generation);
+            return Some(format!("{target} #{generation}"));
+        }
 
         discovered.or_else(|| self.draft.schema.as_ref().map(|schema| schema.name.clone()))
     }
@@ -734,10 +900,23 @@ impl RequestPanel {
             return;
         }
 
-        let fields = wanted
-            .as_deref()
-            .and_then(|name| self.message_for(name, cx))
-            .unwrap_or_default();
+        let from_a_reading = self.draft.kind == RequestKind::Param;
+        let fields = if from_a_reading {
+            self.parameter_fields()
+        } else {
+            wanted
+                .as_deref()
+                .and_then(|name| self.message_for(name, cx))
+                .unwrap_or_default()
+        };
+
+        // Reading a node replaces what is in the boxes — seeing what it
+        // currently holds is the point of reading. Everywhere else the source
+        // is what was saved, and text already typed wins over both.
+        let stored = match &self.parameters {
+            Some(parameters) if from_a_reading => Value::from(parameters.values.clone()),
+            _ => self.draft.input.clone(),
+        };
 
         // Existing text survives a rebuild when the leaf is still there, so
         // reconnecting to a robot does not clear a half-filled form.
@@ -750,11 +929,15 @@ impl RequestPanel {
         self.payload = fields
             .into_iter()
             .map(|field| {
-                let existing = filled
-                    .iter()
-                    .find(|(path, _)| *path == field.path)
-                    .map(|(_, text)| text.clone())
-                    .or_else(|| form::text_at(&self.draft.input, &field.path, field.editor));
+                let existing = (!from_a_reading)
+                    .then(|| {
+                        filled
+                            .iter()
+                            .find(|(path, _)| *path == field.path)
+                            .map(|(_, text)| text.clone())
+                    })
+                    .flatten()
+                    .or_else(|| form::text_at(&stored, &field.path, field.editor));
                 let placeholder = field.editor.placeholder();
                 let input = cx.new(|cx| {
                     let state = InputState::new(window, cx).placeholder(placeholder);
@@ -954,6 +1137,7 @@ impl RequestPanel {
                             RequestKind::Topic,
                             RequestKind::Service,
                             RequestKind::Action,
+                            RequestKind::Param,
                         ] {
                             menu = menu.menu_with_check(
                                 tokens::kind_label(option),
@@ -1050,6 +1234,7 @@ impl RequestPanel {
                             RequestKind::Topic => "Subscribe",
                             RequestKind::Service => "Call",
                             RequestKind::Action => "Send goal",
+                            RequestKind::Param => "Read",
                         })
                     })
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -1071,6 +1256,23 @@ impl RequestPanel {
                         .label("Publish")
                         .tooltip("Send the message above to this topic, once")
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.publish(cx))),
+                )
+            })
+            // Write sits beside Read for the same reason Publish sits beside
+            // Subscribe, and is disabled until there has been a read: a node
+            // will not accept a value for a parameter it has not declared, and
+            // the form is how the declared ones become editable at all.
+            .when(matches!(kind, RequestKind::Param), |bar| {
+                bar.child(
+                    Button::new("write")
+                        .outline()
+                        .icon(IconName::ArrowUp)
+                        .label("Write")
+                        .disabled(self.payload.is_empty())
+                        .tooltip("Set the parameters above on this node")
+                        .on_click(
+                            cx.listener(|this, _: &ClickEvent, _, cx| this.write_parameters(cx)),
+                        ),
                 )
             })
             .when(!offers.is_empty(), |bar| {
@@ -1153,8 +1355,15 @@ impl RequestPanel {
             RequestKind::Topic => "Message",
             RequestKind::Service => "Request",
             RequestKind::Action => "Goal",
+            RequestKind::Param => "Parameters",
         };
-        let schema = self.payload_schema.clone();
+        // The key a parameter form is rebuilt on is the node and the reading it
+        // came from, which is the target field and the response — both already
+        // on screen. Repeating them here would be a header that says nothing.
+        let schema = match self.draft.kind {
+            RequestKind::Param => None,
+            _ => self.payload_schema.clone(),
+        };
 
         Some(
             tokens::card(cx)
@@ -1454,6 +1663,102 @@ impl RequestPanel {
     }
 }
 
+/// Asks a node what parameters it has and what they hold.
+///
+/// Free rather than a method because it runs twice — once on its own and once
+/// after a write — and a panel that has been closed in between should not stop
+/// the second one from finishing.
+async fn read_parameters(
+    pipeline: &rw_pipeline::CanonicalPipeline,
+    session: ConnectionId,
+    node: &str,
+) -> Result<(CanonicalValue, BTreeMap<String, param::Kind>), String> {
+    let listed = pipeline
+        .call_service(
+            session,
+            &param::service(node, param::LIST),
+            param::list_request(),
+        )
+        .await
+        .map_err(|error| format!("{node} would not list its parameters: {error}"))?;
+
+    let names = param::decode_list(&listed).ok_or_else(|| {
+        format!(
+            "{node} answered {}, but not with a list of names",
+            param::LIST
+        )
+    })?;
+
+    if names.is_empty() {
+        return Ok((CanonicalValue::Struct(Default::default()), BTreeMap::new()));
+    }
+
+    let got = pipeline
+        .call_service(
+            session,
+            &param::service(node, param::GET),
+            param::get_request(&names),
+        )
+        .await
+        .map_err(|error| format!("{node} would not give its parameters: {error}"))?;
+
+    let values = param::decode_values(&names, &got).ok_or_else(|| {
+        format!(
+            "{node} answered with a different number of values than the {} names it was asked for",
+            names.len()
+        )
+    })?;
+
+    Ok((values, param::read_kinds(&names, &got)))
+}
+
+/// Sets parameters on a node, and returns how many it took.
+///
+/// A refusal is reported per parameter, so a call that "succeeded" can still
+/// have changed nothing. Naming which ones were refused, and why the node said,
+/// is the whole difference between this and `ros2 param set` in a terminal.
+async fn write_parameters(
+    pipeline: &rw_pipeline::CanonicalPipeline,
+    session: ConnectionId,
+    node: &str,
+    values: &CanonicalValue,
+    kinds: &BTreeMap<String, param::Kind>,
+) -> Result<String, String> {
+    let CanonicalValue::Struct(fields) = values else {
+        return Err("Nothing to set".into());
+    };
+    if fields.is_empty() {
+        return Err("Read the node's parameters before setting them".into());
+    }
+    let names: Vec<String> = fields.keys().cloned().collect();
+
+    let response = pipeline
+        .call_service(
+            session,
+            &param::service(node, param::SET),
+            param::set_request(values, kinds),
+        )
+        .await
+        .map_err(|error| format!("{node} would not set its parameters: {error}"))?;
+
+    let refused = param::decode_set_results(&names, &response);
+    if refused.is_empty() {
+        let count = names.len();
+        let plural = if count == 1 {
+            "parameter"
+        } else {
+            "parameters"
+        };
+        return Ok(format!("{count} {plural}"));
+    }
+
+    let reasons: Vec<String> = refused
+        .iter()
+        .map(|(name, reason)| format!("{name}: {reason}"))
+        .collect();
+    Err(format!("{node} refused {}", reasons.join(", ")))
+}
+
 impl Focusable for RequestPanel {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -1596,6 +1901,7 @@ mod tests {
             RequestKind::Topic,
             RequestKind::Service,
             RequestKind::Action,
+            RequestKind::Param,
         ] {
             assert_eq!(kind_from_discriminant(discriminant_of(kind)), kind);
         }

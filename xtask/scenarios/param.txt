@@ -1,0 +1,89 @@
+# Reading and writing a node's parameters.
+#
+# Coordinates are relative to the app window, which GPUI opens at 1440x900.
+
+# A Dummy ROS system, so the rest of the scenario has something to talk to.
+wait 900
+click 105 888
+wait 900
+click 1403 81
+wait 700
+click 1384 158
+wait 500
+click 1269 211
+type Simulator
+wait 500
+click 1395 242
+wait 1500
+click 1327 16
+wait 600
+click 1272 102
+wait 900
+
+# A request, switched to Parameters. The kind menu is flat, like every other
+# menu here: four kinds, no submenu.
+click 244 49
+wait 1400
+click 331 92
+wait 800
+shot 01-kind-menu
+click 351 203
+wait 800
+
+# The target field offers nodes, not services: a node that answers
+# get_parameters is a node with parameters, which is how `ros2 param list`
+# finds them too.
+click 700 92
+wait 900
+shot 02-node-offers
+key Return
+wait 900
+
+# Read. Two service calls, and the form comes back shaped by what the node
+# declared — a decimal editor for a double, a list for an array, a text box for
+# the one parameter the node has no value for yet.
+#
+# GPUI paints on demand and the capture reads whatever the window last
+# composited, so a shot that follows typing needs the pointer nudged more than
+# once before it: one nudge leaves the previous frame on screen.
+click 1290 92
+wait 2000
+move 700 500
+wait 300
+move 700 550
+wait 400
+shot 03-read
+
+# Freeze the reading, which pins it and shows what has changed since.
+click 1322 486
+wait 900
+
+# Two edits, both typed into the form the node's own answer built.
+# `log_directory` is a parameter the node has no value for — giving it one is
+# how it stops being unset — and `controller_frequency` gains a nought.
+#
+# Both append rather than replace: this harness does not reliably deliver a
+# `key` and a `type` to the same field, so the scenario asks for nothing that
+# needs a backspace. There is no shot of the half-filled form either — between
+# the freeze and the write the window stops recompositing under Xvfb, and a
+# capture there shows the frame before the typing however it is nudged. The
+# shot after the write is the honest one, and it carries both edits.
+click 975 289
+wait 700
+type /tmp/planner-logs
+wait 700
+click 975 203
+wait 700
+type 0
+wait 700
+
+# Write, then read back. What the node holds afterwards is the answer — and
+# the difference from the frozen reading is the same diff view every other
+# request uses, numeric delta and all.
+click 1380 92
+wait 2500
+move 1295 92
+wait 400
+move 700 700
+wait 500
+shot 04-written

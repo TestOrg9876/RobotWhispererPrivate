@@ -89,6 +89,7 @@ pub fn kind_label(kind: RequestKind) -> &'static str {
         RequestKind::Topic => "TOPIC",
         RequestKind::Service => "SERVICE",
         RequestKind::Action => "ACTION",
+        RequestKind::Param => "PARAM",
     }
 }
 
@@ -103,6 +104,7 @@ pub fn kind_short(kind: RequestKind) -> &'static str {
         RequestKind::Topic => "TOP",
         RequestKind::Service => "SERV",
         RequestKind::Action => "ACT",
+        RequestKind::Param => "PARM",
     }
 }
 
@@ -116,6 +118,7 @@ pub fn kind_color(kind: RequestKind, cx: &gpui::App) -> Hsla {
         RequestKind::Topic => cx.theme().blue,
         RequestKind::Service => cx.theme().green,
         RequestKind::Action => cx.theme().magenta,
+        RequestKind::Param => cx.theme().yellow,
     }
 }
 
@@ -234,12 +237,13 @@ mod tests {
             kind_label(RequestKind::Topic),
             kind_label(RequestKind::Service),
             kind_label(RequestKind::Action),
+            kind_label(RequestKind::Param),
         ];
-        assert_eq!(labels, ["TOPIC", "SERVICE", "ACTION"]);
+        assert_eq!(labels, ["TOPIC", "SERVICE", "ACTION", "PARAM"]);
         let mut unique: Vec<_> = labels.to_vec();
         unique.sort_unstable();
         unique.dedup();
-        assert_eq!(unique.len(), 3, "kind labels must be distinguishable");
+        assert_eq!(unique.len(), 4, "kind labels must be distinguishable");
     }
 
     #[test]

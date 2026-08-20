@@ -670,6 +670,32 @@ mod tests {
         }
     }
 
+    /// The `kind` column is a `CHECK` list, so a kind the list has not been
+    /// widened for is refused by SQLite rather than by Rust — a failure that
+    /// only shows up against a real database.
+    #[tokio::test]
+    async fn a_parameter_request_is_storable() {
+        let clock = fixed_clock(2026, 1, 1);
+        let storage = make_storage(clock);
+
+        let request = storage
+            .create_request(NewRequest {
+                name: "Planner parameters".into(),
+                kind: RequestKind::Param,
+                target: "/planner".into(),
+                collection_id: None,
+                connection_id: None,
+                schema: None,
+                input: Value::empty_struct(),
+                visualization: None,
+            })
+            .await
+            .expect("a parameter request is storable");
+
+        let fetched = storage.get_request(request.id).await.expect("get");
+        assert_eq!(fetched.map(|r| r.kind), Some(RequestKind::Param));
+    }
+
     #[tokio::test]
     async fn requests_round_trip() {
         let clock = fixed_clock(2026, 1, 1);

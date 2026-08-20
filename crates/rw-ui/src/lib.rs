@@ -20,6 +20,7 @@ pub mod marker;
 pub mod nesting;
 pub mod palette;
 pub mod panels;
+pub mod param;
 pub mod prefs;
 pub mod recorder;
 pub mod runs;

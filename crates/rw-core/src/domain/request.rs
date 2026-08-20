@@ -17,6 +17,7 @@ pub enum RequestKind {
     Topic,
     Service,
     Action,
+    Param,
 }
 
 impl RequestKind {
@@ -25,6 +26,7 @@ impl RequestKind {
             RequestKind::Topic => "topic",
             RequestKind::Service => "service",
             RequestKind::Action => "action",
+            RequestKind::Param => "param",
         }
     }
 
@@ -33,6 +35,7 @@ impl RequestKind {
             "topic" => Some(RequestKind::Topic),
             "service" => Some(RequestKind::Service),
             "action" => Some(RequestKind::Action),
+            "param" => Some(RequestKind::Param),
             _ => None,
         }
     }
@@ -74,6 +77,7 @@ mod tests {
             RequestKind::Topic,
             RequestKind::Service,
             RequestKind::Action,
+            RequestKind::Param,
         ] {
             assert_eq!(RequestKind::parse(kind.as_str()), Some(kind));
         }

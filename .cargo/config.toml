@@ -1,0 +1,6 @@
+# `cargo xtask …` is what the docs say to run, and without this it is not a
+# command. The alias is the whole file on purpose: anything else here would
+# change how the workspace builds depending on which directory it is built
+# from, and CI builds it from the repository root.
+[alias]
+xtask = "run --package xtask --"

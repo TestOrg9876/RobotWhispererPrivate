@@ -5,8 +5,12 @@
 //! the tree". The target field stays free text — a name can be valid before it is
 //! advertised — so this only ever offers, never constrains.
 
+use std::borrow::Cow;
+
 use rw_core::domain::RequestKind;
 use rw_transport::Discovery;
+
+use crate::param;
 
 /// How well a candidate matched, best first. The ordering is the point, so the
 /// variants are declared in rank order and compared by it.
@@ -43,7 +47,7 @@ pub fn suggestions(
 
     let mut ranked: Vec<_> = candidates(discovery, kind)
         .filter_map(|(name, schema)| {
-            rank(name, &query).map(|rank| (rank, name.len(), name, schema))
+            rank(&name, &query).map(|rank| (rank, name.len(), name, schema))
         })
         .collect();
 
@@ -53,7 +57,7 @@ pub fn suggestions(
         left.0
             .cmp(&right.0)
             .then(left.1.cmp(&right.1))
-            .then(left.2.cmp(right.2))
+            .then(left.2.cmp(&right.2))
     });
     ranked.dedup_by(|left, right| left.2 == right.2);
 
@@ -61,34 +65,50 @@ pub fn suggestions(
         .into_iter()
         .take(limit)
         .map(|(_, _, name, schema)| Suggestion {
-            name: name.to_string(),
-            schema: schema.to_string(),
+            name: name.into_owned(),
+            schema: schema.into_owned(),
         })
         .collect()
 }
 
+type Candidate<'a> = (Cow<'a, str>, Cow<'a, str>);
+
 fn candidates(
     discovery: &Discovery,
     kind: RequestKind,
-) -> Box<dyn Iterator<Item = (&str, &str)> + '_> {
+) -> Box<dyn Iterator<Item = Candidate<'_>> + '_> {
     match kind {
-        RequestKind::Topic => Box::new(
-            discovery
-                .topics
-                .iter()
-                .map(|topic| (topic.name.as_str(), topic.schema_name.as_str())),
-        ),
-        RequestKind::Service => Box::new(
-            discovery
-                .services
-                .iter()
-                .map(|service| (service.name.as_str(), service.schema_name.as_str())),
-        ),
-        RequestKind::Action => Box::new(
-            discovery
-                .actions
-                .iter()
-                .map(|action| (action.name.as_str(), action.schema_name.as_str())),
+        RequestKind::Topic => Box::new(discovery.topics.iter().map(|topic| {
+            (
+                Cow::Borrowed(topic.name.as_str()),
+                Cow::Borrowed(topic.schema_name.as_str()),
+            )
+        })),
+        RequestKind::Service => Box::new(discovery.services.iter().map(|service| {
+            (
+                Cow::Borrowed(service.name.as_str()),
+                Cow::Borrowed(service.schema_name.as_str()),
+            )
+        })),
+        RequestKind::Action => Box::new(discovery.actions.iter().map(|action| {
+            (
+                Cow::Borrowed(action.name.as_str()),
+                Cow::Borrowed(action.schema_name.as_str()),
+            )
+        })),
+        // A node with parameters is not advertised as such: what it advertises
+        // is the services parameters are read through, which is exactly how
+        // `ros2 param list` finds them too. The schema column stays empty
+        // because it would say the same words on every row.
+        RequestKind::Param => Box::new(
+            param::nodes(
+                discovery
+                    .services
+                    .iter()
+                    .map(|service| service.name.as_str()),
+            )
+            .into_iter()
+            .map(|node| (Cow::Owned(node), Cow::Borrowed(""))),
         ),
     }
 }
@@ -149,6 +169,64 @@ mod tests {
             actions: vec![target("/fibonacci", "example_interfaces/Fibonacci")],
             ..Default::default()
         }
+    }
+
+    /// A robot whose nodes answer for their parameters, which is how every
+    /// ROS 2 node that declares one looks on the wire.
+    fn robot_with_parameters() -> Discovery {
+        let mut discovery = discovery();
+        for service in [
+            "/planner/list_parameters",
+            "/planner/get_parameters",
+            "/planner/set_parameters",
+            "/camera/driver/get_parameters",
+            "/camera/driver/describe_parameters",
+        ] {
+            discovery
+                .services
+                .push(target(service, "rcl_interfaces/srv/GetParameters"));
+        }
+        discovery
+    }
+
+    #[test]
+    fn the_nodes_offered_for_parameters_are_the_ones_that_answer_for_them() {
+        let offered: Vec<String> =
+            suggestions(&robot_with_parameters(), RequestKind::Param, "", 20)
+                .into_iter()
+                .map(|suggestion| suggestion.name)
+                .collect();
+
+        assert_eq!(offered, ["/planner", "/camera/driver"]);
+    }
+
+    #[test]
+    fn a_parameter_node_is_offered_by_the_part_of_its_name_that_was_typed() {
+        let offered: Vec<String> =
+            suggestions(&robot_with_parameters(), RequestKind::Param, "cam", 20)
+                .into_iter()
+                .map(|suggestion| suggestion.name)
+                .collect();
+
+        assert_eq!(offered, ["/camera/driver"]);
+    }
+
+    /// The services parameters are read through are noise once the node they
+    /// belong to is on offer, and a plain service request can still name one.
+    #[test]
+    fn the_parameter_services_themselves_are_not_offered_as_nodes() {
+        let offered: Vec<String> =
+            suggestions(&robot_with_parameters(), RequestKind::Param, "param", 20)
+                .into_iter()
+                .map(|suggestion| suggestion.name)
+                .collect();
+
+        assert!(offered.is_empty(), "offered {offered:?}");
+        assert!(
+            suggestions(&robot_with_parameters(), RequestKind::Service, "param", 20)
+                .iter()
+                .any(|suggestion| suggestion.name == "/planner/get_parameters")
+        );
     }
 
     fn names(kind: RequestKind, query: &str) -> Vec<String> {

@@ -294,7 +294,8 @@ mod tests {
             prop_oneof![
                 Just(RequestKind::Topic),
                 Just(RequestKind::Service),
-                Just(RequestKind::Action)
+                Just(RequestKind::Action),
+                Just(RequestKind::Param)
             ],
             "/[a-z]{1,8}",
             arb_value(),

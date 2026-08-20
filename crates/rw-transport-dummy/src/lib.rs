@@ -28,11 +28,13 @@ const TF_STATIC: &str = "/tf_static";
 const SCAN: &str = "/scan";
 const PATH: &str = "/path";
 const POSE: &str = "/pose";
+const ROSOUT: &str = "/rosout";
 
 const TF_DEF: &str = "geometry_msgs/TransformStamped[] transforms\n";
 const SCAN_DEF: &str = "std_msgs/Header header\nfloat32 angle_min\nfloat32 angle_max\nfloat32 angle_increment\nfloat32 time_increment\nfloat32 scan_time\nfloat32 range_min\nfloat32 range_max\nfloat32[] ranges\nfloat32[] intensities\n";
 const PATH_DEF: &str = "std_msgs/Header header\ngeometry_msgs/PoseStamped[] poses\n";
 const POSE_DEF: &str = "std_msgs/Header header\ngeometry_msgs/Pose pose\n";
+const ROSOUT_DEF: &str = "builtin_interfaces/Time stamp\nuint8 level\nstring name\nstring msg\nstring file\nstring function\nuint32 line\n";
 
 const FIBONACCI: &str = "/dummy/fibonacci";
 const FIBONACCI_SCHEMA: &str = "example_interfaces/Fibonacci";
@@ -117,6 +119,7 @@ impl DummyTransport {
         let scan_schema = build_scan_schema();
         let path_schema = build_path_schema();
         let pose_schema = build_pose_schema();
+        let rosout_schema = build_rosout_schema();
 
         let mut schemas = HashMap::new();
         schemas.insert("/dummy/counter".to_string(), counter_schema.clone());
@@ -130,6 +133,7 @@ impl DummyTransport {
         schemas.insert(SCAN.to_string(), scan_schema.clone());
         schemas.insert(PATH.to_string(), path_schema.clone());
         schemas.insert(POSE.to_string(), pose_schema.clone());
+        schemas.insert(ROSOUT.to_string(), rosout_schema.clone());
 
         let discovery = Discovery {
             topics: vec![
@@ -177,6 +181,7 @@ impl DummyTransport {
                 advertise(SCAN, &scan_schema),
                 advertise(PATH, &path_schema),
                 advertise(POSE, &pose_schema),
+                advertise(ROSOUT, &rosout_schema),
             ],
             services: vec![TargetDescriptor {
                 name: ADD_TWO_INTS.into(),
@@ -414,6 +419,28 @@ fn build_pose_schema() -> Arc<CanonicalSchema> {
     )
 }
 
+fn build_rosout_schema() -> Arc<CanonicalSchema> {
+    let mut fields = vec![
+        complex_field("stamp", "builtin_interfaces/Time"),
+        primitive_field("level", PrimitiveType::Uint8),
+    ];
+    for name in ["name", "msg", "file", "function"] {
+        fields.push(FieldDef {
+            name: name.into(),
+            field_type: FieldType::String { bound: None },
+            default: None,
+            comment: None,
+        });
+    }
+    fields.push(primitive_field("line", PrimitiveType::Uint32));
+    build_viz_schema(
+        "rcl_interfaces/Log",
+        ROSOUT_DEF,
+        fields,
+        VisualizationRole::default(),
+    )
+}
+
 fn complex_field(name: &str, type_name: &str) -> FieldDef {
     FieldDef {
         name: name.into(),
@@ -648,6 +675,9 @@ async fn publish_tick(inner: &Arc<Inner>, tick: i64) {
     publish_one(inner, SCAN, world::scan(tick, at_ns)).await;
     publish_one(inner, PATH, world::path(tick, at_ns)).await;
     publish_one(inner, POSE, world::pose(tick, at_ns)).await;
+    if let Some(line) = world::log(tick, at_ns) {
+        publish_one(inner, ROSOUT, line).await;
+    }
 
     publish_one(
         inner,

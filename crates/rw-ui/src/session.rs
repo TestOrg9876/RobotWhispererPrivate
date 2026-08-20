@@ -77,6 +77,44 @@ pub struct Live {
 pub enum Notice {
     Info(String),
     Error(String),
+    /// A line the robot itself wrote, off `/rosout`.
+    ///
+    /// The same route as the app's own notices rather than a console of its
+    /// own: "did my request go out before that node complained" is a question
+    /// about one ordering, and two windows cannot answer it.
+    Robot {
+        connection: String,
+        entry: crate::log::Entry,
+    },
+}
+
+/// How loud a notice is, for the console's filter and its colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Severity {
+    Info,
+    Warn,
+    Error,
+}
+
+impl Notice {
+    pub fn text(&self) -> String {
+        match self {
+            Self::Info(text) | Self::Error(text) => text.clone(),
+            Self::Robot { connection, entry } => format!("{connection}  {}", entry.text()),
+        }
+    }
+
+    pub fn severity(&self) -> Severity {
+        match self {
+            Self::Info(_) => Severity::Info,
+            Self::Error(_) => Severity::Error,
+            Self::Robot { entry, .. } => match entry.level {
+                crate::log::Level::Debug | crate::log::Level::Info => Severity::Info,
+                crate::log::Level::Warn => Severity::Warn,
+                crate::log::Level::Error | crate::log::Level::Fatal => Severity::Error,
+            },
+        }
+    }
 }
 
 /// Emitted as sessions change, so the console can log and views can refresh.
@@ -87,6 +125,9 @@ pub struct SessionEvent(pub Notice);
 pub struct Sessions {
     pipeline: Arc<CanonicalPipeline>,
     live: HashMap<i64, Live>,
+    /// Connections whose `/rosout` is already being followed, so discovery
+    /// updating twenty times a second does not open twenty subscriptions.
+    watching_log: std::collections::HashSet<i64>,
 }
 
 impl EventEmitter<SessionEvent> for Sessions {}
@@ -96,6 +137,7 @@ impl Sessions {
         Self {
             pipeline,
             live: HashMap::new(),
+            watching_log: std::collections::HashSet::new(),
         }
     }
 
@@ -233,6 +275,7 @@ impl Sessions {
                         live.status = initial_status;
                         live.discovery = initial_discovery;
                     }
+                    sessions.follow_log(id, cx);
                     cx.notify();
                 })
                 .ok();
@@ -272,6 +315,7 @@ impl Sessions {
                                     return false;
                                 };
                                 live.discovery = discovery;
+                                sessions.follow_log(id, cx);
                                 cx.notify();
                                 true
                             })
@@ -287,10 +331,81 @@ impl Sessions {
         })
     }
 
+    /// Subscribes to `/rosout` on a connection that advertises it.
+    ///
+    /// The same reasoning as `/tf`: nobody wants to remember to turn on the
+    /// robot's log, and a console that shows only this app's own events is
+    /// half a console. Idempotent — called on every discovery update.
+    fn follow_log(&mut self, connection: i64, cx: &mut Context<Self>) {
+        if self.watching_log.contains(&connection) {
+            return;
+        }
+        let Some(live) = self.live.get(&connection) else {
+            return;
+        };
+        let Some(session) = live.session else { return };
+        if !live
+            .discovery
+            .topics
+            .iter()
+            .any(|topic| topic.name == crate::log::TOPIC)
+        {
+            return;
+        }
+        self.watching_log.insert(connection);
+
+        let name = live.name.clone();
+        let pipeline = self.pipeline();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        cx.spawn(async move |sessions, cx| {
+            let opened = pipeline
+                .subscribe_topic(session, crate::log::TOPIC, move |_handle, frame, _lossy| {
+                    if let Some(entry) = crate::log::decode(&frame.value) {
+                        sender.send(entry).ok();
+                    }
+                })
+                .await;
+            if let Err(error) = opened {
+                tracing::warn!("could not follow {}: {error}", crate::log::TOPIC);
+                sessions
+                    .update(cx, |sessions, _| {
+                        sessions.watching_log.remove(&connection);
+                    })
+                    .ok();
+                return;
+            }
+            // Frames arrive off the UI thread and an event can only be emitted
+            // on it, so they queue and are drained on this side.
+            loop {
+                crate::tick::sleep(std::time::Duration::from_millis(100), cx).await;
+                let drained: Vec<crate::log::Entry> = receiver.try_iter().collect();
+                let alive = sessions
+                    .update(cx, |sessions, cx| {
+                        if !sessions.live.contains_key(&connection) {
+                            return false;
+                        }
+                        for entry in drained {
+                            cx.emit(SessionEvent(Notice::Robot {
+                                connection: name.clone(),
+                                entry,
+                            }));
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !alive {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
     /// Closes the transport and forgets the session.
     pub fn disconnect(&mut self, connection: i64, cx: &mut Context<Self>) -> Task<()> {
         let pipeline = self.pipeline();
         let removed = self.live.remove(&connection);
+        self.watching_log.remove(&connection);
         let name = removed
             .as_ref()
             .map(|live| live.name.clone())

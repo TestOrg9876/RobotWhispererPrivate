@@ -33,3 +33,20 @@ wait 1000
 click 38 888
 wait 900
 shot 01-console
+
+# The robot's own log lands here too, off /rosout, on the same route and in
+# the same order as the app's own events — "did my request go out before that
+# node complained" is a question about one ordering, and two windows cannot
+# answer it.
+wait 9000
+move 700 500
+shot 02-rosout
+
+# One control that cycles rather than three that are mutually exclusive: the
+# button's own label says which level it is showing.
+click 503 739
+wait 500
+shot 03-warnings
+click 503 739
+wait 500
+shot 04-errors

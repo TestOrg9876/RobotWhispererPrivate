@@ -172,6 +172,44 @@ pub fn pose(tick: i64, at_ns: u64) -> CanonicalValue {
     pose_stamped(at_ns, position, yaw)
 }
 
+/// What the synthetic robot has to say, now and then.
+///
+/// Not every tick: a log that printed at the rate a lidar spins would be a
+/// wall rather than a log, and the point of having one here is to see that a
+/// line from the robot and a line from the app land in one place in one order.
+pub fn log(tick: i64, at_ns: u64) -> Option<CanonicalValue> {
+    // Once every two seconds, cycling through the levels so the console's
+    // filter has something to filter.
+    if tick <= 0 || tick % 20 != 0 {
+        return None;
+    }
+    let (level, node, message) = match (tick / 20) % 4 {
+        0 => (20u64, "navigator", "waypoint reached, heading for the next"),
+        1 => (10, "lidar_driver", "sweep complete"),
+        2 => (
+            30,
+            "localiser",
+            "covariance is growing; odometry may be drifting",
+        ),
+        _ => (40, "battery_monitor", "charge below 20 percent"),
+    };
+    Some(struct_of([
+        (
+            "stamp",
+            CanonicalValue::Time {
+                sec: (at_ns / 1_000_000_000) as i32,
+                nanosec: (at_ns % 1_000_000_000) as u32,
+            },
+        ),
+        ("level", CanonicalValue::Uint(level)),
+        ("name", CanonicalValue::String(node.into())),
+        ("msg", CanonicalValue::String(message.into())),
+        ("file", CanonicalValue::String(String::new())),
+        ("function", CanonicalValue::String(String::new())),
+        ("line", CanonicalValue::Uint(0)),
+    ]))
+}
+
 /// A synthetic lidar sweep, in the sensor's own frame.
 ///
 /// Several rings from below the horizon to above it, so the sweep paints the
@@ -554,6 +592,27 @@ mod tests {
             message.get_path("header.frame_id"),
             Some(&CanonicalValue::String("map".into()))
         );
+    }
+
+    #[test]
+    fn the_robot_speaks_now_and_then_rather_than_every_tick() {
+        let spoken: Vec<i64> = (1..=80).filter(|tick| log(*tick, 0).is_some()).collect();
+        assert_eq!(spoken, vec![20, 40, 60, 80], "once every two seconds");
+        assert_eq!(log(0, 0), None, "nothing before the clock starts");
+    }
+
+    #[test]
+    fn the_robot_says_things_at_every_level_so_a_filter_has_work_to_do() {
+        let levels: Vec<i64> = (1..=160)
+            .filter_map(|tick| log(tick, 0))
+            .filter_map(|line| match line.get_path("level") {
+                Some(CanonicalValue::Uint(level)) => Some(*level as i64),
+                _ => None,
+            })
+            .collect();
+        for level in [10, 20, 30, 40] {
+            assert!(levels.contains(&level), "level {level} is never reached");
+        }
     }
 
     #[test]

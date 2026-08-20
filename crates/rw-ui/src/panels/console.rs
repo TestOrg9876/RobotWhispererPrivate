@@ -20,7 +20,7 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::session::{Notice, RobotWhisperer, SessionEvent};
+use crate::session::{Notice, RobotWhisperer, SessionEvent, Severity};
 use crate::tokens;
 
 /// How many lines to keep.
@@ -35,14 +35,12 @@ struct Line {
 }
 
 impl Line {
-    fn text(&self) -> &str {
-        match &self.notice {
-            Notice::Info(text) | Notice::Error(text) => text,
-        }
+    fn text(&self) -> String {
+        self.notice.text()
     }
 
-    fn is_error(&self) -> bool {
-        matches!(self.notice, Notice::Error(_))
+    fn severity(&self) -> Severity {
+        self.notice.severity()
     }
 }
 
@@ -50,8 +48,12 @@ pub struct ConsolePanel {
     focus_handle: FocusHandle,
     lines: Vec<Line>,
     filter: Entity<InputState>,
-    /// Whether only errors are shown.
-    errors_only: bool,
+    /// The quietest severity shown.
+    ///
+    /// One control that cycles rather than three that are mutually exclusive:
+    /// a segmented bar for a three-way choice nobody makes twice a session is
+    /// a row of chrome, and the button's own label already says where it is.
+    floor: Severity,
     scroll: ScrollHandle,
     /// Whether to keep the newest line in view.
     ///
@@ -85,7 +87,7 @@ impl ConsolePanel {
             focus_handle: cx.focus_handle(),
             lines: Vec::new(),
             filter,
-            errors_only: false,
+            floor: Severity::Info,
             scroll: ScrollHandle::new(),
             follow: true,
             _subscriptions: subscriptions,
@@ -111,13 +113,33 @@ impl ConsolePanel {
         let needle = self.filter.read(cx).value().trim().to_lowercase();
         self.lines
             .iter()
-            .filter(|line| !self.errors_only || line.is_error())
+            .filter(|line| line.severity() >= self.floor)
             .filter(|line| needle.is_empty() || line.text().to_lowercase().contains(&needle))
             .collect()
     }
 
     fn errors(&self) -> usize {
-        self.lines.iter().filter(|line| line.is_error()).count()
+        self.lines
+            .iter()
+            .filter(|line| line.severity() == Severity::Error)
+            .count()
+    }
+
+    /// What the level button says, and where it goes next.
+    fn floor_label(&self) -> &'static str {
+        match self.floor {
+            Severity::Info => "All",
+            Severity::Warn => "Warnings",
+            Severity::Error => "Errors",
+        }
+    }
+
+    fn next_floor(&self) -> Severity {
+        match self.floor {
+            Severity::Info => Severity::Warn,
+            Severity::Warn => Severity::Error,
+            Severity::Error => Severity::Info,
+        }
     }
 }
 
@@ -160,15 +182,17 @@ impl Render for ConsolePanel {
         let visible = self.visible(cx);
         let total = self.lines.len();
         let shown = visible.len();
-        let errors_only = self.errors_only;
+        let floor = self.floor;
+        let floor_label = self.floor_label();
+        let next_floor = self.next_floor();
 
         let rows: Vec<_> = visible
             .iter()
             .map(|line| {
-                let colour = if line.is_error() {
-                    cx.theme().danger
-                } else {
-                    cx.theme().muted_foreground
+                let colour = match line.severity() {
+                    Severity::Error => cx.theme().danger,
+                    Severity::Warn => cx.theme().warning,
+                    Severity::Info => cx.theme().muted_foreground,
                 };
                 h_flex()
                     .w_full()
@@ -190,7 +214,7 @@ impl Render for ConsolePanel {
                             .min_w_0()
                             .text_xs()
                             .text_color(colour)
-                            .child(SharedString::from(line.text().to_string())),
+                            .child(SharedString::from(line.text())),
                     )
             })
             .collect();
@@ -211,13 +235,14 @@ impl Render for ConsolePanel {
                     .items_center()
                     .child(div().w(px(200.)).child(Input::new(&self.filter).xsmall()))
                     .child(
-                        Button::new("errors-only")
+                        Button::new("level")
                             .ghost()
                             .xsmall()
-                            .label("Errors")
-                            .selected(errors_only)
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.errors_only = !this.errors_only;
+                            .label(floor_label)
+                            .tooltip("The quietest level shown")
+                            .selected(floor != Severity::Info)
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.floor = next_floor;
                                 cx.notify();
                             })),
                     )

@@ -15,6 +15,7 @@ pub mod geometry;
 pub mod gpu;
 pub mod image;
 pub mod layout;
+pub mod log;
 pub mod marker;
 pub mod nesting;
 pub mod palette;

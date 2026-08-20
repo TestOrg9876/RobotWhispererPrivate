@@ -1,0 +1,91 @@
+# The world pane: several topics and a robot, each published in its own frame,
+# all resolved into one through the transform tree.
+
+wait 900
+click 105 888
+wait 900
+click 1403 81
+wait 700
+click 1384 158
+wait 500
+click 1269 211
+type Simulator
+wait 500
+click 1395 242
+wait 1500
+click 1327 16
+wait 600
+click 1272 102
+wait 900
+
+# Open the 3D world from the flat menu.
+click 1327 16
+wait 600
+click 1231 193
+wait 2000
+move 700 500
+shot 01-empty-world
+
+# Everything drawable, from one flat menu on the rail's own header row. Only
+# the topics that have geometry in them are offered: the counter and the string
+# are not on this list, and the registry is what decides that.
+click 507 90
+wait 900
+shot 02-add-menu
+
+# The lidar sweep, which arrives in the sensor's own frame.
+click 556 145
+wait 2500
+move 700 500
+shot 03-cloud
+
+# The robot's trail, which arrives in the map. Two topics, two frames, one
+# scene — this is the picture that was not expressible before.
+click 507 90
+wait 900
+click 526 257
+wait 2500
+move 700 500
+shot 04-cloud-and-path
+
+# A robot from the catalog. Its description's root link is not a frame this
+# system publishes, so the layer is dimmed and says exactly that rather than
+# being drawn at the origin where it would look plausible and be wrong.
+click 507 90
+wait 900
+click 530 489
+wait 6000
+move 700 500
+shot 05-robot-unplaced
+
+# The one per-layer control that has to exist, on the flat menu the dock
+# already draws: which frame the description hangs off.
+click 1404 49
+wait 900
+shot 06-pane-menu
+click 1322 75
+wait 3000
+move 700 500
+shot 07-robot-on-base-link
+
+# The proof. The fixed frame is the one control the whole pane turns on: in
+# `map` the room stands still and the robot drives through it; in `base_link`
+# the robot stands still and the room swings round it. Neither picture is
+# expressible without a transform tree, and before one both of these sat on
+# top of each other at the origin.
+# Close enough to see the arm standing where the transform tree put it.
+scroll -5
+wait 1200
+shot 08-robot-close
+
+click 433 90
+wait 900
+shot 09-frame-menu
+
+# In `base_link` the robot stands still at the origin and the whole room
+# swings round it. The same three layers, the same three messages, one
+# control — and every point of the scan has moved because the tree said so.
+click 471 117
+wait 3000
+move 700 500
+shot 10-fixed-base-link

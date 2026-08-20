@@ -24,8 +24,8 @@ actions!(
         ToggleConsole,
         /// Create a dashboard and open it.
         NewDashboard,
-        /// Open the robot viewer.
-        ShowRobot,
+        /// Open the 3D world.
+        ShowWorld,
         /// Start capturing every subscribed topic, or stop and keep what was
         /// captured.
         ToggleRecording,
@@ -77,6 +77,59 @@ pub struct SetPaneTopic {
 pub struct SetPaneView {
     pub pane: u64,
     pub view: SharedString,
+}
+
+/// Put a topic in the 3D world.
+///
+/// Like the dashboard's pane actions, these carry the pane they are about: the
+/// menus they come from are drawn by the dock on the tab strip, outside the
+/// pane, and an action dispatches up from wherever the click happened.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
+pub struct AddWorldLayer {
+    pub pane: u64,
+    pub connection: i64,
+    pub topic: SharedString,
+}
+
+/// Put a robot from the catalog in the 3D world.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
+pub struct AddWorldRobot {
+    pub pane: u64,
+    pub robot: SharedString,
+}
+
+/// Take a layer out of the 3D world.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
+pub struct RemoveWorldLayer {
+    pub pane: u64,
+    pub layer: u64,
+}
+
+/// Choose the frame everything in the world is drawn relative to.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
+pub struct SetWorldFrame {
+    pub pane: u64,
+    pub frame: SharedString,
+}
+
+/// Hang a robot layer off a frame of the transform tree.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
+pub struct SetWorldAnchor {
+    pub pane: u64,
+    pub layer: u64,
+    pub frame: SharedString,
+}
+
+/// Point the camera back at whatever the world is showing.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
+pub struct ResetWorldView {
+    pub pane: u64,
 }
 
 /// Open the transport for a stored connection.

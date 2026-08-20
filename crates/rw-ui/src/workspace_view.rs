@@ -27,17 +27,18 @@ use gpui_component::{
 };
 
 use crate::actions::{
-    CommandPalette, Connect, Disconnect, ExportWorkspace, ImportWorkspace, ManageConnections,
-    NewDashboard, NewRequest, OpenRecording, OpenSettings, ReplayRecording, SaveRecording,
-    ShowRobot, ToggleConsole, ToggleRecording, ToggleSidebar,
+    AddWorldLayer, AddWorldRobot, CommandPalette, Connect, Disconnect, ExportWorkspace,
+    ImportWorkspace, ManageConnections, NewDashboard, NewRequest, OpenRecording, OpenSettings,
+    RemoveWorldLayer, ReplayRecording, ResetWorldView, SaveRecording, SetWorldAnchor,
+    SetWorldFrame, ShowWorld, ToggleConsole, ToggleRecording, ToggleSidebar,
 };
 use crate::docking::{self, Restored};
 use crate::layout;
 use crate::palette::{Choice, Entry};
 use crate::panels::{
     CollectionsEvent, CollectionsPanel, ConnectionsPanel, ConsolePanel, DashboardPanel,
-    PaletteEvent, PaletteView, RequestPanel, RobotPanel, SettingsEvent, SettingsView, WelcomeEvent,
-    WelcomePanel,
+    PaletteEvent, PaletteView, RequestPanel, SettingsEvent, SettingsView, WelcomeEvent,
+    WelcomePanel, WorldPanel,
 };
 use crate::prefs::Prefs;
 use crate::session::{Notice, RobotWhisperer, Sessions, Status};
@@ -74,8 +75,8 @@ pub struct WorkspaceView {
     /// Kept apart from the rest because restoring a layout replaces the welcome
     /// panel with a rebuilt one, and the old subscription has to go with it.
     _welcome: Option<Subscription>,
-    /// The robot viewer, if it has been opened.
-    robot: Option<Entity<RobotPanel>>,
+    /// The 3D world, if it has been opened.
+    world: Option<Entity<WorldPanel>>,
     /// Dashboards currently open, by id.
     dashboards: HashMap<i64, Entity<DashboardPanel>>,
     prefs: Prefs,
@@ -145,7 +146,7 @@ impl WorkspaceView {
             open: HashMap::new(),
             connections: None,
             welcome: Some(welcome.clone()),
-            robot: None,
+            world: None,
             dashboards: HashMap::new(),
             prefs,
             _welcome: Some(cx.subscribe_in(&welcome, window, Self::on_welcome_event)),
@@ -267,12 +268,12 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    /// Opens the robot viewer, or brings it to the front if it is already open.
+    /// Opens the 3D world, or brings it to the front if it is already open.
     ///
-    /// One instance: the models are tens of megabytes, and a second pane
+    /// One instance: the robot models are tens of megabytes, and a second world
     /// showing the same arm is a second copy of them.
-    fn open_robot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(existing) = self.robot.clone() {
+    fn open_world(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(existing) = self.world.clone() {
             let home = existing.read(cx).home();
             let panel = Arc::new(existing) as Arc<dyn PanelView>;
             if !docking::reveal(home, panel.clone(), window, cx) {
@@ -283,8 +284,8 @@ impl WorkspaceView {
             return;
         }
 
-        let panel = RobotPanel::view(cx);
-        self.robot = Some(panel.clone());
+        let panel = WorldPanel::view(cx);
+        self.world = Some(panel.clone());
         self.dock.update(cx, |dock, cx| {
             dock.add_panel(
                 Arc::new(panel) as Arc<dyn PanelView>,
@@ -513,7 +514,7 @@ impl WorkspaceView {
                     .separator()
                     .menu("Toggle request list", Box::new(ToggleSidebar))
                     .menu("New dashboard", Box::new(NewDashboard))
-                    .menu("Robot viewer", Box::new(ShowRobot))
+                    .menu("3D world", Box::new(ShowWorld))
                     .menu("Start or stop recording", Box::new(ToggleRecording))
                     .menu("Replay last recording", Box::new(ReplayRecording))
                     .menu("Save recording…", Box::new(SaveRecording))
@@ -618,7 +619,7 @@ impl WorkspaceView {
                 Choice::Command("ToggleConsole"),
             ),
             Entry::new("Command", "New dashboard", Choice::Command("NewDashboard")),
-            Entry::new("Command", "Robot viewer", Choice::Command("ShowRobot")),
+            Entry::new("Command", "3D world", Choice::Command("ShowWorld")),
             Entry::new(
                 "Command",
                 "Start or stop recording",
@@ -683,7 +684,7 @@ impl WorkspaceView {
             Choice::Command("ToggleSidebar") => self.on_toggle_sidebar(&ToggleSidebar, window, cx),
             Choice::Command("ToggleConsole") => self.on_toggle_console(&ToggleConsole, window, cx),
             Choice::Command("NewDashboard") => self.new_dashboard(window, cx),
-            Choice::Command("ShowRobot") => self.open_robot(window, cx),
+            Choice::Command("ShowWorld") => self.open_world(window, cx),
             Choice::Dashboard(id) => self.open_dashboard(id, window, cx),
             Choice::Command("ToggleRecording") => self.toggle_recording(cx),
             Choice::Command("ReplayRecording") => self.replay_recording(cx),
@@ -1084,8 +1085,31 @@ impl WorkspaceView {
         self.new_dashboard(window, cx);
     }
 
-    fn on_show_robot(&mut self, _: &ShowRobot, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_robot(window, cx);
+    fn on_show_world(&mut self, _: &ShowWorld, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_world(window, cx);
+    }
+
+    /// Runs something on the world pane an action came from.
+    ///
+    /// The id is checked rather than assumed: the actions carry it because a
+    /// dock menu dispatches from wherever it was clicked, and a stale one from
+    /// a pane that has since been closed must do nothing rather than reach the
+    /// next world opened.
+    fn with_world(
+        &mut self,
+        pane: u64,
+        cx: &mut Context<Self>,
+        act: impl FnOnce(&mut WorldPanel, &mut Context<WorldPanel>),
+    ) {
+        let Some(world) = self
+            .world
+            .clone()
+            .filter(|w| w.entity_id().as_u64() == pane)
+        else {
+            return;
+        };
+        world.update(cx, act);
+        cx.notify();
     }
 
     fn on_toggle_recording(&mut self, _: &ToggleRecording, _: &mut Window, cx: &mut Context<Self>) {
@@ -1299,7 +1323,38 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_toggle_console))
             .on_action(cx.listener(Self::on_new_dashboard))
-            .on_action(cx.listener(Self::on_show_robot))
+            .on_action(cx.listener(Self::on_show_world))
+            // The world pane's menus are drawn by the dock on its tab strip,
+            // outside the pane, so they dispatch up to here — the same route
+            // the dashboard's pane actions take.
+            .on_action(cx.listener(|this, action: &AddWorldLayer, _, cx| {
+                this.with_world(action.pane, cx, |world, cx| {
+                    world.add_topic(action.connection, action.topic.to_string(), cx)
+                });
+            }))
+            .on_action(cx.listener(|this, action: &AddWorldRobot, _, cx| {
+                this.with_world(action.pane, cx, |world, cx| {
+                    world.add_robot(&action.robot, cx)
+                });
+            }))
+            .on_action(cx.listener(|this, action: &RemoveWorldLayer, _, cx| {
+                this.with_world(action.pane, cx, |world, cx| {
+                    world.remove(action.layer as usize, cx)
+                });
+            }))
+            .on_action(cx.listener(|this, action: &SetWorldFrame, _, cx| {
+                this.with_world(action.pane, cx, |world, cx| {
+                    world.set_fixed(action.frame.to_string(), cx)
+                });
+            }))
+            .on_action(cx.listener(|this, action: &SetWorldAnchor, _, cx| {
+                this.with_world(action.pane, cx, |world, cx| {
+                    world.set_anchor(action.layer as usize, action.frame.to_string(), cx)
+                });
+            }))
+            .on_action(cx.listener(|this, action: &ResetWorldView, _, cx| {
+                this.with_world(action.pane, cx, |world, cx| world.reset_view(cx));
+            }))
             .on_action(cx.listener(Self::on_toggle_recording))
             .on_action(cx.listener(Self::on_replay_recording))
             .on_action(cx.listener(Self::on_save_recording))

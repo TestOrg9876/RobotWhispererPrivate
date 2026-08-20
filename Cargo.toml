@@ -13,6 +13,7 @@ members = [
     "crates/rw-schema-ros1",
     "crates/rw-schema-ros2",
     "crates/rw-session",
+    "crates/rw-tf",
     "crates/rw-transport",
     "crates/rw-transport-dummy",
     "crates/rw-transport-foxglove-ws",
@@ -57,6 +58,7 @@ rw-pipeline = { path = "crates/rw-pipeline" }
 rw-assets = { path = "crates/rw-assets" }
 rw-record = { path = "crates/rw-record" }
 rw-render = { path = "crates/rw-render" }
+rw-tf = { path = "crates/rw-tf" }
 rw-transport = { path = "crates/rw-transport" }
 rw-ui = { path = "crates/rw-ui" }
 

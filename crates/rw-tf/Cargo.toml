@@ -1,0 +1,11 @@
+[package]
+name = "rw-tf"
+version = "0.1.0"
+edition = "2024"
+description = "The transform tree: stamped frames, interpolated, and never extrapolated"
+
+# No dependencies on purpose. This is arithmetic over `f32` and `u64`, and the
+# one type it hands out — a column-major `[[f32; 4]; 4]` — is the same concrete
+# type `rw-assets` and `rw-render` already use, so it interoperates with both
+# without any of the three depending on another.
+[dependencies]

@@ -25,10 +25,8 @@ use gpui_component::{
 };
 use rw_canonical::CanonicalValue;
 use rw_core::domain::{Request, RequestKind, Value};
-use rw_render::{Content, Layer};
 use rw_transport::ConnectionId;
 
-use crate::cloud;
 use crate::discovery::{self, Suggestion};
 use crate::docking::Home;
 use crate::form::{self, Field};
@@ -1267,7 +1265,10 @@ impl RequestPanel {
         }
     }
 
-    /// Hands the newest cloud to the 3D pane, building it on first sight.
+    /// Hands the newest message to the 3D pane, building it on first sight.
+    ///
+    /// What it decodes into is the registry's decision, from the schema's role
+    /// — so a scan, a path and a pose all arrive here rather than only a cloud.
     ///
     /// Driven from `render` rather than from the subscription, because it needs
     /// a context that can create an entity and because a pane nobody is looking
@@ -1276,15 +1277,25 @@ impl RequestPanel {
         if self.tab != View::Visualize {
             return;
         }
-        let (value, count) = {
+        let (value, schema, count) = {
             let incoming = self.incoming.lock().expect("incoming mutex");
-            (incoming.value.clone(), incoming.count)
+            (
+                incoming.value.clone(),
+                incoming.schema.clone(),
+                incoming.count,
+            )
         };
         if count == self.scene_at {
             return;
         }
-        let Some(value) = value else { return };
-        let Some(cloud) = cloud::decode(&value) else {
+        let (Some(value), Some(schema)) = (value, schema) else {
+            return;
+        };
+        let Some(layers) = crate::viz::layers_for(
+            &crate::viz::role_for(&schema),
+            &value,
+            crate::panels::pane::tree(self.draft.connection_id, cx).as_ref(),
+        ) else {
             return;
         };
         self.scene_at = count;
@@ -1296,9 +1307,7 @@ impl RequestPanel {
                 scene
             }
         };
-        scene.update(cx, |scene, cx| {
-            scene.set_layers(vec![Layer::new(Content::Points(cloud.into()))], cx)
-        });
+        scene.update(cx, |scene, cx| scene.set_layers(layers, cx));
     }
 
     fn response(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1313,6 +1322,9 @@ impl RequestPanel {
                 incoming.history.clone(),
             )
         };
+        // The role decides which view the Visualize tab gets, and the stats row
+        // below consumes `schema` on its way into the chip.
+        let schema_name = schema.clone();
 
         // A segmented bar rather than document tabs: these are three views of one
         // response, not three things that can be closed.
@@ -1338,7 +1350,12 @@ impl RequestPanel {
         let body = match (&value, active) {
             (Some(value), View::Raw) => views::raw(value, cx),
             (Some(_), View::Plot) => views::plot(&history, cx),
-            (Some(value), View::Visualize) => views::visualize(value, self.scene.as_ref(), cx),
+            (Some(value), View::Visualize) => views::visualize(
+                &crate::viz::role_for(schema_name.as_deref().unwrap_or_default()),
+                value,
+                self.scene.as_ref(),
+                cx,
+            ),
             (None, _) => tokens::empty_state(
                 IconName::Inbox,
                 if running {

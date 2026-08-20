@@ -16,8 +16,9 @@ use std::sync::{Arc, Mutex};
 
 use gpui::{App, Context, Entity, Task};
 use rw_canonical::CanonicalValue;
-use rw_tf::{Buffer, Quat, Transform};
+use rw_tf::{Buffer, Transform};
 
+use crate::geometry;
 use crate::session::{RobotWhisperer, Sessions};
 
 /// The two topics every ROS graph puts its transform tree on.
@@ -54,10 +55,14 @@ pub fn decode(value: &CanonicalValue) -> Option<Vec<Stamped>> {
         let CanonicalValue::Struct(fields) = entry else {
             continue;
         };
-        let header = fields.get("header");
+        // Both ends through the same reader, so ROS 1's `/base_link` and ROS
+        // 2's `base_link` land on one frame rather than two halves of a tree.
         let (Some(parent), Some(child)) = (
-            header.and_then(|header| text(header.get_path("frame_id")?)),
-            fields.get("child_frame_id").and_then(text),
+            geometry::frame_id(entry),
+            fields
+                .get("child_frame_id")
+                .and_then(geometry::text)
+                .map(|name| name.trim_start_matches('/').to_string()),
         ) else {
             continue;
         };
@@ -67,102 +72,20 @@ pub fn decode(value: &CanonicalValue) -> Option<Vec<Stamped>> {
         if parent == child || parent.is_empty() || child.is_empty() {
             continue;
         }
-        let Some(transform) = fields.get("transform").and_then(rigid) else {
+        let Some(transform) = fields.get("transform").and_then(geometry::rigid) else {
             continue;
         };
         stamped.push(Stamped {
             parent,
             child,
-            at_ns: header
-                .and_then(|header| stamp_ns(header.get_path("stamp")?))
-                .unwrap_or(0),
+            // An unstamped transform is taken as time zero rather than dropped:
+            // `/tf_static` carries a stamp nobody reads, and some bridges send
+            // none at all.
+            at_ns: geometry::header_stamp_ns(entry).unwrap_or(0),
             transform,
         });
     }
     Some(stamped)
-}
-
-/// A `geometry_msgs/Transform`: a translation and a rotation.
-fn rigid(value: &CanonicalValue) -> Option<Transform> {
-    let translation = value.get_path("translation")?;
-    let rotation = value.get_path("rotation")?;
-    Some(Transform::new(
-        [
-            real(translation.get_path("x")?)?,
-            real(translation.get_path("y")?)?,
-            real(translation.get_path("z")?)?,
-        ],
-        // Through `from_wire`, which normalises: an all-zero quaternion is what
-        // a default-constructed message carries and it is on more real systems
-        // than anyone would like.
-        Quat::from_wire(
-            real(rotation.get_path("x")?)?,
-            real(rotation.get_path("y")?)?,
-            real(rotation.get_path("z")?)?,
-            real(rotation.get_path("w")?)?,
-        ),
-    ))
-}
-
-/// A `builtin_interfaces/Time`, in nanoseconds.
-///
-/// The canonical model has a `Time` variant, but a header decoded from JSON by
-/// a bridge arrives as an ordinary struct — and ROS 1 spells the fields
-/// `secs`/`nsecs` while ROS 2 spells them `sec`/`nanosec`. All three shapes are
-/// the same instant, so all three are read.
-fn stamp_ns(value: &CanonicalValue) -> Option<u64> {
-    let (sec, nanosec) = match value {
-        CanonicalValue::Time { sec, nanosec } => (i64::from(*sec), u64::from(*nanosec)),
-        CanonicalValue::Struct(_) => {
-            let sec = value
-                .get_path("sec")
-                .or_else(|| value.get_path("secs"))
-                .and_then(whole)?;
-            let nanosec = value
-                .get_path("nanosec")
-                .or_else(|| value.get_path("nsecs"))
-                .and_then(whole)
-                .unwrap_or(0);
-            (sec, u64::try_from(nanosec).ok()?)
-        }
-        _ => return None,
-    };
-    // A negative stamp is before the epoch, which no robot's clock means; it is
-    // taken as "unstamped" rather than wrapped round into the far future.
-    u64::try_from(sec)
-        .ok()?
-        .checked_mul(1_000_000_000)?
-        .checked_add(nanosec)
-}
-
-fn text(value: &CanonicalValue) -> Option<String> {
-    match value {
-        CanonicalValue::String(inner) => Some(inner.clone()),
-        _ => None,
-    }
-}
-
-fn real(value: &CanonicalValue) -> Option<f32> {
-    let number = match value {
-        CanonicalValue::F64(inner) => *inner as f32,
-        CanonicalValue::F32(inner) => *inner,
-        CanonicalValue::Int(inner) => *inner as f32,
-        CanonicalValue::Uint(inner) => *inner as f32,
-        _ => return None,
-    };
-    // A NaN translation would poison every frame under it, and there is nothing
-    // sensible to substitute — so the whole transform is refused.
-    number.is_finite().then_some(number)
-}
-
-fn whole(value: &CanonicalValue) -> Option<i64> {
-    match value {
-        CanonicalValue::Int(inner) => Some(*inner),
-        CanonicalValue::Uint(inner) => i64::try_from(*inner).ok(),
-        CanonicalValue::F64(inner) => Some(*inner as i64),
-        CanonicalValue::F32(inner) => Some(*inner as i64),
-        _ => None,
-    }
 }
 
 /// One transform tree per connection.
@@ -362,7 +285,7 @@ mod tests {
         assert_eq!(decoded[0].child, "base");
         assert_eq!(decoded[0].at_ns, 7_250_000_000);
         assert_eq!(decoded[0].transform.translation, [1., 2., 3.]);
-        assert_eq!(decoded[0].transform.rotation, Quat::IDENTITY);
+        assert_eq!(decoded[0].transform.rotation, rw_tf::Quat::IDENTITY);
     }
 
     #[test]

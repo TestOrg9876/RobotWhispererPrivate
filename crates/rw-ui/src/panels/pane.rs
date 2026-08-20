@@ -22,9 +22,7 @@ use gpui_component::{
     h_flex, v_flex,
 };
 use rw_canonical::CanonicalValue;
-use rw_render::{Content, Layer};
 
-use crate::cloud;
 use crate::scene_view::SceneView;
 use crate::series::History;
 use crate::session::{RobotWhisperer, Sessions};
@@ -208,19 +206,33 @@ impl VizPanel {
         }));
     }
 
-    /// Hands the newest cloud to the 3D pane, building it on first sight.
+    /// Hands the newest message to the 3D pane, building it on first sight.
+    ///
+    /// What it decodes into is the registry's decision, from the schema's role
+    /// — so a scan, a path and a pose all arrive here rather than only a cloud.
     fn sync_scene(&mut self, cx: &mut Context<Self>) {
         if self.view != View::Visualize {
             return;
         }
-        let (value, count) = {
+        let (value, schema, count) = {
             let incoming = self.incoming.lock().expect("incoming mutex");
-            (incoming.value.clone(), incoming.count)
+            (
+                incoming.value.clone(),
+                incoming.schema.clone(),
+                incoming.count,
+            )
         };
         if count == self.scene_at {
             return;
         }
-        let Some(cloud) = value.as_ref().and_then(cloud::decode) else {
+        let (Some(value), Some(schema)) = (value, schema) else {
+            return;
+        };
+        let Some(layers) = crate::viz::layers_for(
+            &crate::viz::role_for(&schema),
+            &value,
+            tree(self.connection, cx).as_ref(),
+        ) else {
             return;
         };
         self.scene_at = count;
@@ -232,9 +244,7 @@ impl VizPanel {
                 scene
             }
         };
-        scene.update(cx, |scene, cx| {
-            scene.set_layers(vec![Layer::new(Content::Points(cloud.into()))], cx)
-        });
+        scene.update(cx, |scene, cx| scene.set_layers(layers, cx));
     }
 
     /// The connection and topic pickers, and the view switcher.
@@ -442,15 +452,24 @@ impl Panel for VizPanel {
 impl Render for VizPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_scene(cx);
-        let (value, history) = {
+        let (value, schema, history) = {
             let incoming = self.incoming.lock().expect("incoming mutex");
-            (incoming.value.clone(), incoming.history.clone())
+            (
+                incoming.value.clone(),
+                incoming.schema.clone(),
+                incoming.history.clone(),
+            )
         };
 
         let body = match (&value, self.view) {
             (Some(value), View::Raw) => views::raw(value, cx),
             (Some(_), View::Plot) => views::plot(&history, cx),
-            (Some(value), View::Visualize) => views::visualize(value, self.scene.as_ref(), cx),
+            (Some(value), View::Visualize) => views::visualize(
+                &crate::viz::role_for(schema.as_deref().unwrap_or_default()),
+                value,
+                self.scene.as_ref(),
+                cx,
+            ),
             // A pane with nothing in it offers the two pickers, where there is
             // room for them and nothing else to show. Otherwise one dim line:
             // a pane is often small, and the full empty state — icon tile,
@@ -493,6 +512,17 @@ impl Render for VizPanel {
                 ),
             )
     }
+}
+
+/// A connection's transform tree, for placing what a pane is showing.
+///
+/// A copy rather than a borrow: the tree is behind a lock that frames arriving
+/// off the UI thread also take, and holding it across a render would stall the
+/// subscription. Trees are a few dozen frames of a few dozen samples.
+pub(crate) fn tree(connection: Option<i64>, cx: &App) -> Option<rw_tf::Buffer> {
+    let held = RobotWhisperer::global(cx).tf.read(cx).peek(connection?)?;
+    let tree = held.lock().ok()?;
+    Some(tree.clone())
 }
 
 /// A message count short enough to sit beside a tab title.

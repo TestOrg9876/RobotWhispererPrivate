@@ -14,11 +14,12 @@ use gpui::{
 };
 use gpui_component::chart::LineChart;
 use gpui_component::{ActiveTheme as _, IconName, h_flex, v_flex};
-use rw_canonical::CanonicalValue;
+use rw_canonical::{CanonicalValue, VisualizationRole};
 
 use crate::scene_view::SceneView;
 use crate::series::{History, Series};
-use crate::{image, tokens, value};
+use crate::viz::{self, Visual};
+use crate::{tokens, value};
 
 /// Which view of a message is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -76,31 +77,39 @@ pub fn raw(value: &CanonicalValue, cx: &App) -> AnyElement {
 
 /// The message as something to look at.
 ///
-/// An image is shown as an image and a point cloud in 3D; anything else becomes
-/// a flat table of leaf paths and values, which beats indented JSON for the
-/// thing people actually do here — finding one field in a large message.
+/// Which of the three it gets is the registry's decision, taken from the
+/// schema's role rather than by trying decoders until one works. Sniffing is
+/// what made a `LaserScan` a wall of numbers: it is not an image and not a
+/// `PointCloud2`, so it fell through to the table.
 ///
-/// `scene` is the 3D pane, when the host has one and it has points in it.
+/// A view the message turns out not to be able to fill falls back to the field
+/// table, which is a real answer — a `PointCloud2` whose every point was NaN
+/// has nothing to draw, and its fields are what is left to look at.
+///
+/// `scene` is the 3D pane, when the host has one and there is anything in it.
 pub fn visualize(
+    role: &VisualizationRole,
     value: &CanonicalValue,
     scene: Option<&Entity<SceneView>>,
     cx: &App,
 ) -> AnyElement {
-    if let Some(frame) = image::decode(value) {
-        return picture(frame, cx);
+    match viz::visual_for(role) {
+        Visual::Picture => match viz::picture(value) {
+            Some(frame) => picture(frame, cx),
+            None => fields(value, cx),
+        },
+        // The scene draws its own controls over itself, so it needs nothing
+        // around it but the space.
+        Visual::World => match scene.filter(|scene| !scene.read(cx).is_empty()) {
+            Some(scene) => div()
+                .size_full()
+                .min_h_0()
+                .child(scene.clone())
+                .into_any_element(),
+            None => fields(value, cx),
+        },
+        Visual::Fields => fields(value, cx),
     }
-
-    // The scene draws its own controls over itself, so it needs nothing around
-    // it but the space.
-    if let Some(scene) = scene.filter(|scene| scene.read(cx).point_count() > 0) {
-        return div()
-            .size_full()
-            .min_h_0()
-            .child(scene.clone())
-            .into_any_element();
-    }
-
-    fields(value, cx)
 }
 
 /// Every leaf of the message, path beside value.
@@ -147,7 +156,7 @@ pub fn fields(value: &CanonicalValue, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-fn picture(frame: image::Frame, cx: &App) -> AnyElement {
+fn picture(frame: crate::image::Frame, cx: &App) -> AnyElement {
     v_flex()
         .size_full()
         .min_h_0()

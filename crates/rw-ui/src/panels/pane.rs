@@ -271,29 +271,30 @@ impl VizPanel {
         scene.update(cx, |scene, cx| scene.set_layers(layers, cx));
     }
 
-    /// The connection and topic pickers, and the view switcher.
-    /// The systems and topics this pane could be pointed at.
-    fn choices(&self, cx: &App) -> (Vec<(i64, SharedString)>, Vec<SharedString>) {
-        let workspace = self.workspace.read(cx);
-        let systems = workspace
+    /// The systems this pane could be pointed at.
+    fn systems(&self, cx: &App) -> Vec<(i64, SharedString)> {
+        self.workspace
+            .read(cx)
             .connections()
             .iter()
             .map(|connection| (connection.id, SharedString::from(connection.name.clone())))
-            .collect();
-        // Only topics the chosen system actually publishes: a pane is pointed
-        // at something that exists, not typed at from memory.
-        let topics = self
-            .connection
-            .and_then(|id| self.sessions.read(cx).discovery(id).cloned())
-            .map(|discovery| {
-                discovery
-                    .topics
-                    .into_iter()
-                    .map(|topic| SharedString::from(topic.name))
-                    .collect()
-            })
-            .unwrap_or_default();
-        (systems, topics)
+            .collect()
+    }
+
+    /// How many topics the picker would have to offer.
+    ///
+    /// Across every connected system rather than only this pane's, because
+    /// choosing a topic in the picker sets the system too — requiring one
+    /// first was two decisions where the data only needs one.
+    fn offered_topics(&self, cx: &App) -> usize {
+        let workspace = self.workspace.read(cx);
+        let sessions = self.sessions.read(cx);
+        workspace
+            .connections()
+            .iter()
+            .filter_map(|connection| sessions.discovery(connection.id))
+            .map(|discovery| discovery.topics.len())
+            .sum()
     }
 
     /// The two pickers, shown in the body while the pane is still empty.
@@ -303,8 +304,8 @@ impl VizPanel {
     /// would repeat the one and duplicate the other.
     fn pickers(&self, cx: &mut Context<Self>) -> AnyElement {
         let pane = cx.entity_id().as_u64();
-        let (systems, topics) = self.choices(cx);
-        let topic_count = topics.len();
+        let systems = self.systems(cx);
+        let topic_count = self.offered_topics(cx);
         let chosen = self.connection;
         let named = self
             .connection
@@ -440,7 +441,8 @@ impl Panel for VizPanel {
         cx: &mut Context<Self>,
     ) -> gpui_component::menu::PopupMenu {
         let pane = cx.entity_id().as_u64();
-        let (systems, topics) = self.choices(cx);
+        let systems = self.systems(cx);
+        let topics = self.offered_topics(cx);
         for view in View::ALL {
             menu = menu.menu_with_check(
                 view.label(),
@@ -478,11 +480,11 @@ impl Panel for VizPanel {
         // the twelve a simulator publishes and not at all on the three hundred
         // a real robot does, and the palette already ranks and already takes
         // the keyboard.
-        if !topics.is_empty() {
+        if topics > 0 {
             menu = menu.separator().menu(
                 SharedString::from(match self.topic.is_empty() {
-                    true => format!("Choose a topic…  ({} available)", topics.len()),
-                    false => format!("Change topic…  ({} available)", topics.len()),
+                    true => format!("Choose a topic…  ({topics} available)"),
+                    false => format!("Change topic…  ({topics} available)"),
                 }),
                 Box::new(crate::actions::PickPaneTopic { pane }),
             );

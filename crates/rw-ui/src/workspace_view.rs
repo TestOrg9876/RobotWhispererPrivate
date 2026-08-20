@@ -30,15 +30,15 @@ use crate::actions::{
     AddWorldLayer, AddWorldRobot, CommandPalette, Connect, Disconnect, ExportWorkspace,
     ImportWorkspace, ManageConnections, NewDashboard, NewRequest, OpenRecording, OpenSettings,
     PickPaneTopic, PickWorldTopic, RemoveWorldLayer, ReplayRecording, ResetWorldView,
-    SaveRecording, SetPaneConnection, SetPaneTopic, SetWorldAnchor, SetWorldFrame, ShowWorld,
-    ToggleConsole, ToggleRecording, ToggleSidebar,
+    SaveRecording, SetWorldAnchor, SetWorldFrame, ShowWorld, ToggleConsole, ToggleRecording,
+    ToggleSidebar,
 };
 use crate::docking::{self, Restored};
 use crate::layout;
 use crate::palette::{Choice, Entry};
 use crate::panels::{
     CollectionsEvent, CollectionsPanel, ConnectionsPanel, ConsolePanel, DashboardPanel,
-    PaletteEvent, PaletteView, RequestPanel, SettingsEvent, SettingsView, WelcomeEvent,
+    PaletteEvent, PaletteView, RequestPanel, SettingsEvent, SettingsView, VizPanel, WelcomeEvent,
     WelcomePanel, WorldPanel,
 };
 use crate::prefs::Prefs;
@@ -577,18 +577,25 @@ impl WorkspaceView {
     }
 
     fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_picker("Go to", self.palette_entries(cx), window, cx);
+        self.open_picker(
+            "Go to",
+            "Search commands, requests and connections",
+            self.palette_entries(cx),
+            window,
+            cx,
+        );
     }
 
     /// The palette, over whatever list the caller wants searched.
     fn open_picker(
         &mut self,
         title: &'static str,
+        placeholder: &'static str,
         entries: Vec<Entry>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let palette = PaletteView::view(entries, window, cx);
+        let palette = PaletteView::view(entries, placeholder, window, cx);
         palette.update(cx, |palette, cx| palette.focus(window, cx));
 
         cx.subscribe_in(
@@ -739,10 +746,14 @@ impl WorkspaceView {
                 connection,
                 topic,
             } => {
-                // Routed as the actions are, so a pane that has since been
-                // closed quietly does nothing.
-                window.dispatch_action(Box::new(SetPaneConnection { pane, connection }), cx);
-                window.dispatch_action(Box::new(SetPaneTopic { pane, topic }), cx);
+                // Called on the pane directly rather than dispatched as an
+                // action: the palette is a dialog on the window, so by the
+                // time it has closed there is nothing focused inside the
+                // dashboard for an action to travel up through.
+                self.with_pane(pane, cx, move |pane, cx| {
+                    pane.set_connection(connection, cx);
+                    pane.set_topic(topic.to_string(), cx);
+                });
             }
             Choice::WorldTopic {
                 pane,
@@ -1150,6 +1161,27 @@ impl WorkspaceView {
         self.open_world(window, cx);
     }
 
+    /// Runs something on a dashboard pane, wherever it lives.
+    ///
+    /// The id is checked rather than assumed: a palette row or a dock menu can
+    /// outlive the pane it was about, and a stale one must do nothing rather
+    /// than reach whichever pane now holds that place.
+    fn with_pane(
+        &mut self,
+        pane: u64,
+        cx: &mut Context<Self>,
+        act: impl FnOnce(&mut VizPanel, &mut Context<VizPanel>),
+    ) {
+        let dashboards: Vec<Entity<DashboardPanel>> = self.dashboards.values().cloned().collect();
+        let found = dashboards
+            .into_iter()
+            .find_map(|dashboard| dashboard.read(cx).pane_by_id(pane));
+        if let Some(pane) = found {
+            pane.update(cx, act);
+            cx.notify();
+        }
+    }
+
     /// Runs something on the world pane an action came from.
     ///
     /// The id is checked rather than assumed: the actions carry it because a
@@ -1427,7 +1459,7 @@ impl Render for WorkspaceView {
                     },
                     false,
                 );
-                this.open_picker("Point this pane at", entries, window, cx);
+                this.open_picker("Point this pane at", "Search topics", entries, window, cx);
             }))
             .on_action(cx.listener(|this, action: &PickWorldTopic, window, cx| {
                 let pane = action.pane;
@@ -1440,7 +1472,7 @@ impl Render for WorkspaceView {
                     },
                     true,
                 );
-                this.open_picker("Add to the world", entries, window, cx);
+                this.open_picker("Add to the world", "Search topics", entries, window, cx);
             }))
             .on_action(cx.listener(Self::on_toggle_recording))
             .on_action(cx.listener(Self::on_replay_recording))

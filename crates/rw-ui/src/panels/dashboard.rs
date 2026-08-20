@@ -167,6 +167,12 @@ impl DashboardPanel {
             .find(|pane| pane.entity_id().as_u64() == id)
     }
 
+    /// One of this dashboard's panes, by the id an action or a palette row
+    /// carries.
+    pub fn pane_by_id(&self, id: u64) -> Option<Entity<VizPanel>> {
+        self.pane(id).cloned()
+    }
+
     /// Adds an empty pane, for the user to point somewhere.
     fn add_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let pane = VizPanel::view(Config::default(), cx);

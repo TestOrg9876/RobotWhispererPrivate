@@ -33,10 +33,13 @@ pub struct PaletteView {
 impl EventEmitter<PaletteEvent> for PaletteView {}
 
 impl PaletteView {
-    pub fn new(entries: Vec<Entry>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let query = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Search commands, requests and connections")
-        });
+    pub fn new(
+        entries: Vec<Entry>,
+        placeholder: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let query = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
 
         let subscriptions = vec![cx.subscribe(&query, |this, _, event: &InputEvent, cx| {
             match event {
@@ -60,8 +63,16 @@ impl PaletteView {
         }
     }
 
-    pub fn view(entries: Vec<Entry>, window: &mut Window, cx: &mut App) -> Entity<Self> {
-        cx.new(|cx| Self::new(entries, window, cx))
+    /// The same list and the same ranking over whatever the caller is
+    /// searching — a topic picker is this with a different list in it, not a
+    /// second search box with its own rules.
+    pub fn view(
+        entries: Vec<Entry>,
+        placeholder: &'static str,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Entity<Self> {
+        cx.new(|cx| Self::new(entries, placeholder, window, cx))
     }
 
     /// Focuses the field, so the palette is typed into the moment it opens.

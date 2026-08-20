@@ -1806,9 +1806,11 @@ impl Panel for RequestPanel {
     }
 
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        tokens::tab_chip(self.tab_active, cx)
-            .child(tokens::status_dot(tokens::kind_color(self.draft.kind, cx)))
-            .child(RequestPanel::title(self))
+        h_flex().child(
+            tokens::tab_chip(self.tab_active, cx)
+                .child(tokens::status_dot(tokens::kind_color(self.draft.kind, cx)))
+                .child(RequestPanel::title(self)),
+        )
     }
 
     fn title_suffix(

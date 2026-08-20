@@ -225,9 +225,11 @@ impl gpui_component::dock::Panel for DashboardPanel {
     }
 
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::tokens::tab_chip(self.tab_active, cx)
-            .child(gpui_component::Icon::new(IconName::LayoutDashboard).xsmall())
-            .child(self.name.clone())
+        gpui_component::h_flex().child(
+            crate::tokens::tab_chip(self.tab_active, cx)
+                .child(gpui_component::Icon::new(IconName::LayoutDashboard).xsmall())
+                .child(self.name.clone()),
+        )
     }
 
     /// The dock's own tab is transparent here; the chip inside it is what shows

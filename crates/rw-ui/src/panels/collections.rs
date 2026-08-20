@@ -595,8 +595,34 @@ fn render_row(
 
     ListItem::new(index).child(
         row.child(div().flex_1().min_w_0().truncate().child(data.name.clone()))
+            // The rate beside the dot, when the row is a live subscription:
+            // `ros2 topic hz` without leaving the list you are already reading.
+            .when_some(rate(&data.state, cx), |row, rate| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .mr_1p5()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(rate),
+                )
+            })
             .when_some(state_dot(&data.state, cx), |row, dot| row.child(dot)),
     )
+}
+
+/// How fast a live subscription's topic is going, for the row it is on.
+fn rate(state: &RunState, cx: &App) -> Option<SharedString> {
+    let RunState::Live(Some(handle)) = state else {
+        return None;
+    };
+    let label = RobotWhisperer::global(cx)
+        .sessions
+        .read(cx)
+        .pipeline()
+        .stats(handle)?
+        .hz_label()?;
+    Some(SharedString::from(label))
 }
 
 /// A dot on the row's right, and only when there is something to say.
@@ -606,7 +632,7 @@ fn render_row(
 fn state_dot(state: &RunState, cx: &App) -> Option<gpui::AnyElement> {
     let colour = match state {
         RunState::Idle => return None,
-        RunState::Live => cx.theme().success,
+        RunState::Live(_) => cx.theme().success,
         RunState::Failed(_) => cx.theme().danger,
     };
     Some(

@@ -401,7 +401,8 @@ impl RequestPanel {
     fn publish_state(&mut self, cx: &mut Context<Self>) {
         let state = match (&self.activity, &self.problem) {
             (_, Some(problem)) => RunState::Failed(problem.message.clone()),
-            (activity, None) if !activity.is_idle() => RunState::Live,
+            (Activity::Subscribed(handle), None) => RunState::Live(Some(handle.clone().into())),
+            (activity, None) if !activity.is_idle() => RunState::Live(None),
             _ => RunState::Idle,
         };
         let id = self.saved.id;

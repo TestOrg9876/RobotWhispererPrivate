@@ -15,7 +15,11 @@ pub enum RunState {
     #[default]
     Idle,
     /// A subscription is open, a call is in flight, or a goal is running.
-    Live,
+    ///
+    /// A subscription carries its handle, so the sidebar can ask the pipeline
+    /// how fast the topic is going without owning the panel that opened it —
+    /// which is the same reason this module exists at all.
+    Live(Option<SharedString>),
     /// The last attempt failed, with the reason.
     Failed(SharedString),
 }
@@ -25,7 +29,7 @@ impl RunState {
     pub fn tooltip(&self) -> Option<SharedString> {
         match self {
             RunState::Idle => None,
-            RunState::Live => Some("Running".into()),
+            RunState::Live(_) => Some("Running".into()),
             RunState::Failed(reason) => Some(reason.clone()),
         }
     }
@@ -74,7 +78,12 @@ mod tests {
     #[test]
     fn only_a_failure_carries_a_tooltip_reason() {
         assert_eq!(RunState::Idle.tooltip(), None);
-        assert_eq!(RunState::Live.tooltip().as_deref(), Some("Running"));
+        assert_eq!(RunState::Live(None).tooltip().as_deref(), Some("Running"));
+        assert_eq!(
+            RunState::Live(Some("handle".into())).tooltip().as_deref(),
+            Some("Running"),
+            "the handle is for the sidebar's rate, not for the tooltip"
+        );
         assert_eq!(
             RunState::Failed("no such topic".into())
                 .tooltip()

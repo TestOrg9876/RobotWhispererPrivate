@@ -127,12 +127,54 @@ const MAX_LEAVES: usize = 400;
 /// matters instead of read as nested text. Structures and arrays are not rows
 /// of their own — their leaves are.
 pub fn leaves(value: &CanonicalValue) -> Vec<(String, String)> {
+    cells(value)
+        .into_iter()
+        .map(|(path, cell)| (path, cell.shown()))
+        .collect()
+}
+
+/// What one row of the leaf table holds.
+///
+/// A scalar keeps its value rather than only its text, so a diff can take a
+/// difference instead of comparing two strings — 3 and 3.0 are the same number
+/// and "3" and "3.0" are not.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Cell {
+    Scalar(CanonicalValue),
+    /// A long array or a byte string: summarised rather than expanded, the same
+    /// way the table shows it.
+    Summary(String),
+}
+
+impl Cell {
+    /// How the row reads.
+    pub fn shown(&self) -> String {
+        match self {
+            Self::Scalar(value) => scalar(value),
+            Self::Summary(text) => text.clone(),
+        }
+    }
+
+    /// The row as a number, when it is one.
+    pub fn number(&self) -> Option<f64> {
+        match self {
+            Self::Scalar(CanonicalValue::Int(inner)) => Some(*inner as f64),
+            Self::Scalar(CanonicalValue::Uint(inner)) => Some(*inner as f64),
+            Self::Scalar(CanonicalValue::F32(inner)) => Some(*inner as f64),
+            Self::Scalar(CanonicalValue::F64(inner)) => Some(*inner),
+            _ => None,
+        }
+    }
+}
+
+/// The same walk as [`leaves`], with the values kept.
+pub fn cells(value: &CanonicalValue) -> Vec<(String, Cell)> {
     let mut rows = Vec::new();
     collect(value, &mut String::new(), &mut rows);
     rows
 }
 
-fn collect(value: &CanonicalValue, path: &mut String, rows: &mut Vec<(String, String)>) {
+fn collect(value: &CanonicalValue, path: &mut String, rows: &mut Vec<(String, Cell)>) {
     if rows.len() >= MAX_LEAVES {
         return;
     }
@@ -159,13 +201,15 @@ fn collect(value: &CanonicalValue, path: &mut String, rows: &mut Vec<(String, St
                 path.truncate(mark);
             }
         }
-        CanonicalValue::Array(items) => {
-            rows.push((row_path(path), format!("[{} items]", items.len())))
-        }
-        CanonicalValue::Bytes(bytes) => {
-            rows.push((row_path(path), format!("[{} bytes]", bytes.len())))
-        }
-        leaf => rows.push((row_path(path), scalar(leaf))),
+        CanonicalValue::Array(items) => rows.push((
+            row_path(path),
+            Cell::Summary(format!("[{} items]", items.len())),
+        )),
+        CanonicalValue::Bytes(bytes) => rows.push((
+            row_path(path),
+            Cell::Summary(format!("[{} bytes]", bytes.len())),
+        )),
+        leaf => rows.push((row_path(path), Cell::Scalar(leaf.clone()))),
     }
 }
 

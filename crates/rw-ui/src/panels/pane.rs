@@ -61,6 +61,12 @@ pub struct VizPanel {
     /// The open subscription, so it can be closed when the topic changes.
     subscription: Option<String>,
     problem: Option<SharedString>,
+    /// The message the diff view compares against, and which message it was.
+    ///
+    /// Pinned rather than copied on every frame: the live stream keeps running
+    /// underneath, which is the whole point — freezing a value and watching it
+    /// drift is the question people are asking when they stare at a raw view.
+    frozen: Option<(CanonicalValue, u64)>,
     /// Built the first time a message turns out to be a point cloud.
     scene: Option<Entity<SceneView>>,
     scene_at: u64,
@@ -90,6 +96,7 @@ impl VizPanel {
                 incoming: Arc::new(Mutex::new(Incoming::default())),
                 subscription: None,
                 problem: None,
+                frozen: None,
                 scene: None,
                 scene_at: 0,
                 _repaint: None,
@@ -120,6 +127,20 @@ impl VizPanel {
         self.set_target(connection, topic, cx);
     }
 
+    /// Pins the current message. Pinning again re-pins to the newest.
+    pub fn freeze(&mut self, cx: &mut Context<Self>) {
+        let (value, count) = {
+            let incoming = self.incoming.lock().expect("incoming mutex");
+            (incoming.value.clone(), incoming.count)
+        };
+        self.frozen = value.map(|value| (value, count));
+        // Freezing with nowhere to look at the result is a control that does
+        // nothing visible, so it takes the pane to the view it is for.
+        self.view = View::Diff;
+        cx.emit(PaneChanged);
+        cx.notify();
+    }
+
     pub fn set_view(&mut self, view: &str, cx: &mut Context<Self>) {
         self.view = View::parse(view);
         cx.emit(PaneChanged);
@@ -146,6 +167,9 @@ impl VizPanel {
         *self.incoming.lock().expect("incoming mutex") = Incoming::default();
         self.scene_at = 0;
         self.problem = None;
+        // A pin belongs to the topic it was taken from; keeping it across a
+        // retarget would diff two different messages against each other.
+        self.frozen = None;
 
         let (Some(connection), false) = (self.connection, self.topic.trim().is_empty()) else {
             self._repaint = None;
@@ -413,6 +437,16 @@ impl Panel for VizPanel {
                 }),
             );
         }
+        // One entry, whose wording says whether there is already a pin — the
+        // alternative is two entries, one of which is always inert.
+        menu = menu.menu(
+            if self.frozen.is_some() {
+                "Freeze again"
+            } else {
+                "Freeze"
+            },
+            Box::new(crate::actions::FreezePane { pane }),
+        );
         if !systems.is_empty() {
             menu = menu.separator();
             for (id, name) in systems {
@@ -464,6 +498,9 @@ impl Render for VizPanel {
         let body = match (&value, self.view) {
             (Some(value), View::Raw) => views::raw(value, cx),
             (Some(_), View::Plot) => views::plot(&history, cx),
+            (Some(value), View::Diff) => {
+                views::changes(self.frozen.as_ref().map(|(value, _)| value), value, cx)
+            }
             (Some(value), View::Visualize) => views::visualize(
                 &crate::viz::role_for(schema.as_deref().unwrap_or_default()),
                 value,

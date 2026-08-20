@@ -175,6 +175,12 @@ pub struct RequestPanel {
     /// Which message the scene is showing, so a cloud is uploaded once rather
     /// than on every repaint.
     scene_at: u64,
+    /// The message the diff view compares against, and which message it was.
+    ///
+    /// The live stream keeps running underneath: freezing a reading and
+    /// watching it drift is the question people are asking when they stare at
+    /// a raw view.
+    frozen: Option<(CanonicalValue, u64)>,
     /// The tab group this editor is sitting in, which changes whenever the user
     /// drags its tab somewhere else.
     home: Home,
@@ -250,6 +256,7 @@ impl RequestPanel {
             problem: None,
             scene: None,
             scene_at: 0,
+            frozen: None,
             home: Home::default(),
             _repaint: None,
             _subscriptions: subscriptions,
@@ -1310,6 +1317,19 @@ impl RequestPanel {
         scene.update(cx, |scene, cx| scene.set_layers(layers, cx));
     }
 
+    /// Pins the current message. Pinning again re-pins to the newest.
+    fn freeze(&mut self, cx: &mut Context<Self>) {
+        let (value, count) = {
+            let incoming = self.incoming.lock().expect("incoming mutex");
+            (incoming.value.clone(), incoming.count)
+        };
+        self.frozen = value.map(|value| (value, count));
+        // Freezing with nowhere to look at the result is a control that does
+        // nothing visible, so it takes the panel to the view it is for.
+        self.tab = View::Diff;
+        cx.notify();
+    }
+
     fn response(&self, cx: &mut Context<Self>) -> AnyElement {
         let active = self.tab;
         let running = self.running();
@@ -1339,9 +1359,25 @@ impl RequestPanel {
                 }
             }));
 
+        // "Freeze" only once there is something to freeze, and once there is a
+        // pin the chip says which message it holds — which is the one thing a
+        // person needs to know to trust what the diff is telling them.
+        let pinned = self.frozen.as_ref().map(|(_, at)| *at);
         let stats = h_flex()
             .gap_3()
             .flex_shrink_0()
+            .when(value.is_some(), |row| {
+                row.child(
+                    Button::new("freeze")
+                        .ghost()
+                        .xsmall()
+                        .label(match pinned {
+                            Some(at) => SharedString::from(format!("Frozen at #{at}")),
+                            None => SharedString::from("Freeze"),
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| this.freeze(cx))),
+                )
+            })
             .child(tokens::meta("Messages", count.to_string(), cx))
             .when_some(schema, |row, schema| {
                 row.child(tokens::meta("Schema", schema, cx))
@@ -1350,6 +1386,9 @@ impl RequestPanel {
         let body = match (&value, active) {
             (Some(value), View::Raw) => views::raw(value, cx),
             (Some(_), View::Plot) => views::plot(&history, cx),
+            (Some(value), View::Diff) => {
+                views::changes(self.frozen.as_ref().map(|(value, _)| value), value, cx)
+            }
             (Some(value), View::Visualize) => views::visualize(
                 &crate::viz::role_for(schema_name.as_deref().unwrap_or_default()),
                 value,
@@ -1544,6 +1583,6 @@ mod tests {
     #[test]
     fn response_tabs_have_distinct_labels() {
         let labels: Vec<_> = View::ALL.iter().map(|tab| tab.label()).collect();
-        assert_eq!(labels, ["Raw", "Visualize", "Plot"]);
+        assert_eq!(labels, ["Raw", "Visualize", "Plot", "Diff"]);
     }
 }

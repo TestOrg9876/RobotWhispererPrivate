@@ -26,7 +26,7 @@ use gpui_component::{
 };
 use rw_core::domain::Dashboard;
 
-use crate::actions::{SetPaneConnection, SetPaneTopic, SetPaneView};
+use crate::actions::{FreezePane, SetPaneConnection, SetPaneTopic, SetPaneView};
 use crate::docking::Restored;
 use crate::panels::pane::Config;
 use crate::panels::{PaneChanged, VizPanel};
@@ -267,6 +267,11 @@ impl Render for DashboardPanel {
             .on_action(cx.listener(|this, action: &SetPaneView, _, cx| {
                 if let Some(pane) = this.pane(action.pane).cloned() {
                     pane.update(cx, |pane, cx| pane.set_view(&action.view, cx));
+                }
+            }))
+            .on_action(cx.listener(|this, action: &FreezePane, _, cx| {
+                if let Some(pane) = this.pane(action.pane).cloned() {
+                    pane.update(cx, |pane, cx| pane.freeze(cx));
                 }
             }))
             .child(self.dock.clone())

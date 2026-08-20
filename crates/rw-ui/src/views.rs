@@ -8,6 +8,7 @@
 //! Free functions rather than a trait: each takes a value and gives back an
 //! element, and there is no state worth putting behind an interface.
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
     SharedString, Styled as _, div, px,
@@ -19,7 +20,7 @@ use rw_canonical::{CanonicalValue, VisualizationRole};
 use crate::scene_view::SceneView;
 use crate::series::{History, Series};
 use crate::viz::{self, Visual};
-use crate::{tokens, value};
+use crate::{diff, tokens, value};
 
 /// Which view of a message is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -31,16 +32,19 @@ pub enum View {
     Visualize,
     /// Every number in the message, over time.
     Plot,
+    /// What has changed since a message was pinned.
+    Diff,
 }
 
 impl View {
-    pub const ALL: [Self; 3] = [Self::Raw, Self::Visualize, Self::Plot];
+    pub const ALL: [Self; 4] = [Self::Raw, Self::Visualize, Self::Plot, Self::Diff];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Raw => "Raw",
             Self::Visualize => "Visualize",
             Self::Plot => "Plot",
+            Self::Diff => "Diff",
         }
     }
 
@@ -54,6 +58,7 @@ impl View {
             Self::Raw => "raw",
             Self::Visualize => "visualize",
             Self::Plot => "plot",
+            Self::Diff => "diff",
         }
     }
 
@@ -61,6 +66,7 @@ impl View {
         match raw {
             "visualize" => Self::Visualize,
             "plot" => Self::Plot,
+            "diff" => Self::Diff,
             _ => Self::Raw,
         }
     }
@@ -183,6 +189,92 @@ fn picture(frame: crate::image::Frame, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
+/// What has changed since a message was pinned.
+///
+/// Only the fields that moved, with a delta on every number. Unchanged fields
+/// are not rows — a diff that showed everything would be the raw view again,
+/// and finding the one field that moved is the whole reason to freeze.
+pub fn changes(pinned: Option<&CanonicalValue>, live: &CanonicalValue, cx: &App) -> AnyElement {
+    let Some(pinned) = pinned else {
+        return tokens::empty_state(
+            IconName::Inbox,
+            "Nothing pinned",
+            "Freeze the current message, and this shows what changes after it.",
+            cx,
+        )
+        .into_any_element();
+    };
+
+    let changes = diff::diff(pinned, live);
+    if changes.is_empty() {
+        return tokens::empty_state(
+            IconName::CircleCheck,
+            "Nothing has changed",
+            "Every field still reads the way it did when this was pinned.",
+            cx,
+        )
+        .into_any_element();
+    }
+
+    v_flex()
+        .id("diff")
+        .size_full()
+        .gap_0p5()
+        .children(changes.into_iter().map(|change| change_row(change, cx)))
+        .into_any_element()
+}
+
+fn change_row(change: diff::Change, cx: &App) -> AnyElement {
+    let tint = match change.kind() {
+        diff::Kind::Added => cx.theme().success,
+        diff::Kind::Removed => cx.theme().danger,
+        diff::Kind::Changed => cx.theme().foreground,
+    };
+    // The arrow is what makes a row read as a change rather than as two values
+    // that happen to be next to each other.
+    let reading = match (&change.before, &change.after) {
+        (Some(before), Some(after)) => format!("{before}  →  {after}"),
+        (None, Some(after)) => format!("+  {after}"),
+        (Some(before), None) => format!("−  {before}"),
+        (None, None) => String::new(),
+    };
+
+    h_flex()
+        .w_full()
+        .py_0p5()
+        .gap_4()
+        .items_baseline()
+        .child(
+            tokens::mono(cx)
+                .w(px(240.))
+                .flex_shrink_0()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .truncate()
+                .child(change.path.clone()),
+        )
+        .child(
+            tokens::mono(cx)
+                .flex_1()
+                .min_w_0()
+                .text_xs()
+                .text_color(tint)
+                .child(reading),
+        )
+        // The delta last and right-aligned, so a column of them can be read
+        // down without reading any of the values.
+        .when_some(change.delta_label(), |row, delta| {
+            row.child(
+                tokens::mono(cx)
+                    .flex_shrink_0()
+                    .text_xs()
+                    .text_color(cx.theme().primary)
+                    .child(delta),
+            )
+        })
+        .into_any_element()
+}
+
 /// One line per numeric field, newest sample at the right.
 ///
 /// The x axis is the sample index rather than a wall clock: messages arrive
@@ -295,7 +387,7 @@ mod tests {
     #[test]
     fn view_labels_are_stable_and_distinct() {
         let labels = View::ALL.map(View::label);
-        assert_eq!(labels, ["Raw", "Visualize", "Plot"]);
+        assert_eq!(labels, ["Raw", "Visualize", "Plot", "Diff"]);
     }
 
     #[test]

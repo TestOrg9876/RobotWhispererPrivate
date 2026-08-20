@@ -79,6 +79,14 @@ pub struct SetPaneView {
     pub view: SharedString,
 }
 
+/// Pin a dashboard pane's current message, for the diff view to compare
+/// against. Pinning again re-pins to the newest.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
+pub struct FreezePane {
+    pub pane: u64,
+}
+
 /// Put a topic in the 3D world.
 ///
 /// Like the dashboard's pane actions, these carry the pane they are about: the

@@ -304,7 +304,7 @@ impl RequestPanel {
             incoming: Arc::new(Mutex::new(Incoming::default())),
             activity: Activity::default(),
             runs,
-            tab: View::Raw,
+            tab: View::default(),
             problem: None,
             scene: None,
             scene_at: 0,
@@ -1496,34 +1496,7 @@ impl RequestPanel {
             Inputs::List { rows, .. } => self.list(index, rows, cx),
         };
 
-        h_flex()
-            .w_full()
-            .gap_3()
-            .items_start()
-            .child(
-                v_flex()
-                    .w(px(220.))
-                    .flex_shrink_0()
-                    .gap_0p5()
-                    // Aligned with the first editor rather than the middle of a
-                    // list that may be six rows tall.
-                    .h(px(tokens::CONTROL_HEIGHT))
-                    .justify_center()
-                    .child(
-                        tokens::mono(cx)
-                            .text_xs()
-                            .text_color(cx.theme().foreground)
-                            .truncate()
-                            .child(field.path.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .truncate()
-                            .child(field.type_name.clone()),
-                    ),
-            )
+        tokens::field_row(field.path.clone(), field.type_name.clone(), cx)
             .child(editors)
             .into_any_element()
     }
@@ -1735,8 +1708,8 @@ impl RequestPanel {
     ///
     /// Here rather than in `response` for the same reason the scene is: the
     /// rows are rebuilt once per message, and `response` runs once per frame.
-    fn sync_tree(&mut self, cx: &mut Context<Self>) {
-        if !matches!(self.tab, View::Fields | View::Visualize) {
+    fn sync_tree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.tab, View::Pretty | View::Visualize) {
             return;
         }
         let (value, count) = {
@@ -1752,7 +1725,7 @@ impl RequestPanel {
                 tree
             }
         };
-        tree.update(cx, |tree, cx| tree.show(&value, count, cx));
+        tree.update(cx, |tree, cx| tree.show(&value, count, window, cx));
     }
 
     /// The tree, ready to draw, with folding wired back to it.
@@ -1763,9 +1736,9 @@ impl RequestPanel {
         let folding = tree.clone();
         crate::tree::render(
             &tree,
-            move |path, _window, cx| {
+            move |path, window, cx| {
                 let path = path.to_string();
-                folding.update(cx, |tree, cx| tree.toggle(&path, cx));
+                folding.update(cx, |tree, cx| tree.toggle(&path, window, cx));
             },
             cx,
         )
@@ -1854,7 +1827,7 @@ impl RequestPanel {
             (Some(value), View::Diff) => {
                 views::changes(self.frozen.as_ref().map(|(value, _)| value), value, cx)
             }
-            (Some(_), View::Fields) => self.tree(cx),
+            (Some(_), View::Pretty) => self.tree(cx),
             (Some(value), View::Visualize) => views::visualize(
                 &crate::viz::role_for(schema_name.as_deref().unwrap_or_default()),
                 value,
@@ -2047,7 +2020,7 @@ impl Render for RequestPanel {
         self.sync_payload(window, cx);
         self.sync_name(cx);
         self.sync_scene(cx);
-        self.sync_tree(cx);
+        self.sync_tree(window, cx);
         let bar = self.request_bar(cx);
         // Shown for topics too: a topic request that can only be watched is half
         // a request, and the message you publish is the same form. Absent
@@ -2143,6 +2116,6 @@ mod tests {
     #[test]
     fn response_tabs_have_distinct_labels() {
         let labels: Vec<_> = View::ALL.iter().map(|tab| tab.label()).collect();
-        assert_eq!(labels, ["Raw", "Fields", "Visualize", "Plot", "Diff"]);
+        assert_eq!(labels, ["Pretty", "Raw", "Visualize", "Plot", "Diff"]);
     }
 }

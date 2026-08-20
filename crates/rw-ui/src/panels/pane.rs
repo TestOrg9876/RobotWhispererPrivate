@@ -250,8 +250,8 @@ impl VizPanel {
     ///
     /// Here rather than in `render` for the same reason the scene is: the rows
     /// are rebuilt once per message, and a pane paints ten times a second.
-    fn sync_tree(&mut self, cx: &mut Context<Self>) {
-        if !matches!(self.view, View::Fields | View::Visualize) {
+    fn sync_tree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.view, View::Pretty | View::Visualize) {
             return;
         }
         let (value, count) = {
@@ -267,7 +267,7 @@ impl VizPanel {
                 tree
             }
         };
-        tree.update(cx, |tree, cx| tree.show(&value, count, cx));
+        tree.update(cx, |tree, cx| tree.show(&value, count, window, cx));
     }
 
     /// The tree, ready to draw, with folding wired back to it.
@@ -278,9 +278,9 @@ impl VizPanel {
         let folding = tree.clone();
         crate::tree::render(
             &tree,
-            move |path, _window, cx| {
+            move |path, window, cx| {
                 let path = path.to_string();
-                folding.update(cx, |tree, cx| tree.toggle(&path, cx));
+                folding.update(cx, |tree, cx| tree.toggle(&path, window, cx));
             },
             cx,
         )
@@ -554,9 +554,9 @@ impl Panel for VizPanel {
 }
 
 impl Render for VizPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_scene(cx);
-        self.sync_tree(cx);
+        self.sync_tree(window, cx);
         let (value, schema, history) = {
             let incoming = self.incoming.lock().expect("incoming mutex");
             (
@@ -572,7 +572,7 @@ impl Render for VizPanel {
             (Some(value), View::Diff) => {
                 views::changes(self.frozen.as_ref().map(|(value, _)| value), value, cx)
             }
-            (Some(_), View::Fields) => self.tree(cx),
+            (Some(_), View::Pretty) => self.tree(cx),
             (Some(value), View::Visualize) => views::visualize(
                 &crate::viz::role_for(schema.as_deref().unwrap_or_default()),
                 value,

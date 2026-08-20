@@ -83,6 +83,47 @@ pub fn kind_tag(kind: RequestKind, cx: &gpui::App) -> Tag {
         .small()
 }
 
+/// One row of a form: what the field is called, what type it is, and — added by
+/// the caller — the control that shows or edits it.
+///
+/// The request editor and the response's pretty view are the same rows: the
+/// only difference between filling a message in and reading one back is
+/// whether you can type in the box, and a reader should not have to work that
+/// out from a different layout.
+pub fn field_row(
+    path: impl Into<SharedString>,
+    type_name: impl Into<SharedString>,
+    cx: &gpui::App,
+) -> Div {
+    h_flex().w_full().gap_3().items_start().child(
+        v_flex()
+            .w(px(FIELD_LABEL_WIDTH))
+            .flex_shrink_0()
+            .gap_0p5()
+            // Aligned with the first editor rather than the middle of a
+            // list that may be six rows tall.
+            .h(px(CONTROL_HEIGHT))
+            .justify_center()
+            .child(
+                mono(cx)
+                    .text_xs()
+                    .text_color(cx.theme().foreground)
+                    .truncate()
+                    .child(path.into()),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .truncate()
+                    .child(type_name.into()),
+            ),
+    )
+}
+
+/// How wide the name-and-type column of a form row is.
+pub const FIELD_LABEL_WIDTH: f32 = 220.;
+
 /// Short label for a request kind, as shown in the tag and the kind selector.
 pub fn kind_label(kind: RequestKind) -> &'static str {
     match kind {

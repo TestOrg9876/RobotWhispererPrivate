@@ -31,15 +31,15 @@ key Return
 wait 600
 click 1266 100
 wait 2500
-shot 01-raw
+shot 01-pretty
 
-# Fields: the same message resolved into a tree, foldable at every branch.
-click 390 261
+# The same message as text, which is the other half of reading one.
+click 397 261
 wait 900
-shot 02-fields
+shot 02-raw
 
 # The plot, after a few seconds of samples.
-click 526 261
+click 527 261
 wait 3000
 shot 03-plot
 
@@ -54,6 +54,6 @@ key Return
 wait 600
 click 1266 100
 wait 2000
-click 460 155
+click 462 155
 wait 1400
 shot 04-image

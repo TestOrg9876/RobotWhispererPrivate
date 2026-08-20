@@ -25,11 +25,12 @@ use crate::{diff, tokens, value};
 /// Which view of a message is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum View {
-    /// The message as text.
+    /// The message laid out the way the request form lays one out, foldable
+    /// where it nests. What anyone wants to see first, so it is the default.
     #[default]
+    Pretty,
+    /// The message as text.
     Raw,
-    /// The same message resolved into a tree, foldable at every branch.
-    Fields,
     /// A picture, a point cloud or the tree, whichever the message is.
     Visualize,
     /// Every number in the message, over time.
@@ -40,8 +41,8 @@ pub enum View {
 
 impl View {
     pub const ALL: [Self; 5] = [
+        Self::Pretty,
         Self::Raw,
-        Self::Fields,
         Self::Visualize,
         Self::Plot,
         Self::Diff,
@@ -49,8 +50,8 @@ impl View {
 
     pub fn label(self) -> &'static str {
         match self {
+            Self::Pretty => "Pretty",
             Self::Raw => "Raw",
-            Self::Fields => "Fields",
             Self::Visualize => "Visualize",
             Self::Plot => "Plot",
             Self::Diff => "Diff",
@@ -64,8 +65,8 @@ impl View {
     /// The stored form, so a dashboard pane keeps its view across a restart.
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Pretty => "pretty",
             Self::Raw => "raw",
-            Self::Fields => "fields",
             Self::Visualize => "visualize",
             Self::Plot => "plot",
             Self::Diff => "diff",
@@ -74,11 +75,11 @@ impl View {
 
     pub fn parse(raw: &str) -> Self {
         match raw {
-            "fields" => Self::Fields,
+            "raw" => Self::Raw,
             "visualize" => Self::Visualize,
             "plot" => Self::Plot,
             "diff" => Self::Diff,
-            _ => Self::Raw,
+            _ => Self::Pretty,
         }
     }
 }
@@ -358,7 +359,7 @@ mod tests {
     #[test]
     fn view_labels_are_stable_and_distinct() {
         let labels = View::ALL.map(View::label);
-        assert_eq!(labels, ["Raw", "Fields", "Visualize", "Plot", "Diff"]);
+        assert_eq!(labels, ["Pretty", "Raw", "Visualize", "Plot", "Diff"]);
     }
 
     #[test]
@@ -369,9 +370,9 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_stored_view_falls_back_to_raw() {
-        assert_eq!(View::parse("hologram"), View::Raw);
-        assert_eq!(View::parse(""), View::Raw);
+    fn an_unknown_stored_view_falls_back_to_the_default() {
+        assert_eq!(View::parse("hologram"), View::Pretty);
+        assert_eq!(View::parse(""), View::Pretty);
     }
 
     #[test]

@@ -25,7 +25,11 @@ use gpui::{
     IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
     Styled as _, UniformListScrollHandle, Window, div, px, uniform_list,
 };
-use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
+use gpui_component::{
+    ActiveTheme as _, Icon, IconName, Sizable as _, h_flex,
+    input::{Input, InputState},
+    v_flex,
+};
 use rw_canonical::CanonicalValue;
 
 use crate::tokens;
@@ -59,6 +63,10 @@ pub struct Row {
     pub path: String,
     /// The field's own name, or `[3]` for an array element.
     pub name: String,
+    /// The type, as the message's own shape spells it: `float64`, `string[2]`,
+    /// `struct`. The request form takes this from the schema; here it is read
+    /// off the value, which is the only thing a response comes with.
+    pub type_name: String,
     /// A leaf's value, rendered.
     pub value: Option<String>,
     /// What a branch holds, as a count.
@@ -70,16 +78,38 @@ pub struct Row {
 }
 
 impl Row {
-    fn leaf(depth: usize, path: String, name: String, value: String) -> Self {
+    fn leaf(depth: usize, path: String, name: String, type_name: String, value: String) -> Self {
         Self {
             depth,
             path,
             name,
+            type_name,
             value: Some(value),
             summary: None,
             branch: false,
             folded: false,
         }
+    }
+}
+
+/// The type of a value, as the message's own shape spells it.
+fn type_of(value: &CanonicalValue) -> String {
+    match value {
+        CanonicalValue::Null => "unset".into(),
+        CanonicalValue::Bool(_) => "bool".into(),
+        CanonicalValue::Int(_) => "int64".into(),
+        CanonicalValue::Uint(_) => "uint64".into(),
+        CanonicalValue::F32(_) => "float32".into(),
+        CanonicalValue::F64(_) => "float64".into(),
+        CanonicalValue::String(_) => "string".into(),
+        CanonicalValue::Bytes(bytes) => format!("uint8[{}]", bytes.len()),
+        CanonicalValue::Time { .. } => "time".into(),
+        CanonicalValue::Duration { .. } => "duration".into(),
+        CanonicalValue::Struct(_) => "struct".into(),
+        CanonicalValue::Array(items) => match items.first() {
+            Some(first) => format!("{}[{}]", type_of(first), items.len()),
+            None => "[]".into(),
+        },
     }
 }
 
@@ -128,6 +158,7 @@ fn walk(
                     depth,
                     path: path.to_string(),
                     name: name.to_string(),
+                    type_name: type_of(value),
                     value: None,
                     summary: Some(count(fields.len(), "field")),
                     branch: true,
@@ -149,6 +180,7 @@ fn walk(
                     depth,
                     path: path.to_string(),
                     name: name.to_string(),
+                    type_name: type_of(value),
                     value: None,
                     summary: Some(count(items.len(), "item")),
                     branch: true,
@@ -168,6 +200,7 @@ fn walk(
                     depth,
                     join(path, "…"),
                     "…".into(),
+                    String::new(),
                     format!("{left} more, in the raw view"),
                 ));
             }
@@ -182,6 +215,7 @@ fn walk(
                 depth,
                 path.to_string(),
                 name.to_string(),
+                type_of(other),
                 value::scalar(other),
             ));
         }
@@ -210,9 +244,17 @@ fn count(n: usize, noun: &str) -> String {
 pub struct TreeView {
     folds: Folds,
     rows: Vec<Row>,
+    /// One read-only editor per leaf row, in step with `rows`.
+    ///
+    /// Kept rather than rebuilt: the same message arriving again has the same
+    /// shape, so the boxes are reused and only their text is set. A message at
+    /// 100 Hz costs one `set_value` per visible leaf, not an entity per leaf.
+    boxes: Vec<Option<Entity<InputState>>>,
+    /// The shape the boxes were built for — every row's path, in order. When
+    /// the next message has the same shape they are kept.
+    shape: Vec<String>,
     /// The message the rows came from, kept so folding can rebuild them
-    /// without the pane handing it back — one copy per message, rather than
-    /// one per frame or one per click.
+    /// without the pane handing it back.
     value: Option<CanonicalValue>,
     /// Which message that was, so the rows are rebuilt when it changes and not
     /// on every paint.
@@ -225,57 +267,92 @@ impl TreeView {
         cx.new(|_| Self {
             folds: Folds::new(),
             rows: Vec::new(),
+            boxes: Vec::new(),
+            shape: Vec::new(),
             value: None,
             at: 0,
             scroll: UniformListScrollHandle::new(),
         })
     }
 
-    /// Points the tree at a message. `at` counts messages, so the rows are
+    /// Points the view at a message. `at` counts messages, so the rows are
     /// rebuilt once per message rather than once per frame.
-    pub fn show(&mut self, value: &CanonicalValue, at: u64, cx: &mut Context<Self>) {
+    pub fn show(
+        &mut self,
+        value: &CanonicalValue,
+        at: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.at == at && self.value.is_some() {
             return;
         }
         self.at = at;
         self.rows = rows(value, &self.folds);
         self.value = Some(value.clone());
+        self.refill(window, cx);
         cx.notify();
     }
 
     /// Folds or unfolds a branch.
-    pub fn toggle(&mut self, path: &str, cx: &mut Context<Self>) {
+    pub fn toggle(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
         let folded = self
             .rows
             .iter()
             .find(|row| row.path == path)
             .is_some_and(|row| row.folded);
         self.folds.insert(path.to_string(), !folded);
-        if let Some(value) = &self.value {
-            self.rows = rows(value, &self.folds);
+        if let Some(value) = self.value.clone() {
+            self.rows = rows(&value, &self.folds);
         }
+        self.refill(window, cx);
         cx.notify();
+    }
+
+    /// Brings the boxes in step with the rows: same shape, same boxes with new
+    /// text; different shape, new boxes.
+    fn refill(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let shape: Vec<String> = self.rows.iter().map(|row| row.path.clone()).collect();
+        if shape == self.shape {
+            for (row, slot) in self.rows.iter().zip(&self.boxes) {
+                if let (Some(text), Some(state)) = (row.value.as_ref(), slot) {
+                    let text = text.clone();
+                    state.update(cx, |state, cx| state.set_value(text, window, cx));
+                }
+            }
+            return;
+        }
+
+        self.boxes = self
+            .rows
+            .iter()
+            .map(|row| {
+                let text = row.value.clone()?;
+                Some(cx.new(|cx| InputState::new(window, cx).default_value(text)))
+            })
+            .collect();
+        self.shape = shape;
     }
 }
 
 /// How tall one row is. Fixed, because the list only virtualises when every row
-/// is the same height — and a tree of one-line rows is exactly that.
-const ROW_HEIGHT: f32 = 22.;
-/// How far one level indents.
-const INDENT: f32 = 14.;
+/// is the same height — and one form row is exactly that.
+const ROW_HEIGHT: f32 = 44.;
+/// How far one level indents. Small: the path already says where a field sits,
+/// so this is a hint at the shape rather than the thing that carries it.
+const INDENT: f32 = 10.;
 
 /// Draws the rows, with `on_toggle` called with the path of a branch clicked.
 ///
-/// A free function rather than `Render`, because the pane holding the tree owns
-/// the message and has to hand it back to rebuild — and a `Render` impl has no
-/// way to ask for it.
+/// A free function rather than `Render`, because the pane holding it owns the
+/// message and the fold has to go back through the pane to reach it.
 pub fn render(
     tree: &Entity<TreeView>,
     on_toggle: impl Fn(&str, &mut Window, &mut App) + 'static,
     cx: &mut App,
 ) -> AnyElement {
-    let rows = tree.read(cx).rows.clone();
-    if rows.is_empty() {
+    let view = tree.read(cx);
+    if view.rows.is_empty() {
         return tokens::empty_state(
             IconName::Inbox,
             "Nothing to show",
@@ -285,14 +362,23 @@ pub fn render(
         .into_any_element();
     }
 
-    let scroll = tree.read(cx).scroll.clone();
+    let rows = view.rows.clone();
+    let boxes = view.boxes.clone();
+    let scroll = view.scroll.clone();
     let on_toggle = std::rc::Rc::new(on_toggle);
 
-    uniform_list("tree", rows.len(), move |range, _window, cx| {
+    uniform_list("pretty", rows.len(), move |range, _window, cx| {
         let on_toggle = on_toggle.clone();
-        rows[range]
-            .iter()
-            .map(|row| line(row, on_toggle.clone(), cx))
+        range
+            .clone()
+            .map(|index| {
+                line(
+                    &rows[index],
+                    boxes.get(index).and_then(|slot| slot.as_ref()),
+                    on_toggle.clone(),
+                    cx,
+                )
+            })
             .collect::<Vec<_>>()
     })
     .track_scroll(&scroll)
@@ -302,6 +388,7 @@ pub fn render(
 
 fn line(
     row: &Row,
+    editor: Option<&Entity<InputState>>,
     on_toggle: std::rc::Rc<impl Fn(&str, &mut Window, &mut App) + 'static>,
     cx: &App,
 ) -> AnyElement {
@@ -316,7 +403,6 @@ fn line(
         .id(SharedString::from(row.path.clone()))
         .h(px(ROW_HEIGHT))
         .w_full()
-        .gap_2()
         .items_center()
         .pl(px(row.depth as f32 * INDENT))
         .when(row.branch, |line| {
@@ -324,38 +410,36 @@ fn line(
                 .hover(|line| line.bg(cx.theme().muted))
                 .on_click(move |_: &ClickEvent, window, cx| on_toggle(&path, window, cx))
         })
-        .child(div().w(px(14.)).flex_shrink_0().when(row.branch, |slot| {
-            slot.child(Icon::new(arrow).xsmall().text_color(
-                // Quiet: the arrow is an affordance, not a value.
-                cx.theme().muted_foreground,
-            ))
+        // The fold arrow sits in the gutter the label column would otherwise
+        // start at, so every row's name lines up whatever its depth.
+        .child(div().w(px(16.)).flex_shrink_0().when(row.branch, |slot| {
+            slot.child(
+                Icon::new(arrow)
+                    .xsmall()
+                    .text_color(cx.theme().muted_foreground),
+            )
         }))
         .child(
-            tokens::mono(cx)
-                .flex_shrink_0()
-                .text_xs()
-                .text_color(cx.theme().foreground)
-                .child(row.name.clone()),
+            tokens::field_row(row.path.clone(), row.type_name.clone(), cx)
+                .when_some(editor, |line, editor| {
+                    line.child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Input::new(editor).small().disabled(true)),
+                    )
+                })
+                .when_some(row.summary.clone(), |line, summary| {
+                    line.child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(summary),
+                    )
+                }),
         )
-        .when_some(row.summary.clone(), |line, summary| {
-            line.child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(summary),
-            )
-        })
-        .when_some(row.value.clone(), |line, value| {
-            line.child(
-                tokens::mono(cx)
-                    .flex_1()
-                    .min_w_0()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .truncate()
-                    .child(value),
-            )
-        })
         .into_any_element()
 }
 

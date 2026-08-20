@@ -21,3 +21,6 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 wasm-bindgen-futures = "0.4"
 gloo-timers = { version = "0.3", features = ["futures"] }
+
+[dev-dependencies]
+rw-tf.workspace = true

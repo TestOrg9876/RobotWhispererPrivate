@@ -22,6 +22,7 @@ pub mod runs;
 pub mod scene_view;
 pub mod series;
 pub mod session;
+pub mod tf;
 pub mod theme;
 pub mod tick;
 pub mod tokens;
@@ -53,6 +54,24 @@ pub fn init(storage: SharedStorage, pipeline: Arc<CanonicalPipeline>, cx: &mut A
     let runs = cx.new(|_| runs::Runs::default());
     let gpu = gpu::Gpu::spawn(cx);
     let recorder = cx.new(|_| recorder::Recorder::default());
+
+    // The transform store watches the session store rather than being poked by
+    // whoever notices a connection: TF has to be subscribed the moment a robot
+    // advertises it, and every pane that later asks for a tree expects it to be
+    // already filling up.
+    let tf = cx.new(|_| tf::TfStore::new());
+    {
+        let sessions = sessions.clone();
+        tf.update(cx, |store, cx| {
+            store.follow(&sessions, cx);
+            cx.observe(&sessions, move |store, sessions, cx| {
+                store.follow(&sessions, cx);
+                store.forget_closed(&sessions, cx);
+            })
+            .detach();
+        });
+    }
+
     cx.set_global(docking::Restored::default());
     cx.set_global(RobotWhisperer {
         workspace,
@@ -60,6 +79,7 @@ pub fn init(storage: SharedStorage, pipeline: Arc<CanonicalPipeline>, cx: &mut A
         runs,
         gpu,
         recorder,
+        tf,
     });
 
     Ok(())

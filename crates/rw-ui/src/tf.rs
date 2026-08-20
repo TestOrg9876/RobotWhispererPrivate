@@ -1,0 +1,546 @@
+//! TF, off the wire and into a buffer per connection.
+//!
+//! `tf2_msgs/TFMessage` is an array of `geometry_msgs/TransformStamped`, and
+//! every ROS system publishes it on two topics: `/tf` for things that move and
+//! `/tf_static` for things bolted down. Decoding follows `cloud.rs` — read the
+//! canonical value, take nothing on trust, and hand back plain data that the
+//! renderer and the panes can use without knowing a socket exists.
+//!
+//! A connection subscribes to both topics by itself as soon as discovery
+//! mentions them. That is a deliberate behaviour change: TF is not a topic
+//! anyone wants to remember to turn on, it is the thing that makes every other
+//! topic mean something, and RViz has done exactly this since 2010.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+
+use gpui::{App, Context, Entity, Task};
+use rw_canonical::CanonicalValue;
+use rw_tf::{Buffer, Quat, Transform};
+
+use crate::session::{RobotWhisperer, Sessions};
+
+/// The two topics every ROS graph puts its transform tree on.
+pub const TOPIC: &str = "/tf";
+pub const STATIC_TOPIC: &str = "/tf_static";
+
+/// One transform, as it arrived.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Stamped {
+    /// `header.frame_id`: the frame this transform is expressed in.
+    pub parent: String,
+    /// `child_frame_id`: the frame it places.
+    pub child: String,
+    /// `header.stamp`, in nanoseconds.
+    pub at_ns: u64,
+    pub transform: Transform,
+}
+
+/// Reads a `tf2_msgs/TFMessage`, if this is one.
+///
+/// `None` rather than an empty list when the message is not a TF message at
+/// all, so a caller can tell "not this" from "nothing this time" — an empty
+/// `/tf` is legal and means the publisher had nothing to say.
+pub fn decode(value: &CanonicalValue) -> Option<Vec<Stamped>> {
+    let CanonicalValue::Struct(message) = value else {
+        return None;
+    };
+    let CanonicalValue::Array(entries) = message.get("transforms")? else {
+        return None;
+    };
+
+    let mut stamped = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let CanonicalValue::Struct(fields) = entry else {
+            continue;
+        };
+        let header = fields.get("header");
+        let (Some(parent), Some(child)) = (
+            header.and_then(|header| text(header.get_path("frame_id")?)),
+            fields.get("child_frame_id").and_then(text),
+        ) else {
+            continue;
+        };
+        // A transform between two frames of the same name places a frame inside
+        // itself. It is always a publisher bug, and taking it would put a cycle
+        // in the tree for every lookup afterwards to trip over.
+        if parent == child || parent.is_empty() || child.is_empty() {
+            continue;
+        }
+        let Some(transform) = fields.get("transform").and_then(rigid) else {
+            continue;
+        };
+        stamped.push(Stamped {
+            parent,
+            child,
+            at_ns: header
+                .and_then(|header| stamp_ns(header.get_path("stamp")?))
+                .unwrap_or(0),
+            transform,
+        });
+    }
+    Some(stamped)
+}
+
+/// A `geometry_msgs/Transform`: a translation and a rotation.
+fn rigid(value: &CanonicalValue) -> Option<Transform> {
+    let translation = value.get_path("translation")?;
+    let rotation = value.get_path("rotation")?;
+    Some(Transform::new(
+        [
+            real(translation.get_path("x")?)?,
+            real(translation.get_path("y")?)?,
+            real(translation.get_path("z")?)?,
+        ],
+        // Through `from_wire`, which normalises: an all-zero quaternion is what
+        // a default-constructed message carries and it is on more real systems
+        // than anyone would like.
+        Quat::from_wire(
+            real(rotation.get_path("x")?)?,
+            real(rotation.get_path("y")?)?,
+            real(rotation.get_path("z")?)?,
+            real(rotation.get_path("w")?)?,
+        ),
+    ))
+}
+
+/// A `builtin_interfaces/Time`, in nanoseconds.
+///
+/// The canonical model has a `Time` variant, but a header decoded from JSON by
+/// a bridge arrives as an ordinary struct — and ROS 1 spells the fields
+/// `secs`/`nsecs` while ROS 2 spells them `sec`/`nanosec`. All three shapes are
+/// the same instant, so all three are read.
+fn stamp_ns(value: &CanonicalValue) -> Option<u64> {
+    let (sec, nanosec) = match value {
+        CanonicalValue::Time { sec, nanosec } => (i64::from(*sec), u64::from(*nanosec)),
+        CanonicalValue::Struct(_) => {
+            let sec = value
+                .get_path("sec")
+                .or_else(|| value.get_path("secs"))
+                .and_then(whole)?;
+            let nanosec = value
+                .get_path("nanosec")
+                .or_else(|| value.get_path("nsecs"))
+                .and_then(whole)
+                .unwrap_or(0);
+            (sec, u64::try_from(nanosec).ok()?)
+        }
+        _ => return None,
+    };
+    // A negative stamp is before the epoch, which no robot's clock means; it is
+    // taken as "unstamped" rather than wrapped round into the far future.
+    u64::try_from(sec)
+        .ok()?
+        .checked_mul(1_000_000_000)?
+        .checked_add(nanosec)
+}
+
+fn text(value: &CanonicalValue) -> Option<String> {
+    match value {
+        CanonicalValue::String(inner) => Some(inner.clone()),
+        _ => None,
+    }
+}
+
+fn real(value: &CanonicalValue) -> Option<f32> {
+    let number = match value {
+        CanonicalValue::F64(inner) => *inner as f32,
+        CanonicalValue::F32(inner) => *inner,
+        CanonicalValue::Int(inner) => *inner as f32,
+        CanonicalValue::Uint(inner) => *inner as f32,
+        _ => return None,
+    };
+    // A NaN translation would poison every frame under it, and there is nothing
+    // sensible to substitute — so the whole transform is refused.
+    number.is_finite().then_some(number)
+}
+
+fn whole(value: &CanonicalValue) -> Option<i64> {
+    match value {
+        CanonicalValue::Int(inner) => Some(*inner),
+        CanonicalValue::Uint(inner) => i64::try_from(*inner).ok(),
+        CanonicalValue::F64(inner) => Some(*inner as i64),
+        CanonicalValue::F32(inner) => Some(*inner as i64),
+        _ => None,
+    }
+}
+
+/// One transform tree per connection.
+///
+/// Held in the [`RobotWhisperer`] global beside `sessions` and `gpu`, because a
+/// tree belongs to a robot rather than to whichever pane happened to ask for it
+/// first: two panes looking at the same system must agree about where its
+/// frames are, and a third opened later must not have to wait for its own copy
+/// to fill up.
+#[derive(Default)]
+pub struct TfStore {
+    /// The buffers, behind a lock because frames arrive off the UI thread.
+    trees: HashMap<i64, Arc<Mutex<Buffer>>>,
+    /// Which connections are already subscribed, so discovery updating twenty
+    /// times a second does not open twenty subscriptions.
+    subscribed: HashSet<(i64, &'static str)>,
+    _work: Vec<Task<()>>,
+}
+
+impl TfStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The tree for a connection, created empty on first ask.
+    pub fn tree(&mut self, connection: i64) -> Arc<Mutex<Buffer>> {
+        Arc::clone(self.trees.entry(connection).or_default())
+    }
+
+    /// The tree for a connection, if it has one yet.
+    pub fn peek(&self, connection: i64) -> Option<Arc<Mutex<Buffer>>> {
+        self.trees.get(&connection).map(Arc::clone)
+    }
+
+    /// Drops the trees of connections that have gone away.
+    ///
+    /// A disconnected robot's frames are not where they were, and keeping them
+    /// would let a pane draw a scene out of a tree that stopped ten minutes
+    /// ago. Reconnecting starts a fresh one — and re-subscribes, because the
+    /// record of what was already subscribed goes with it.
+    pub fn forget_closed(&mut self, sessions: &Entity<Sessions>, cx: &mut Context<Self>) {
+        let open: HashSet<i64> = sessions
+            .read(cx)
+            .connections()
+            .filter(|(_, live)| live.session.is_some())
+            .map(|(id, _)| id)
+            .collect();
+        let before = self.trees.len();
+        self.trees.retain(|id, _| open.contains(id));
+        self.subscribed.retain(|(id, _)| open.contains(id));
+        if self.trees.len() != before {
+            cx.notify();
+        }
+    }
+
+    /// Subscribes to `/tf` and `/tf_static` on any connection whose discovery
+    /// advertises them, and keeps doing so as connections come and go.
+    ///
+    /// Idempotent: called on every discovery update, and opens a subscription
+    /// at most once per connection and topic.
+    pub fn follow(&mut self, sessions: &Entity<Sessions>, cx: &mut Context<Self>) {
+        let live = sessions.read(cx);
+        let pipeline = live.pipeline();
+        let wanted: Vec<(i64, &'static str, rw_transport::ConnectionId)> = live
+            .connections()
+            .filter_map(|(id, live)| {
+                let session = live.session?;
+                let advertised: HashSet<&str> = live
+                    .discovery
+                    .topics
+                    .iter()
+                    .map(|topic| topic.name.as_str())
+                    .collect();
+                Some(
+                    [TOPIC, STATIC_TOPIC]
+                        .into_iter()
+                        .filter(move |topic| advertised.contains(topic))
+                        .map(move |topic| (id, topic, session)),
+                )
+            })
+            .flatten()
+            .filter(|(id, topic, _)| !self.subscribed.contains(&(*id, *topic)))
+            .collect();
+
+        for (connection, topic, session) in wanted {
+            self.subscribed.insert((connection, topic));
+            let tree = self.tree(connection);
+            let pipeline = Arc::clone(&pipeline);
+            let is_static = topic == STATIC_TOPIC;
+            self._work.push(cx.spawn(async move |store, cx| {
+                let opened = pipeline
+                    .subscribe_topic(session, topic, move |_handle, frame, _lossy| {
+                        let Some(stamped) = decode(&frame.value) else {
+                            return;
+                        };
+                        let Ok(mut tree) = tree.lock() else { return };
+                        for entry in stamped {
+                            if is_static {
+                                tree.insert_static(&entry.parent, &entry.child, entry.transform);
+                            } else {
+                                tree.insert(
+                                    &entry.parent,
+                                    &entry.child,
+                                    entry.at_ns,
+                                    entry.transform,
+                                );
+                            }
+                        }
+                    })
+                    .await;
+                if let Err(error) = opened {
+                    // Not fatal and not worth a dialog: a system without TF is
+                    // a system whose layers will say why they cannot be placed.
+                    tracing::warn!("could not subscribe to {topic}: {error}");
+                    store
+                        .update(cx, |store, _| {
+                            store.subscribed.remove(&(connection, topic));
+                        })
+                        .ok();
+                }
+            }));
+        }
+    }
+}
+
+impl TfStore {
+    /// The store from the global, for a view that only needs to read a tree.
+    pub fn global(cx: &App) -> &Entity<Self> {
+        &RobotWhisperer::global(cx).tf
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn map(pairs: Vec<(&str, CanonicalValue)>) -> CanonicalValue {
+        CanonicalValue::Struct(
+            pairs
+                .into_iter()
+                .map(|(name, value)| (name.to_string(), value))
+                .collect::<BTreeMap<_, _>>(),
+        )
+    }
+
+    fn vector(x: f64, y: f64, z: f64) -> CanonicalValue {
+        map(vec![
+            ("x", CanonicalValue::F64(x)),
+            ("y", CanonicalValue::F64(y)),
+            ("z", CanonicalValue::F64(z)),
+        ])
+    }
+
+    fn quaternion(x: f64, y: f64, z: f64, w: f64) -> CanonicalValue {
+        map(vec![
+            ("x", CanonicalValue::F64(x)),
+            ("y", CanonicalValue::F64(y)),
+            ("z", CanonicalValue::F64(z)),
+            ("w", CanonicalValue::F64(w)),
+        ])
+    }
+
+    fn entry(parent: &str, child: &str, stamp: CanonicalValue) -> CanonicalValue {
+        map(vec![
+            (
+                "header",
+                map(vec![
+                    ("frame_id", CanonicalValue::String(parent.into())),
+                    ("stamp", stamp),
+                ]),
+            ),
+            ("child_frame_id", CanonicalValue::String(child.into())),
+            (
+                "transform",
+                map(vec![
+                    ("translation", vector(1., 2., 3.)),
+                    ("rotation", quaternion(0., 0., 0., 1.)),
+                ]),
+            ),
+        ])
+    }
+
+    fn message(entries: Vec<CanonicalValue>) -> CanonicalValue {
+        map(vec![("transforms", CanonicalValue::Array(entries))])
+    }
+
+    #[test]
+    fn a_transform_message_decodes() {
+        let stamp = CanonicalValue::Time {
+            sec: 7,
+            nanosec: 250_000_000,
+        };
+        let decoded = decode(&message(vec![entry("map", "base", stamp)])).expect("decodes");
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].parent, "map");
+        assert_eq!(decoded[0].child, "base");
+        assert_eq!(decoded[0].at_ns, 7_250_000_000);
+        assert_eq!(decoded[0].transform.translation, [1., 2., 3.]);
+        assert_eq!(decoded[0].transform.rotation, Quat::IDENTITY);
+    }
+
+    #[test]
+    fn a_stamp_is_read_from_all_three_shapes_it_arrives_in() {
+        // The canonical Time variant, a ROS 2 struct off a JSON bridge, and a
+        // ROS 1 one — the same instant spelled three ways.
+        let shapes = [
+            CanonicalValue::Time {
+                sec: 7,
+                nanosec: 250_000_000,
+            },
+            map(vec![
+                ("sec", CanonicalValue::Int(7)),
+                ("nanosec", CanonicalValue::Uint(250_000_000)),
+            ]),
+            map(vec![
+                ("secs", CanonicalValue::Int(7)),
+                ("nsecs", CanonicalValue::Int(250_000_000)),
+            ]),
+        ];
+        for shape in shapes {
+            let decoded = decode(&message(vec![entry("map", "base", shape.clone())]))
+                .unwrap_or_else(|| panic!("{shape:?} did not decode"));
+            assert_eq!(decoded[0].at_ns, 7_250_000_000, "{shape:?}");
+        }
+    }
+
+    #[test]
+    fn a_message_that_is_not_tf_is_refused_rather_than_read_as_empty() {
+        assert_eq!(decode(&CanonicalValue::Int(5)), None);
+        assert_eq!(decode(&map(vec![("data", CanonicalValue::Int(5))])), None);
+        assert_eq!(
+            decode(&map(vec![("transforms", CanonicalValue::Int(5))])),
+            None,
+            "a `transforms` field that is not an array is not a TF message"
+        );
+    }
+
+    #[test]
+    fn an_empty_tf_message_is_a_tf_message_with_nothing_in_it() {
+        assert_eq!(decode(&message(vec![])), Some(vec![]));
+    }
+
+    #[test]
+    fn a_frame_parented_to_itself_is_dropped_rather_than_looping_the_tree() {
+        let stamp = CanonicalValue::Time { sec: 1, nanosec: 0 };
+        let decoded = decode(&message(vec![
+            entry("base", "base", stamp.clone()),
+            entry("map", "base", stamp),
+        ]))
+        .expect("decodes");
+        assert_eq!(decoded.len(), 1, "only the real edge survived");
+        assert_eq!(decoded[0].parent, "map");
+    }
+
+    #[test]
+    fn an_entry_missing_its_frames_is_skipped_and_the_rest_still_arrive() {
+        let stamp = CanonicalValue::Time { sec: 1, nanosec: 0 };
+        let broken = map(vec![(
+            "transform",
+            map(vec![
+                ("translation", vector(0., 0., 0.)),
+                ("rotation", quaternion(0., 0., 0., 1.)),
+            ]),
+        )]);
+        let decoded = decode(&message(vec![broken, entry("map", "base", stamp)])).expect("decodes");
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].child, "base");
+    }
+
+    #[test]
+    fn an_unstamped_transform_is_taken_as_time_zero_rather_than_dropped() {
+        // `/tf_static` carries a stamp nobody reads, and some bridges send none
+        // at all. A static transform without a time is still a transform.
+        let decoded =
+            decode(&message(vec![entry("map", "base", CanonicalValue::Null)])).expect("decodes");
+        assert_eq!(decoded[0].at_ns, 0);
+    }
+
+    #[test]
+    fn a_negative_stamp_is_taken_as_unstamped_rather_than_wrapped() {
+        let decoded = decode(&message(vec![entry(
+            "map",
+            "base",
+            CanonicalValue::Time {
+                sec: -5,
+                nanosec: 0,
+            },
+        )]))
+        .expect("decodes");
+        assert_eq!(decoded[0].at_ns, 0, "not 18 billion seconds in the future");
+    }
+
+    #[test]
+    fn a_rotation_off_the_wire_is_normalised() {
+        let entry = map(vec![
+            (
+                "header",
+                map(vec![("frame_id", CanonicalValue::String("map".into()))]),
+            ),
+            ("child_frame_id", CanonicalValue::String("base".into())),
+            (
+                "transform",
+                map(vec![
+                    ("translation", vector(0., 0., 0.)),
+                    ("rotation", quaternion(0., 0., 3., 3.)),
+                ]),
+            ),
+        ]);
+        let decoded = decode(&message(vec![entry])).expect("decodes");
+        let length = decoded[0].transform.rotation.length();
+        assert!((length - 1.).abs() < 1e-6, "length {length}");
+    }
+
+    #[test]
+    fn a_transform_with_a_nan_in_it_is_refused() {
+        let entry = map(vec![
+            (
+                "header",
+                map(vec![("frame_id", CanonicalValue::String("map".into()))]),
+            ),
+            ("child_frame_id", CanonicalValue::String("base".into())),
+            (
+                "transform",
+                map(vec![
+                    ("translation", vector(f64::NAN, 0., 0.)),
+                    ("rotation", quaternion(0., 0., 0., 1.)),
+                ]),
+            ),
+        ]);
+        assert_eq!(decode(&message(vec![entry])), Some(vec![]));
+    }
+
+    #[test]
+    fn integer_coordinates_are_read_rather_than_refused() {
+        // A transform of exactly (1, 0, 0) can arrive as integers from a JSON
+        // bridge, and refusing it would drop a perfectly good frame.
+        let entry = map(vec![
+            (
+                "header",
+                map(vec![("frame_id", CanonicalValue::String("map".into()))]),
+            ),
+            ("child_frame_id", CanonicalValue::String("base".into())),
+            (
+                "transform",
+                map(vec![
+                    (
+                        "translation",
+                        map(vec![
+                            ("x", CanonicalValue::Int(1)),
+                            ("y", CanonicalValue::Int(0)),
+                            ("z", CanonicalValue::Int(0)),
+                        ]),
+                    ),
+                    ("rotation", quaternion(0., 0., 0., 1.)),
+                ]),
+            ),
+        ]);
+        let decoded = decode(&message(vec![entry])).expect("decodes");
+        assert_eq!(decoded[0].transform.translation, [1., 0., 0.]);
+    }
+
+    #[test]
+    fn a_decoded_message_feeds_a_buffer_that_can_then_be_looked_up() {
+        // The join between the two halves of this file's job.
+        let mut tree = Buffer::new();
+        for entry in decode(&message(vec![entry(
+            "map",
+            "base",
+            CanonicalValue::Time { sec: 1, nanosec: 0 },
+        )]))
+        .expect("decodes")
+        {
+            tree.insert(&entry.parent, &entry.child, entry.at_ns, entry.transform);
+        }
+        let placed = tree
+            .lookup("map", "base", 1_000_000_000)
+            .expect("the tree answers");
+        assert_eq!(placed.apply([0., 0., 0.]), [1., 2., 3.]);
+    }
+}

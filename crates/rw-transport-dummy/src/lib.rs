@@ -1,6 +1,9 @@
 #![deny(missing_debug_implementations)]
 
+pub mod world;
+
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -17,6 +20,19 @@ use tokio::sync::{mpsc, oneshot, watch, Mutex};
 const ADD_TWO_INTS: &str = "/dummy/add_two_ints";
 const ADD_TWO_INTS_SCHEMA: &str = "example_interfaces/AddTwoInts";
 const ADD_TWO_INTS_DEF: &str = "int64 a\nint64 b\n---\nint64 sum\n";
+
+/// The world topics. Named as a real graph names them — `/tf` is subscribed by
+/// name, so a simulator spelling it `/dummy/tf` would exercise nothing.
+const TF: &str = "/tf";
+const TF_STATIC: &str = "/tf_static";
+const SCAN: &str = "/scan";
+const PATH: &str = "/path";
+const POSE: &str = "/pose";
+
+const TF_DEF: &str = "geometry_msgs/TransformStamped[] transforms\n";
+const SCAN_DEF: &str = "std_msgs/Header header\nfloat32 angle_min\nfloat32 angle_max\nfloat32 angle_increment\nfloat32 time_increment\nfloat32 scan_time\nfloat32 range_min\nfloat32 range_max\nfloat32[] ranges\nfloat32[] intensities\n";
+const PATH_DEF: &str = "std_msgs/Header header\ngeometry_msgs/PoseStamped[] poses\n";
+const POSE_DEF: &str = "std_msgs/Header header\ngeometry_msgs/Pose pose\n";
 
 const FIBONACCI: &str = "/dummy/fibonacci";
 const FIBONACCI_SCHEMA: &str = "example_interfaces/Fibonacci";
@@ -68,6 +84,12 @@ struct Inner {
     schemas: HashMap<String, Arc<CanonicalSchema>>,
     subscribers: Mutex<HashMap<String, Vec<mpsc::Sender<Frame>>>>,
     publisher: Mutex<Option<SpawnedTask>>,
+    /// The simulated clock, in ticks of 100 ms.
+    ///
+    /// Every message is stamped from it, which is what lets the transform
+    /// buffer interpolate: a tree of transforms all stamped zero can only ever
+    /// answer for time zero.
+    tick: AtomicI64,
 }
 
 impl std::fmt::Debug for Inner {
@@ -91,6 +113,10 @@ impl DummyTransport {
         let image_schema = build_image_schema();
         let markers_schema = build_markers_schema();
         let points_schema = build_points_schema();
+        let tf_schema = build_tf_schema();
+        let scan_schema = build_scan_schema();
+        let path_schema = build_path_schema();
+        let pose_schema = build_pose_schema();
 
         let mut schemas = HashMap::new();
         schemas.insert("/dummy/counter".to_string(), counter_schema.clone());
@@ -99,6 +125,11 @@ impl DummyTransport {
         schemas.insert("/dummy/image".to_string(), image_schema.clone());
         schemas.insert("/dummy/markers".to_string(), markers_schema.clone());
         schemas.insert("/dummy/points".to_string(), points_schema.clone());
+        schemas.insert(TF.to_string(), tf_schema.clone());
+        schemas.insert(TF_STATIC.to_string(), tf_schema.clone());
+        schemas.insert(SCAN.to_string(), scan_schema.clone());
+        schemas.insert(PATH.to_string(), path_schema.clone());
+        schemas.insert(POSE.to_string(), pose_schema.clone());
 
         let discovery = Discovery {
             topics: vec![
@@ -138,6 +169,14 @@ impl DummyTransport {
                     schema_id: Some(points_schema.id.clone()),
                     schema_definition: Some(points_schema.definition.clone()),
                 },
+                // The world topics keep their real names rather than a
+                // `/dummy/` prefix: `/tf` is subscribed by name, and a
+                // simulator that spelled it differently would exercise nothing.
+                advertise(TF, &tf_schema),
+                advertise(TF_STATIC, &tf_schema),
+                advertise(SCAN, &scan_schema),
+                advertise(PATH, &path_schema),
+                advertise(POSE, &pose_schema),
             ],
             services: vec![TargetDescriptor {
                 name: ADD_TWO_INTS.into(),
@@ -166,6 +205,7 @@ impl DummyTransport {
                 schemas,
                 subscribers: Mutex::new(HashMap::new()),
                 publisher: Mutex::new(None),
+                tick: AtomicI64::new(0),
             }),
         }
     }
@@ -306,6 +346,109 @@ fn build_markers_schema() -> Arc<CanonicalSchema> {
     )
 }
 
+fn build_tf_schema() -> Arc<CanonicalSchema> {
+    build_viz_schema(
+        "tf2_msgs/TFMessage",
+        TF_DEF,
+        vec![complex_array(
+            "transforms",
+            "geometry_msgs/TransformStamped",
+        )],
+        VisualizationRole::Tf,
+    )
+}
+
+fn build_scan_schema() -> Arc<CanonicalSchema> {
+    let mut fields = vec![complex_field("header", "std_msgs/Header")];
+    for name in [
+        "angle_min",
+        "angle_max",
+        "angle_increment",
+        "time_increment",
+        "scan_time",
+        "range_min",
+        "range_max",
+    ] {
+        fields.push(primitive_field(name, PrimitiveType::Float32));
+    }
+    for name in ["ranges", "intensities"] {
+        fields.push(FieldDef {
+            name: name.into(),
+            field_type: FieldType::Array {
+                element: Box::new(FieldType::Primitive(PrimitiveType::Float32)),
+                length: ArrayLength::Unbounded,
+            },
+            default: None,
+            comment: None,
+        });
+    }
+    build_viz_schema(
+        "sensor_msgs/LaserScan",
+        SCAN_DEF,
+        fields,
+        VisualizationRole::LaserScan,
+    )
+}
+
+fn build_path_schema() -> Arc<CanonicalSchema> {
+    build_viz_schema(
+        "nav_msgs/Path",
+        PATH_DEF,
+        vec![
+            complex_field("header", "std_msgs/Header"),
+            complex_array("poses", "geometry_msgs/PoseStamped"),
+        ],
+        VisualizationRole::Path,
+    )
+}
+
+fn build_pose_schema() -> Arc<CanonicalSchema> {
+    build_viz_schema(
+        "geometry_msgs/PoseStamped",
+        POSE_DEF,
+        vec![
+            complex_field("header", "std_msgs/Header"),
+            complex_field("pose", "geometry_msgs/Pose"),
+        ],
+        VisualizationRole::PoseStamped,
+    )
+}
+
+fn complex_field(name: &str, type_name: &str) -> FieldDef {
+    FieldDef {
+        name: name.into(),
+        field_type: FieldType::Complex {
+            type_name: type_name.into(),
+        },
+        default: None,
+        comment: None,
+    }
+}
+
+fn complex_array(name: &str, type_name: &str) -> FieldDef {
+    FieldDef {
+        name: name.into(),
+        field_type: FieldType::Array {
+            element: Box::new(FieldType::Complex {
+                type_name: type_name.into(),
+            }),
+            length: ArrayLength::Unbounded,
+        },
+        default: None,
+        comment: None,
+    }
+}
+
+/// One entry for the discovery list.
+fn advertise(name: &str, schema: &Arc<CanonicalSchema>) -> TopicDescriptor {
+    TopicDescriptor {
+        name: name.into(),
+        schema_name: schema.name.clone(),
+        schema_id: Some(schema.id.clone()),
+        schema_definition: Some(schema.definition.clone()),
+    }
+}
+
 fn primitive_field(name: &str, prim: PrimitiveType) -> FieldDef {
     FieldDef {
         name: name.into(),
@@ -349,10 +492,9 @@ impl Transport for DummyTransport {
         }
         let inner = self.inner.clone();
         let task = spawn_task(async move {
-            let mut tick: i64 = 0;
             loop {
                 sleep_ms(100).await;
-                tick = tick.wrapping_add(1);
+                let tick = inner.tick.fetch_add(1, Ordering::Relaxed) + 1;
                 publish_tick(&inner, tick).await;
             }
         });
@@ -488,7 +630,25 @@ fn int_array(values: &[i64]) -> CanonicalValue {
     CanonicalValue::Array(values.iter().copied().map(CanonicalValue::Int).collect())
 }
 
+/// One tick of 100 ms, on the simulated clock every message is stamped from.
+fn clock_ns(tick: i64) -> u64 {
+    (tick.max(0) as u64).saturating_mul(100_000_000)
+}
+
 async fn publish_tick(inner: &Arc<Inner>, tick: i64) {
+    let at_ns = clock_ns(tick);
+
+    // The transform tree first, so a subscriber that reads the two in the order
+    // they arrive can already place the scan that follows.
+    publish_one(inner, TF, world::tf(tick, at_ns)).await;
+    // Statics are republished rather than sent once: a pane opened a minute in
+    // would otherwise never learn where the sensor is bolted, which is exactly
+    // what latching solves on a real graph and what this stands in for.
+    publish_one(inner, TF_STATIC, world::tf_static(at_ns)).await;
+    publish_one(inner, SCAN, world::scan(tick, at_ns)).await;
+    publish_one(inner, PATH, world::path(tick, at_ns)).await;
+    publish_one(inner, POSE, world::pose(tick, at_ns)).await;
+
     publish_one(
         inner,
         "/dummy/counter",
@@ -510,7 +670,7 @@ async fn publish_tick(inner: &Arc<Inner>, tick: i64) {
     .await;
     publish_one(inner, "/dummy/image", make_image_value(tick, 96, 64)).await;
     publish_one(inner, "/dummy/markers", make_markers_value(tick)).await;
-    publish_one(inner, "/dummy/points", make_points_value(tick)).await;
+    publish_one(inner, "/dummy/points", world::cloud(tick, at_ns)).await;
 }
 
 fn make_image_value(tick: i64, width: u32, height: u32) -> CanonicalValue {
@@ -563,88 +723,6 @@ fn make_markers_value(tick: i64) -> CanonicalValue {
     )
 }
 
-/// A synthetic lidar sweep: a room with four walls and a floor, seen from a
-/// sensor that turns. Enough structure that a broken camera or a mixed-up axis
-/// is obvious on sight, rather than a blob that looks the same either way.
-fn make_points_value(tick: i64) -> CanonicalValue {
-    const RINGS: usize = 24;
-    const PER_RING: usize = 220;
-    const ROOM: f32 = 6.;
-    let spin = tick as f32 * 0.02;
-
-    // x, y, z as float32 and intensity after them: the layout a real driver
-    // publishes, so the decoder is exercised rather than humoured.
-    let mut data = Vec::with_capacity(RINGS * PER_RING * 16);
-    for ring in 0..RINGS {
-        // From below the horizon to well above it, so the beam sweeps the floor
-        // near the sensor and the walls further out.
-        let elevation = -0.55 + ring as f32 * 0.045;
-        for step in 0..PER_RING {
-            let azimuth = spin + step as f32 / PER_RING as f32 * std::f32::consts::TAU;
-            let (dx, dy) = azimuth.sin_cos();
-            let (dz, horizontal) = elevation.sin_cos();
-            let direction = [horizontal * dy, horizontal * dx, dz];
-
-            // Where the beam first meets the floor or one of the four walls.
-            let mut range = f32::INFINITY;
-            for (component, limit) in [
-                (direction[0], ROOM),
-                (direction[1], ROOM),
-                (direction[2], 2.5),
-            ] {
-                if component.abs() > 1e-4 {
-                    let hit = limit / component.abs();
-                    range = range.min(hit);
-                }
-            }
-            if direction[2] < -1e-4 {
-                range = range.min(1.6 / -direction[2]);
-            }
-            if !range.is_finite() {
-                continue;
-            }
-
-            for component in direction {
-                data.extend_from_slice(&(component * range).to_le_bytes());
-            }
-            // Near returns come back stronger, which is what intensity means.
-            data.extend_from_slice(&(200. / (1. + range)).to_le_bytes());
-        }
-    }
-
-    let mut map = BTreeMap::new();
-    map.insert("height".into(), CanonicalValue::Uint(1));
-    map.insert(
-        "width".into(),
-        CanonicalValue::Uint((data.len() / 16) as u64),
-    );
-    map.insert(
-        "fields".into(),
-        CanonicalValue::Array(vec![
-            point_field("x", 0),
-            point_field("y", 4),
-            point_field("z", 8),
-            point_field("intensity", 12),
-        ]),
-    );
-    map.insert("is_bigendian".into(), CanonicalValue::Bool(false));
-    map.insert("point_step".into(), CanonicalValue::Uint(16));
-    map.insert("row_step".into(), CanonicalValue::Uint(data.len() as u64));
-    map.insert("data".into(), CanonicalValue::Bytes(data));
-    map.insert("is_dense".into(), CanonicalValue::Bool(true));
-    CanonicalValue::Struct(map)
-}
-
-/// One `sensor_msgs/PointField`; datatype 7 is FLOAT32.
-fn point_field(name: &str, offset: u64) -> CanonicalValue {
-    let mut field = BTreeMap::new();
-    field.insert("name".into(), CanonicalValue::String(name.into()));
-    field.insert("offset".into(), CanonicalValue::Uint(offset));
-    field.insert("datatype".into(), CanonicalValue::Uint(7));
-    field.insert("count".into(), CanonicalValue::Uint(1));
-    CanonicalValue::Struct(field)
-}
-
 fn struct_one(field: &str, value: CanonicalValue) -> CanonicalValue {
     let mut map = BTreeMap::new();
     map.insert(field.to_string(), value);
@@ -657,7 +735,7 @@ async fn publish_one(inner: &Arc<Inner>, topic: &str, value: CanonicalValue) {
         None => return,
     };
     let frame = Frame {
-        timestamp_ns: 0,
+        timestamp_ns: clock_ns(inner.tick.load(Ordering::Relaxed)),
         schema,
         value,
         raw: None,

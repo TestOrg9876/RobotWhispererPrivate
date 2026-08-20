@@ -22,6 +22,7 @@ rw-pipeline.workspace = true
 rw-assets.workspace = true
 rw-record.workspace = true
 rw-render.workspace = true
+rw-tf.workspace = true
 rw-transport.workspace = true
 
 anyhow.workspace = true

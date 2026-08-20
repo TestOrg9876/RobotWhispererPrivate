@@ -122,6 +122,11 @@ impl Sessions {
         self.live.get(&connection).map(|live| &live.discovery)
     }
 
+    /// Every connection that has been opened, live state and all.
+    pub fn connections(&self) -> impl Iterator<Item = (i64, &Live)> {
+        self.live.iter().map(|(id, live)| (*id, live))
+    }
+
     pub fn connected_count(&self) -> usize {
         self.live
             .values()
@@ -326,6 +331,8 @@ pub struct RobotWhisperer {
     pub gpu: Entity<crate::gpu::Gpu>,
     /// Captures what arrives while recording is on.
     pub recorder: Entity<crate::recorder::Recorder>,
+    /// One transform tree per connection: where every frame of every robot is.
+    pub tf: Entity<crate::tf::TfStore>,
 }
 
 impl gpui::Global for RobotWhisperer {}

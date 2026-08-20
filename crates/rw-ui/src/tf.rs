@@ -102,7 +102,9 @@ pub struct TfStore {
     /// Which connections are already subscribed, so discovery updating twenty
     /// times a second does not open twenty subscriptions.
     subscribed: HashSet<(i64, &'static str)>,
-    _work: Vec<Task<()>>,
+    /// The tasks that opened them, keyed so reconnecting the same system
+    /// replaces its old one rather than piling another on the heap.
+    _work: HashMap<(i64, &'static str), Task<()>>,
 }
 
 impl TfStore {
@@ -136,6 +138,7 @@ impl TfStore {
         let before = self.trees.len();
         self.trees.retain(|id, _| open.contains(id));
         self.subscribed.retain(|(id, _)| open.contains(id));
+        self._work.retain(|(id, _), _| open.contains(id));
         if self.trees.len() != before {
             cx.notify();
         }
@@ -175,7 +178,7 @@ impl TfStore {
             let tree = self.tree(connection);
             let pipeline = Arc::clone(&pipeline);
             let is_static = topic == STATIC_TOPIC;
-            self._work.push(cx.spawn(async move |store, cx| {
+            let task = cx.spawn(async move |store, cx| {
                 let opened = pipeline
                     .subscribe_topic(session, topic, move |_handle, frame, _lossy| {
                         let Some(stamped) = decode(&frame.value) else {
@@ -206,7 +209,8 @@ impl TfStore {
                         })
                         .ok();
                 }
-            }));
+            });
+            self._work.insert((connection, topic), task);
         }
     }
 }

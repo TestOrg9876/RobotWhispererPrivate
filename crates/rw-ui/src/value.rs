@@ -222,7 +222,8 @@ fn row_path(path: &str) -> String {
 }
 
 /// One scalar, as it should read in a table cell.
-fn scalar(value: &CanonicalValue) -> String {
+/// One scalar, as the tables and the tree both spell it.
+pub fn scalar(value: &CanonicalValue) -> String {
     match value {
         CanonicalValue::Null => "null".into(),
         CanonicalValue::Bool(inner) => inner.to_string(),

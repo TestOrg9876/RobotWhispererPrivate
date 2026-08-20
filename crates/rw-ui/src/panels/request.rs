@@ -197,6 +197,10 @@ pub struct RequestPanel {
     /// Which message the scene is showing, so a cloud is uploaded once rather
     /// than on every repaint.
     scene_at: u64,
+    /// The foldable tree of the response, built the first time it is looked at:
+    /// most requests are watched in the raw view and should not pay for one.
+    tree: Option<Entity<crate::tree::TreeView>>,
+
     /// The message the diff view compares against, and which message it was.
     ///
     /// The live stream keeps running underneath: freezing a reading and
@@ -279,6 +283,7 @@ impl RequestPanel {
             problem: None,
             scene: None,
             scene_at: 0,
+            tree: None,
             frozen: None,
             home: Home::default(),
             _repaint: None,
@@ -1541,6 +1546,46 @@ impl RequestPanel {
         scene.update(cx, |scene, cx| scene.set_layers(layers, cx));
     }
 
+    /// Points the tree at the newest message, when the tree is what is showing.
+    ///
+    /// Here rather than in `response` for the same reason the scene is: the
+    /// rows are rebuilt once per message, and `response` runs once per frame.
+    fn sync_tree(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.tab, View::Fields | View::Visualize) {
+            return;
+        }
+        let (value, count) = {
+            let incoming = self.incoming.lock().expect("incoming mutex");
+            (incoming.value.clone(), incoming.count)
+        };
+        let Some(value) = value else { return };
+        let tree = match &self.tree {
+            Some(tree) => tree.clone(),
+            None => {
+                let tree = crate::tree::TreeView::view(cx);
+                self.tree = Some(tree.clone());
+                tree
+            }
+        };
+        tree.update(cx, |tree, cx| tree.show(&value, count, cx));
+    }
+
+    /// The tree, ready to draw, with folding wired back to it.
+    fn tree(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(tree) = self.tree.clone() else {
+            return gpui::div().into_any_element();
+        };
+        let folding = tree.clone();
+        crate::tree::render(
+            &tree,
+            move |path, _window, cx| {
+                let path = path.to_string();
+                folding.update(cx, |tree, cx| tree.toggle(&path, cx));
+            },
+            cx,
+        )
+    }
+
     /// Pins the current message. Pinning again re-pins to the newest.
     fn freeze(&mut self, cx: &mut Context<Self>) {
         let (value, count) = {
@@ -1624,10 +1669,12 @@ impl RequestPanel {
             (Some(value), View::Diff) => {
                 views::changes(self.frozen.as_ref().map(|(value, _)| value), value, cx)
             }
+            (Some(_), View::Fields) => self.tree(cx),
             (Some(value), View::Visualize) => views::visualize(
                 &crate::viz::role_for(schema_name.as_deref().unwrap_or_default()),
                 value,
                 self.scene.as_ref(),
+                self.tree(cx),
                 cx,
             ),
             (None, _) => tokens::empty_state(
@@ -1815,6 +1862,7 @@ impl Render for RequestPanel {
         self.sync_payload(window, cx);
         self.sync_name(cx);
         self.sync_scene(cx);
+        self.sync_tree(cx);
         let bar = self.request_bar(cx);
         // Shown for topics too: a topic request that can only be watched is half
         // a request, and the message you publish is the same form. Absent
@@ -1910,6 +1958,6 @@ mod tests {
     #[test]
     fn response_tabs_have_distinct_labels() {
         let labels: Vec<_> = View::ALL.iter().map(|tab| tab.label()).collect();
-        assert_eq!(labels, ["Raw", "Visualize", "Plot", "Diff"]);
+        assert_eq!(labels, ["Raw", "Fields", "Visualize", "Plot", "Diff"]);
     }
 }

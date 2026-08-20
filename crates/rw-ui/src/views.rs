@@ -28,7 +28,9 @@ pub enum View {
     /// The message as text.
     #[default]
     Raw,
-    /// A picture, a point cloud or a field table, whichever the message is.
+    /// The same message resolved into a tree, foldable at every branch.
+    Fields,
+    /// A picture, a point cloud or the tree, whichever the message is.
     Visualize,
     /// Every number in the message, over time.
     Plot,
@@ -37,11 +39,18 @@ pub enum View {
 }
 
 impl View {
-    pub const ALL: [Self; 4] = [Self::Raw, Self::Visualize, Self::Plot, Self::Diff];
+    pub const ALL: [Self; 5] = [
+        Self::Raw,
+        Self::Fields,
+        Self::Visualize,
+        Self::Plot,
+        Self::Diff,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Raw => "Raw",
+            Self::Fields => "Fields",
             Self::Visualize => "Visualize",
             Self::Plot => "Plot",
             Self::Diff => "Diff",
@@ -56,6 +65,7 @@ impl View {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Raw => "raw",
+            Self::Fields => "fields",
             Self::Visualize => "visualize",
             Self::Plot => "plot",
             Self::Diff => "diff",
@@ -64,6 +74,7 @@ impl View {
 
     pub fn parse(raw: &str) -> Self {
         match raw {
+            "fields" => Self::Fields,
             "visualize" => Self::Visualize,
             "plot" => Self::Plot,
             "diff" => Self::Diff,
@@ -92,17 +103,21 @@ pub fn raw(value: &CanonicalValue, cx: &App) -> AnyElement {
 /// table, which is a real answer — a `PointCloud2` whose every point was NaN
 /// has nothing to draw, and its fields are what is left to look at.
 ///
-/// `scene` is the 3D pane, when the host has one and there is anything in it.
+/// `scene` is the 3D pane, when the host has one and there is anything in it,
+/// and `fields` is what a message that turns out not to be a picture falls back
+/// to — the same tree the Fields view draws, handed in rather than built here
+/// so there is one way of showing a message's fields and not two.
 pub fn visualize(
     role: &VisualizationRole,
     value: &CanonicalValue,
     scene: Option<&Entity<SceneView>>,
+    fields: AnyElement,
     cx: &App,
 ) -> AnyElement {
     match viz::visual_for(role) {
         Visual::Picture => match viz::picture(value) {
             Some(frame) => picture(frame, cx),
-            None => fields(value, cx),
+            None => fields,
         },
         // The scene draws its own controls over itself, so it needs nothing
         // around it but the space.
@@ -112,54 +127,10 @@ pub fn visualize(
                 .min_h_0()
                 .child(scene.clone())
                 .into_any_element(),
-            None => fields(value, cx),
+            None => fields,
         },
-        Visual::Fields => fields(value, cx),
+        Visual::Fields => fields,
     }
-}
-
-/// Every leaf of the message, path beside value.
-pub fn fields(value: &CanonicalValue, cx: &App) -> AnyElement {
-    let leaves = value::leaves(value);
-    if leaves.is_empty() {
-        return tokens::empty_state(
-            IconName::Inbox,
-            "Nothing to show",
-            "This message has no fields.",
-            cx,
-        )
-        .into_any_element();
-    }
-
-    v_flex()
-        .id("fields")
-        .size_full()
-        .gap_0p5()
-        .children(leaves.into_iter().map(|(path, shown)| {
-            h_flex()
-                .w_full()
-                .py_0p5()
-                .gap_4()
-                .items_baseline()
-                .child(
-                    tokens::mono(cx)
-                        .w(px(240.))
-                        .flex_shrink_0()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .truncate()
-                        .child(path),
-                )
-                .child(
-                    tokens::mono(cx)
-                        .flex_1()
-                        .min_w_0()
-                        .text_xs()
-                        .text_color(cx.theme().foreground)
-                        .child(shown),
-                )
-        }))
-        .into_any_element()
 }
 
 fn picture(frame: crate::image::Frame, cx: &App) -> AnyElement {
@@ -387,7 +358,7 @@ mod tests {
     #[test]
     fn view_labels_are_stable_and_distinct() {
         let labels = View::ALL.map(View::label);
-        assert_eq!(labels, ["Raw", "Visualize", "Plot", "Diff"]);
+        assert_eq!(labels, ["Raw", "Fields", "Visualize", "Plot", "Diff"]);
     }
 
     #[test]

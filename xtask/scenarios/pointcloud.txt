@@ -29,8 +29,22 @@ wait 600
 click 1266 100
 wait 2000
 
+# The tree first: a point cloud is a header, a list of fields and sixty
+# kilobytes of `data`, and the tree is what makes the first two readable
+# without scrolling past the third. `data` arrives folded because it is long.
+click 390 155
+wait 1200
+shot 00-tree
+
+# Folding `fields` puts four sub-trees away behind one row. A folded branch
+# costs one row whatever is under it, which is what keeps this cheap on a
+# message that arrives ten times a second.
+click 345 216
+wait 900
+shot 00b-folded
+
 # Visualize, which is where the 3D pane lives.
-click 400 155
+click 460 155
 wait 2500
 shot 01-cloud
 

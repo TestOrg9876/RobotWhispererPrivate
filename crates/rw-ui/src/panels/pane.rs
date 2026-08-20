@@ -72,6 +72,9 @@ pub struct VizPanel {
     /// Built the first time a message turns out to be a point cloud.
     scene: Option<Entity<SceneView>>,
     scene_at: u64,
+    /// The foldable tree of the message, built the first time it is looked at.
+    tree: Option<Entity<crate::tree::TreeView>>,
+
     _repaint: Option<Task<()>>,
     _work: Option<Task<()>>,
 }
@@ -101,6 +104,7 @@ impl VizPanel {
                 frozen: None,
                 scene: None,
                 scene_at: 0,
+                tree: None,
                 _repaint: None,
                 _work: None,
             };
@@ -242,6 +246,46 @@ impl VizPanel {
     ///
     /// What it decodes into is the registry's decision, from the schema's role
     /// — so a scan, a path and a pose all arrive here rather than only a cloud.
+    /// Points the tree at the newest message, when the tree is what is showing.
+    ///
+    /// Here rather than in `render` for the same reason the scene is: the rows
+    /// are rebuilt once per message, and a pane paints ten times a second.
+    fn sync_tree(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.view, View::Fields | View::Visualize) {
+            return;
+        }
+        let (value, count) = {
+            let incoming = self.incoming.lock().expect("incoming mutex");
+            (incoming.value.clone(), incoming.count)
+        };
+        let Some(value) = value else { return };
+        let tree = match &self.tree {
+            Some(tree) => tree.clone(),
+            None => {
+                let tree = crate::tree::TreeView::view(cx);
+                self.tree = Some(tree.clone());
+                tree
+            }
+        };
+        tree.update(cx, |tree, cx| tree.show(&value, count, cx));
+    }
+
+    /// The tree, ready to draw, with folding wired back to it.
+    fn tree(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(tree) = self.tree.clone() else {
+            return div().into_any_element();
+        };
+        let folding = tree.clone();
+        crate::tree::render(
+            &tree,
+            move |path, _window, cx| {
+                let path = path.to_string();
+                folding.update(cx, |tree, cx| tree.toggle(&path, cx));
+            },
+            cx,
+        )
+    }
+
     fn sync_scene(&mut self, cx: &mut Context<Self>) {
         if self.view != View::Visualize {
             return;
@@ -512,6 +556,7 @@ impl Panel for VizPanel {
 impl Render for VizPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_scene(cx);
+        self.sync_tree(cx);
         let (value, schema, history) = {
             let incoming = self.incoming.lock().expect("incoming mutex");
             (
@@ -527,10 +572,12 @@ impl Render for VizPanel {
             (Some(value), View::Diff) => {
                 views::changes(self.frozen.as_ref().map(|(value, _)| value), value, cx)
             }
+            (Some(_), View::Fields) => self.tree(cx),
             (Some(value), View::Visualize) => views::visualize(
                 &crate::viz::role_for(schema.as_deref().unwrap_or_default()),
                 value,
                 self.scene.as_ref(),
+                self.tree(cx),
                 cx,
             ),
             // A pane with nothing in it offers the two pickers, where there is

@@ -31,6 +31,7 @@ pub mod tf;
 pub mod theme;
 pub mod tick;
 pub mod tokens;
+pub mod tree;
 pub mod value;
 pub mod views;
 pub mod viz;

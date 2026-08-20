@@ -33,15 +33,13 @@ click 1266 100
 wait 2500
 shot 01-raw
 
-# Visualize. A plain number has no picture and nothing to draw in 3D, so the
-# registry sends it to the field table — which is a real answer rather than a
-# failed guess at something else.
-click 400 261
+# Fields: the same message resolved into a tree, foldable at every branch.
+click 390 261
 wait 900
 shot 02-fields
 
 # The plot, after a few seconds of samples.
-click 464 261
+click 526 261
 wait 3000
 shot 03-plot
 
@@ -56,6 +54,6 @@ key Return
 wait 600
 click 1266 100
 wait 2000
-click 400 155
+click 460 155
 wait 1400
 shot 04-image

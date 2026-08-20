@@ -11,8 +11,8 @@ use std::sync::Arc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _, Subscription,
-    Window, div, px,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    Subscription, Window, div, px,
 };
 use gpui_component::dock::{
     DockArea, DockAreaState, DockEvent, DockItem, DockPlacement, PanelState, PanelView,
@@ -29,8 +29,9 @@ use gpui_component::{
 use crate::actions::{
     AddWorldLayer, AddWorldRobot, CommandPalette, Connect, Disconnect, ExportWorkspace,
     ImportWorkspace, ManageConnections, NewDashboard, NewRequest, OpenRecording, OpenSettings,
-    RemoveWorldLayer, ReplayRecording, ResetWorldView, SaveRecording, SetWorldAnchor,
-    SetWorldFrame, ShowWorld, ToggleConsole, ToggleRecording, ToggleSidebar,
+    PickPaneTopic, PickWorldTopic, RemoveWorldLayer, ReplayRecording, ResetWorldView,
+    SaveRecording, SetPaneConnection, SetPaneTopic, SetWorldAnchor, SetWorldFrame, ShowWorld,
+    ToggleConsole, ToggleRecording, ToggleSidebar,
 };
 use crate::docking::{self, Restored};
 use crate::layout;
@@ -576,7 +577,18 @@ impl WorkspaceView {
     }
 
     fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let palette = PaletteView::view(self.palette_entries(cx), window, cx);
+        self.open_picker("Go to", self.palette_entries(cx), window, cx);
+    }
+
+    /// The palette, over whatever list the caller wants searched.
+    fn open_picker(
+        &mut self,
+        title: &'static str,
+        entries: Vec<Entry>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let palette = PaletteView::view(entries, window, cx);
         palette.update(cx, |palette, cx| palette.focus(window, cx));
 
         cx.subscribe_in(
@@ -592,9 +604,41 @@ impl WorkspaceView {
         .detach();
 
         window.open_dialog(cx, move |dialog, _window, _cx| {
-            dialog.title("Go to").w(px(620.)).child(palette.clone())
+            dialog.title(title).w(px(620.)).child(palette.clone())
         });
         cx.notify();
+    }
+
+    /// Every topic a pane could be pointed at, as palette rows.
+    ///
+    /// The system's name is the row's detail, so typing either the topic or
+    /// the robot narrows the list — which is the thing a flat menu grouped by
+    /// system cannot do.
+    fn topic_entries(
+        &self,
+        cx: &App,
+        choose: impl Fn(i64, SharedString) -> Choice,
+        drawable_only: bool,
+    ) -> Vec<Entry> {
+        let workspace = self.workspace.read(cx);
+        let sessions = self.sessions.read(cx);
+        let mut entries = Vec::new();
+        for connection in workspace.connections() {
+            let Some(discovery) = sessions.discovery(connection.id) else {
+                continue;
+            };
+            for topic in &discovery.topics {
+                if drawable_only && !crate::viz::is_drawable(&topic.schema_name) {
+                    continue;
+                }
+                let name = SharedString::from(topic.name.clone());
+                entries.push(
+                    Entry::new("Topic", name.clone(), choose(connection.id, name))
+                        .detail(format!("{}  ·  {}", connection.name, topic.schema_name)),
+                );
+            }
+        }
+        entries
     }
 
     /// Everything the palette can reach. Commands first: with nothing typed the
@@ -690,6 +734,23 @@ impl WorkspaceView {
             Choice::Command("ReplayRecording") => self.replay_recording(cx),
             Choice::Command("SaveRecording") => self.save_recording(cx),
             Choice::Command("OpenRecording") => self.open_recording(cx),
+            Choice::PaneTopic {
+                pane,
+                connection,
+                topic,
+            } => {
+                // Routed as the actions are, so a pane that has since been
+                // closed quietly does nothing.
+                window.dispatch_action(Box::new(SetPaneConnection { pane, connection }), cx);
+                window.dispatch_action(Box::new(SetPaneTopic { pane, topic }), cx);
+            }
+            Choice::WorldTopic {
+                pane,
+                connection,
+                topic,
+            } => self.with_world(pane, cx, |world, cx| {
+                world.add_topic(connection, topic.to_string(), cx)
+            }),
             Choice::Command(unknown) => tracing::warn!("palette has no handler for {unknown}"),
         }
     }
@@ -1354,6 +1415,32 @@ impl Render for WorkspaceView {
             }))
             .on_action(cx.listener(|this, action: &ResetWorldView, _, cx| {
                 this.with_world(action.pane, cx, |world, cx| world.reset_view(cx));
+            }))
+            .on_action(cx.listener(|this, action: &PickPaneTopic, window, cx| {
+                let pane = action.pane;
+                let entries = this.topic_entries(
+                    cx,
+                    move |connection, topic| Choice::PaneTopic {
+                        pane,
+                        connection,
+                        topic,
+                    },
+                    false,
+                );
+                this.open_picker("Point this pane at", entries, window, cx);
+            }))
+            .on_action(cx.listener(|this, action: &PickWorldTopic, window, cx| {
+                let pane = action.pane;
+                let entries = this.topic_entries(
+                    cx,
+                    move |connection, topic| Choice::WorldTopic {
+                        pane,
+                        connection,
+                        topic,
+                    },
+                    true,
+                );
+                this.open_picker("Add to the world", entries, window, cx);
             }))
             .on_action(cx.listener(Self::on_toggle_recording))
             .on_action(cx.listener(Self::on_replay_recording))

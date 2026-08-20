@@ -79,6 +79,23 @@ pub struct SetPaneView {
     pub view: SharedString,
 }
 
+/// Open the searchable picker over every topic, to point a pane at one.
+///
+/// A flat menu of every topic works on the twelve a simulator publishes and
+/// not at all on the three hundred a real robot does.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
+pub struct PickPaneTopic {
+    pub pane: u64,
+}
+
+/// The same, for the 3D world: only the topics with geometry in them.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
+pub struct PickWorldTopic {
+    pub pane: u64,
+}
+
 /// Pin a dashboard pane's current message, for the diff view to compare
 /// against. Pinning again re-pins to the newest.
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]

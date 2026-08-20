@@ -17,6 +17,25 @@ pub enum Choice {
     Connection(i64),
     /// Open a saved dashboard.
     Dashboard(i64),
+    /// Point a dashboard pane at a topic.
+    ///
+    /// The palette is the topic picker: it already ranks, already takes the
+    /// keyboard, and is already the thing people reach for to find something
+    /// by name. A flat menu of every topic works on the twelve a simulator
+    /// publishes and not at all on the three hundred a real robot does, and a
+    /// second search box beside this one would be a second set of ranking
+    /// rules to disagree with.
+    PaneTopic {
+        pane: u64,
+        connection: i64,
+        topic: SharedString,
+    },
+    /// Put a topic in the 3D world.
+    WorldTopic {
+        pane: u64,
+        connection: i64,
+        topic: SharedString,
+    },
 }
 
 /// One row of the palette.

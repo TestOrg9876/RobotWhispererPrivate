@@ -304,6 +304,7 @@ impl VizPanel {
     fn pickers(&self, cx: &mut Context<Self>) -> AnyElement {
         let pane = cx.entity_id().as_u64();
         let (systems, topics) = self.choices(cx);
+        let topic_count = topics.len();
         let chosen = self.connection;
         let named = self
             .connection
@@ -347,24 +348,26 @@ impl VizPanel {
                 Button::new("pick-topic")
                     .ghost()
                     .xsmall()
-                    .label("Topic")
-                    .dropdown_menu(move |mut menu, _window, _cx| {
-                        if topics.is_empty() {
-                            return menu.menu(
-                                "Connect a system first",
-                                Box::new(crate::actions::ManageConnections),
+                    .label(if showing.is_empty() {
+                        SharedString::from("Topic")
+                    } else {
+                        showing.clone()
+                    })
+                    // Straight to the searchable picker rather than a menu of
+                    // every topic — a robot with three hundred of them is the
+                    // case this has to survive. With nothing connected there is
+                    // nothing to search, so it offers the one thing that would
+                    // help instead.
+                    .on_click(cx.listener(move |_, _, window, cx| {
+                        if topic_count == 0 {
+                            window.dispatch_action(Box::new(crate::actions::ManageConnections), cx);
+                        } else {
+                            window.dispatch_action(
+                                Box::new(crate::actions::PickPaneTopic { pane }),
+                                cx,
                             );
                         }
-                        for topic in topics.clone() {
-                            let chosen = topic == showing;
-                            menu = menu.menu_with_check(
-                                topic.clone(),
-                                chosen,
-                                Box::new(crate::actions::SetPaneTopic { pane, topic }),
-                            );
-                        }
-                        menu
-                    }),
+                    })),
             )
             .into_any_element()
     }
@@ -471,16 +474,18 @@ impl Panel for VizPanel {
                 );
             }
         }
+        // One searchable entry rather than every topic: a flat list works on
+        // the twelve a simulator publishes and not at all on the three hundred
+        // a real robot does, and the palette already ranks and already takes
+        // the keyboard.
         if !topics.is_empty() {
-            menu = menu.separator();
-            for topic in topics {
-                let chosen = topic == self.topic;
-                menu = menu.menu_with_check(
-                    topic.clone(),
-                    chosen,
-                    Box::new(crate::actions::SetPaneTopic { pane, topic }),
-                );
-            }
+            menu = menu.separator().menu(
+                SharedString::from(match self.topic.is_empty() {
+                    true => format!("Choose a topic…  ({} available)", topics.len()),
+                    false => format!("Change topic…  ({} available)", topics.len()),
+                }),
+                Box::new(crate::actions::PickPaneTopic { pane }),
+            );
         }
         menu
     }

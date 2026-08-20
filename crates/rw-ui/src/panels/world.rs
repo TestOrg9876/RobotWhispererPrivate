@@ -41,7 +41,7 @@ use rw_canonical::CanonicalValue;
 use rw_render::{Content, Layer, MeshVertex, Solid};
 use rw_tf::Buffer;
 
-use crate::actions::{AddWorldLayer, AddWorldRobot, RemoveWorldLayer, SetWorldFrame};
+use crate::actions::{AddWorldRobot, RemoveWorldLayer, SetWorldFrame};
 use crate::scene_view::SceneView;
 use crate::session::{RobotWhisperer, Sessions};
 use crate::workspace::Workspace;
@@ -654,26 +654,20 @@ impl WorldPanel {
         )
     }
 
-    /// The drawable topics of every connected system, for the `+` menu.
-    fn offerings(&self, cx: &App) -> Vec<(i64, SharedString, SharedString)> {
+    /// How many topics across every connected system have geometry in them.
+    ///
+    /// A count rather than the list: the `+` menu offers the searchable picker
+    /// and the number is what tells a person whether it is worth opening.
+    fn drawable_topics(&self, cx: &App) -> usize {
         let workspace = self.workspace.read(cx);
         let sessions = self.sessions.read(cx);
-        let mut offerings = Vec::new();
-        for connection in workspace.connections() {
-            let Some(discovery) = sessions.discovery(connection.id) else {
-                continue;
-            };
-            for topic in &discovery.topics {
-                if viz::is_drawable(&topic.schema_name) {
-                    offerings.push((
-                        connection.id,
-                        SharedString::from(connection.name.clone()),
-                        SharedString::from(topic.name.clone()),
-                    ));
-                }
-            }
-        }
-        offerings
+        workspace
+            .connections()
+            .iter()
+            .filter_map(|connection| sessions.discovery(connection.id))
+            .flat_map(|discovery| discovery.topics.iter())
+            .filter(|topic| viz::is_drawable(&topic.schema_name))
+            .count()
     }
 
     /// The fixed frame row, and one row per layer.
@@ -839,7 +833,7 @@ impl WorldPanel {
     /// fixed frame is in force, so this costs no height at all.
     fn add_button(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let pane = cx.entity_id().as_u64();
-        let offerings = self.offerings(cx);
+        let drawable = self.drawable_topics(cx);
         let robots: Vec<(String, SharedString)> = self
             .catalog
             .as_ref()
@@ -858,20 +852,20 @@ impl WorldPanel {
             // clicks and a hunt for something that should be one click and a
             // read.
             .dropdown_menu(move |mut menu, _window, _cx| {
-                if offerings.is_empty() && robots.is_empty() {
+                if drawable == 0 && robots.is_empty() {
                     return menu.menu(
                         "Connect a system first",
                         Box::new(crate::actions::ManageConnections),
                     );
                 }
-                for (connection, system, topic) in offerings.clone() {
+                // One searchable entry for the topics rather than all of them:
+                // a robot publishing three hundred is the case this has to
+                // survive, and the palette already ranks and takes the
+                // keyboard. The robots are a handful and stay listed.
+                if drawable > 0 {
                     menu = menu.menu(
-                        SharedString::from(format!("{topic}  ·  {system}")),
-                        Box::new(AddWorldLayer {
-                            pane,
-                            connection,
-                            topic,
-                        }),
+                        SharedString::from(format!("Add a topic…  ({drawable} drawable)")),
+                        Box::new(crate::actions::PickWorldTopic { pane }),
                     );
                 }
                 if !robots.is_empty() {

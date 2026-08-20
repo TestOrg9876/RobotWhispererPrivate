@@ -54,20 +54,16 @@ move 700 550
 wait 400
 shot 03-read
 
-# Freeze the reading, which pins it and shows what has changed since.
-click 1322 486
-wait 900
-
 # Two edits, both typed into the form the node's own answer built.
 # `log_directory` is a parameter the node has no value for — giving it one is
 # how it stops being unset — and `controller_frequency` gains a nought.
 #
 # Both append rather than replace: this harness does not reliably deliver a
 # `key` and a `type` to the same field, so the scenario asks for nothing that
-# needs a backspace. There is no shot of the half-filled form either — between
-# the freeze and the write the window stops recompositing under Xvfb, and a
-# capture there shows the frame before the typing however it is nudged. The
-# shot after the write is the honest one, and it carries both edits.
+# needs a backspace. It also does not freeze the reading first, tempting as the
+# diff would be: a click on Freeze leaves the window refusing input for the
+# rest of the run under Xvfb, and a scenario that photographs a lie is worse
+# than one that photographs less.
 click 975 289
 wait 700
 type /tmp/planner-logs
@@ -77,9 +73,8 @@ wait 700
 type 0
 wait 700
 
-# Write, then read back. What the node holds afterwards is the answer — and
-# the difference from the frozen reading is the same diff view every other
-# request uses, numeric delta and all.
+# Write, then read back. What the node holds afterwards is the answer: the form
+# and the response below it both show what came back, not what was typed.
 click 1380 92
 wait 2500
 move 1295 92

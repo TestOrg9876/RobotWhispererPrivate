@@ -206,14 +206,6 @@ pub struct RequestPanel {
     /// The tab group this editor is sitting in, which changes whenever the user
     /// drags its tab somewhere else.
     home: Home,
-    /// Whether this panel's tab is the one showing in its group.
-    ///
-    /// Recorded rather than asked for: the chip is drawn by [`Panel::title`],
-    /// which the dock calls from inside its own update, and reading the tab
-    /// group from there is a double lease. `set_active` is dispatched outside
-    /// that update precisely so a panel can keep this.
-    tab_active: bool,
-
     _repaint: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -289,7 +281,6 @@ impl RequestPanel {
             scene_at: 0,
             frozen: None,
             home: Home::default(),
-            tab_active: false,
             _repaint: None,
             _subscriptions: subscriptions,
         }
@@ -1779,15 +1770,6 @@ impl Panel for RequestPanel {
         "Request"
     }
 
-    /// The dock's own tab is transparent here; the chip inside it is what shows
-    /// selection, so the panel has to be told.
-    fn set_active(&mut self, active: bool, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.tab_active != active {
-            self.tab_active = active;
-            cx.notify();
-        }
-    }
-
     fn on_added_to(
         &mut self,
         tab_panel: gpui::WeakEntity<gpui_component::dock::TabPanel>,
@@ -1806,11 +1788,11 @@ impl Panel for RequestPanel {
     }
 
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex().child(
-            tokens::tab_chip(self.tab_active, cx)
-                .child(tokens::status_dot(tokens::kind_color(self.draft.kind, cx)))
-                .child(RequestPanel::title(self)),
-        )
+        h_flex()
+            .gap_2()
+            .items_center()
+            .child(tokens::status_dot(tokens::kind_color(self.draft.kind, cx)))
+            .child(RequestPanel::title(self))
     }
 
     fn title_suffix(
@@ -1878,23 +1860,18 @@ impl Render for RequestPanel {
                 }
                 cx.stop_propagation();
             }))
-            // The head is fixed: name, kind and target stay put while the
-            // response scrolls, which is the whole point of a request bar. It
-            // also sits on the panel surface, continuing the tab strip above it,
-            // so chrome and canvas are two visibly different bands.
+            // The head is fixed: kind and target stay put while the response
+            // scrolls, which is the whole point of a request bar.
+            //
+            // Nothing behind it. The bar is already a bordered box of its own,
+            // and a tinted strip around it made two nested boxes where there is
+            // one control — it floats on the pane like everything else does.
             .child(
                 // Only the bar. The request's name is the tab above this, and a
                 // headline repeating it cost a row of every editor; renaming
                 // lives in the sidebar, where you can see the name you are
                 // changing beside its neighbours.
-                v_flex()
-                    .flex_shrink_0()
-                    .px_4()
-                    .py_2()
-                    .bg(cx.theme().tab_bar)
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(bar),
+                v_flex().flex_shrink_0().px_4().pt_3().pb_1().child(bar),
             )
             .children(problem)
             .child(

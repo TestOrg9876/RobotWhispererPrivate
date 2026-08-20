@@ -166,11 +166,7 @@ def theme(seed):
         ("tab_bar.segmented.background", s.window),
         ("tab.background", s.panel),
         ("tab.foreground", s.fg_muted),
-        # The dock fixes its tabs to one variant — a browser tab, square and
-        # notched into the rule under the strip. The app draws a chip inside it
-        # instead (`tokens::tab_chip`), so the tab the dock draws has to get out
-        # of the way: no fill of its own, and the chip supplies the colour.
-        ("tab.active.background", alpha(s.window, "00")),
+        ("tab.active.background", s.card),
         ("tab.active.foreground", s.fg),
 
         # Containers ----------------------------------------------------------

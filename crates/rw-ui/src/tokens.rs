@@ -6,10 +6,7 @@
 //! thing rather than two similar-looking accidents.
 
 use gpui::prelude::FluentBuilder as _;
-use gpui::{
-    Div, Hsla, InteractiveElement as _, ParentElement as _, SharedString, Stateful, Styled as _,
-    div, px,
-};
+use gpui::{Div, Hsla, ParentElement as _, SharedString, Styled as _, div, px};
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, tag::Tag, v_flex,
 };
@@ -85,47 +82,6 @@ pub fn kind_tag(kind: RequestKind, cx: &gpui::App) -> Tag {
         .rounded_full()
         .small()
 }
-
-/// One tab in the top strip, as a chip.
-///
-/// The dock's own tab is a browser tab: square, attached to the strip's bottom
-/// edge by a notch in the rule under it. This is the chip the app wants
-/// instead — the shape the Svelte version used, and the one the owner picked —
-/// and it is drawn by the panel inside the tab the dock gives it, because the
-/// dock fixes its own tabs to one variant.
-///
-/// Selected, the chip is filled in the surface colour of the pane below it and
-/// ringed: the same trick the old design used, so the tab reads as the top edge
-/// of the thing it opens rather than as a button floating above it.
-///
-/// Put it inside a row. The slot the dock gives a lone tab is a block, and a
-/// block sizes its child to the full width — which turns the chip into a pill
-/// the width of the window. A flex row sizes it to its content instead.
-pub fn tab_chip(active: bool, cx: &gpui::App) -> Stateful<Div> {
-    h_flex()
-        .id("tab-chip")
-        .flex_none()
-        .h(px(TAB_CHIP_HEIGHT))
-        .items_center()
-        .gap_2()
-        .px_2p5()
-        .rounded(cx.theme().radius)
-        .border_1()
-        .border_color(gpui::transparent_black())
-        .text_color(cx.theme().muted_foreground)
-        .when(active, |chip| {
-            chip.bg(cx.theme().group_box)
-                .border_color(cx.theme().border)
-                .text_color(cx.theme().foreground)
-        })
-        .when(!active, |chip| {
-            chip.hover(|chip| chip.bg(cx.theme().muted).text_color(cx.theme().foreground))
-        })
-}
-
-/// How tall a tab chip is. Two pixels inside the dock's 30px tab, so the chip
-/// has air around it rather than filling the strip edge to edge.
-pub const TAB_CHIP_HEIGHT: f32 = 26.0;
 
 /// Short label for a request kind, as shown in the tag and the kind selector.
 pub fn kind_label(kind: RequestKind) -> &'static str {

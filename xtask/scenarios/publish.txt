@@ -1,5 +1,8 @@
 # Publishing to a topic, and watching it arrive on the same request.
+#
+# Coordinates are relative to the app window, which GPUI opens at 1440x900.
 
+# A Dummy ROS system, so the rest of the scenario has something to talk to.
 wait 900
 click 105 888
 wait 900
@@ -20,22 +23,30 @@ wait 900
 # A topic request, subscribed, so anything published shows up below.
 click 244 49
 wait 1400
-click 700 133
+click 700 92
 wait 700
 type /dummy/wave
 wait 700
 key Return
 wait 600
-# Subscribe sits at 1266 now that Publish shares the bar.
-click 1266 131
-wait 1500
+# Subscribe sits left of Publish, which shares the bar with it.
+click 1266 92
+wait 1800
 shot 01-subscribed
 
-# The message form is there for a topic now. Fill it and publish.
-click 975 249
-type 42
+# The message form is there for a topic. Fill it and publish.
+#
+# The dummy transport loops a publish straight back to that topic's
+# subscribers, so it does arrive here — but the simulator is also driving
+# /dummy/wave at 10 Hz, so the published value is overwritten before a capture
+# can catch it. What the last shot proves is that the form is filled, the
+# publish goes out, and the subscription keeps running through it.
+click 975 203
 wait 400
+type 42
+wait 500
 shot 02-message
-click 1372 131
+click 1372 92
 wait 1800
+move 700 500
 shot 03-published

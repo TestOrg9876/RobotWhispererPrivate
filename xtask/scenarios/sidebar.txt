@@ -1,5 +1,7 @@
-# The sidebar with real work in it: three kinds of request, named and targeted,
-# arranged into a collection.
+# The sidebar with real work in it: three kinds of request, targeted, arranged
+# into a collection, and one of them live.
+#
+# Coordinates are relative to the app window, which GPUI opens at 1440x900.
 
 wait 900
 
@@ -20,7 +22,8 @@ wait 600
 click 1272 102
 wait 900
 
-# A collection to put them in.
+# A collection to put them in. Creating one starts its rename in place, so the
+# name is simply typed.
 click 224 49
 wait 900
 type Dummy robot
@@ -28,78 +31,74 @@ wait 400
 key Return
 wait 900
 
-# A topic, a service and an action — the kind is chosen before the target so
-# the offers are the right ones, and the name is replaced rather than typed
-# into the middle of the placeholder.
+# A topic. The first request is the only one with no tab strip above it, so its
+# target row sits nine pixels higher than the two that follow.
 click 244 49
 wait 1400
-click 700 133
+click 700 92
 wait 700
 type /dummy/wave
 wait 700
 key Return
 wait 600
-click 420 89
-wait 500
-key ctrl+a
-wait 300
-type Wave data
-wait 500
+# Saved, because the sidebar shows the stored request and the editor holds a
+# draft until it is: an unsaved kind change is not a kind change yet.
 key ctrl+s
-wait 1000
+wait 900
+
+# A service. The kind is chosen before the target, so the offers are the right
+# ones.
 click 244 49
 wait 1400
-click 330 133
+click 331 101
 wait 700
-click 350 189
+click 351 158
 wait 800
-click 700 133
+click 700 101
 wait 700
 type /dummy/add_two_ints
 wait 700
 key Return
 wait 600
-click 420 89
-wait 500
-key ctrl+a
-wait 300
-type Add two ints
-wait 500
 key ctrl+s
-wait 1000
+wait 900
+
+# And an action.
 click 244 49
 wait 1400
-click 330 133
+click 331 101
 wait 700
-click 349 215
-wait 1000
-click 700 133
+click 348 186
+wait 800
+click 700 101
 wait 700
 type /dummy/fibonacci
 wait 700
 key Return
 wait 600
-click 420 89
-wait 500
-key ctrl+a
-wait 300
-type Fibonacci
-wait 500
 key ctrl+s
-wait 1000
+wait 1200
+
+move 700 500
+wait 400
 shot 01-three-kinds
 
 # Drag a request into the collection, which opens as it accepts the drop.
-# Rows start at y=107 and are 29px apart: the collection, then the three
-# requests at 136, 165 and 194.
-drag 139 165 -> 139 107
+# Rows start at y=106 and are 29px apart: the collection, then the three
+# requests at 135, 164 and 193.
+drag 139 135 -> 139 106
 wait 1300
+move 700 500
+wait 400
 shot 02-nested
 
-# Subscribing marks the row as live. After the drop the order is the collection,
-# the request inside it, then the two still at the root — so Wave data is at 165.
-click 139 165
+# Subscribing marks the row as live, and the rate appears beside its dot.
+# After the drop the order is the collection, the topic inside it, then the
+# two still at the root — so the topic is at 135.
+click 139 135
 wait 1200
-click 1364 133
-wait 2000
+click 1266 101
+wait 2500
+move 700 500
+wait 400
 shot 03-live

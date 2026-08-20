@@ -4,42 +4,46 @@
 
 # A Dummy ROS system, so the rest of the scenario has something to talk to.
 wait 900
-click 789 484
+click 105 888
 wait 900
-click 976 157
-wait 800
-click 711 246
+click 1403 81
+wait 700
+click 1384 158
 wait 500
-click 720 299
+click 1269 211
 type Simulator
 wait 500
-click 968 330
+click 1395 242
 wait 1500
-# Dismissed by clicking its overlay, well away from the dialog. Aiming at the
-# close button risks a near miss, which the overlay then absorbs — and the click
-# after that is the one that appears to do nothing.
-click 200 750
+click 1327 16
+wait 600
+click 1272 102
 wait 900
 
 # A request, pointed at the new connection by default.
-# The list's + button, which is there whether or not the list is empty.
-click 261 81
+click 244 49
 wait 1400
 
 # Clicking the target field shows everything the system advertises.
-click 700 133
+click 700 92
 wait 900
 shot 01-all-offers
 
-# Typing narrows it, prefix matches first.
+# Typing narrows it and the keyboard takes the match. `/dummy/w` matches one
+# topic, so Enter accepts `/dummy/wave` — which is what the last shot shows.
+#
+# The narrowed *popup* is deliberately not photographed. It is an overlay, and
+# under this harness it does not repaint between a keystroke and a capture, so
+# any shot of it would show the unfiltered list under a name claiming
+# otherwise. What the ranking actually does is asserted in `discovery.rs`'s
+# own tests; what this proves on screen is that the keyboard reaches the field
+# and the accepted match lands in it.
+click 700 92
+wait 600
 type /dummy/w
 wait 800
-shot 02-narrowed
-
-# Down highlights the next row; Enter takes it.
-key Down
-wait 400
-shot 03-highlighted
 key Return
-wait 600
+wait 800
+move 700 500
+wait 400
 shot 04-accepted

@@ -4,45 +4,48 @@
 
 # A Dummy ROS system, so the rest of the scenario has something to talk to.
 wait 900
-click 789 484
+click 105 888
 wait 900
-click 976 157
-wait 800
-click 711 246
+click 1403 81
+wait 700
+click 1384 158
 wait 500
-click 720 299
+click 1269 211
 type Simulator
 wait 500
-click 968 330
+click 1395 242
 wait 1500
-# Dismissed by clicking its overlay, well away from the dialog. Aiming at the
-# close button risks a near miss, which the overlay then absorbs — and the click
-# after that is the one that appears to do nothing.
-click 200 750
+click 1327 16
+wait 600
+click 1272 102
 wait 900
 
-# A request, switched to an action.
-# The list's + button, which is there whether or not the list is empty.
-click 261 81
+# A request, switched from a topic to an action.
+click 244 49
 wait 1400
-click 330 133
-wait 600
-click 350 217
+click 331 92
+wait 800
+click 348 177
 wait 800
 
-# Pick the Dummy action from the offers.
-click 700 133
+# The action the simulator offers, chosen from the autocomplete.
+click 700 92
+wait 800
+type /dummy/fib
 wait 800
 key Return
-wait 1000
+wait 1200
 shot 01-goal-form
 
-# An order to compute, then send.
-click 975 251
-type 6
-wait 300
-click 1364 133
-wait 1200
+# An order to compute, then send. Feedback arrives while the goal runs, and
+# the result replaces it when it finishes.
+click 975 203
+wait 500
+type 8
+wait 500
+click 1363 92
+wait 1400
 shot 02-feedback
 wait 4000
+move 700 500
 shot 03-result

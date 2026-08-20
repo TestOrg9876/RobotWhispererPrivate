@@ -38,7 +38,7 @@ move 700 500
 shot 01b-rate
 
 # Pin this message. The stream keeps running underneath.
-click 1178 262
+click 1099 262
 wait 300
 shot 02-frozen
 
@@ -46,10 +46,12 @@ shot 02-frozen
 # message is unchanged, and an unchanged field is not a row.
 wait 2000
 move 700 500
+wait 400
 shot 03-changed
 
 # Freezing again re-pins to the newest message, so the deltas start from here.
-click 1158 262
+click 1079 262
 wait 1000
 move 700 500
+wait 400
 shot 04-refrozen

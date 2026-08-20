@@ -8,7 +8,8 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{Div, Hsla, ParentElement as _, SharedString, Styled as _, div, px};
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, tag::Tag, v_flex,
+    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, tab::TabVariant,
+    tag::Tag, v_flex,
 };
 use rw_core::domain::RequestKind;
 
@@ -81,6 +82,23 @@ pub fn kind_tag(kind: RequestKind, cx: &gpui::App) -> Tag {
     Tag::custom(colour.opacity(0.14), colour, colour.opacity(0.32))
         .rounded_full()
         .small()
+}
+
+/// Which tab treatment the app draws, while the choice is being made.
+///
+/// TEMPORARY. `RW_TAB_VARIANT` exists so the five treatments gpui-component
+/// ships can be photographed on the real screen without five builds; once one
+/// is chosen this collapses to that one constant and the variable goes away.
+/// Anything unrecognised falls back to the current look rather than failing:
+/// a typo in an environment variable should not stop the app opening.
+pub fn tab_variant() -> TabVariant {
+    match std::env::var("RW_TAB_VARIANT").as_deref() {
+        Ok("tab") => TabVariant::Tab,
+        Ok("outline") => TabVariant::Outline,
+        Ok("pill") => TabVariant::Pill,
+        Ok("underline") => TabVariant::Underline,
+        _ => TabVariant::Segmented,
+    }
 }
 
 /// Short label for a request kind, as shown in the tag and the kind selector.

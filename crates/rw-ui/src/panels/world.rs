@@ -172,7 +172,9 @@ impl EventEmitter<PanelEvent> for WorldPanel {}
 
 impl WorldPanel {
     pub fn view(cx: &mut App) -> Entity<Self> {
-        let scene = SceneView::view(cx);
+        // The scene is the card here rather than something inside one, so it
+        // is rounded to the card's radius and not to the smaller inset one.
+        let scene = SceneView::filling_a_card(cx);
         let (workspace, sessions) = {
             let global = RobotWhisperer::global(cx);
             (global.workspace.clone(), global.sessions.clone())

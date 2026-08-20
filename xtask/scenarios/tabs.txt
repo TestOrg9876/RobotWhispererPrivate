@@ -1,0 +1,41 @@
+# The tab strips, for choosing how they should look.
+#
+# Two of them end up on screen at once: the dock's, along the top, and the
+# response views' — which is the one whose treatment `RW_TAB_VARIANT` changes.
+#
+# Coordinates are relative to the app window, which GPUI opens at 1440x900.
+
+# A Dummy ROS system, so the response has something in it.
+wait 900
+click 105 888
+wait 900
+click 1403 81
+wait 700
+click 1384 158
+wait 500
+click 1269 211
+type Simulator
+wait 500
+click 1395 242
+wait 1500
+click 1327 16
+wait 600
+click 1272 102
+wait 900
+
+# A subscribed topic, so every view in the strip has something behind it.
+click 244 49
+wait 1400
+click 700 92
+wait 700
+type /dummy/wave
+wait 700
+key Return
+wait 600
+click 1266 92
+wait 2000
+move 700 500
+wait 300
+move 700 550
+wait 400
+shot 01-tabs

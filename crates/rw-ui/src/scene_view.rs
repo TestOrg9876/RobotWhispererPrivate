@@ -46,6 +46,33 @@ const ORBIT_PER_PIXEL: f32 = 0.008;
 /// How much one wheel click closes the distance.
 const ZOOM_PER_CLICK: f32 = 0.12;
 
+/// How the scene's corners are rounded.
+///
+/// The picture is painted by `Window::paint_image` rather than laid out as an
+/// element, and paint takes its own corner radii: `overflow_hidden` on an
+/// ancestor masks to a rectangle, so a square image inside a rounded card fills
+/// the corners the card cut away. The radius therefore has to be told, and it
+/// has to be the radius of whatever the scene is sitting in — one radius inside
+/// a slightly larger one leaves a sliver of card showing at each corner, which
+/// looks like a rendering fault rather than a design.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Rounding {
+    /// Inset in a card, with padding around it: the small radius.
+    #[default]
+    Inset,
+    /// Filling a card edge to edge: the card's own radius.
+    FillsACard,
+}
+
+impl Rounding {
+    fn radius(self, cx: &App) -> Pixels {
+        match self {
+            Rounding::Inset => cx.theme().radius,
+            Rounding::FillsACard => cx.theme().radius_lg,
+        }
+    }
+}
+
 pub struct SceneView {
     gpu: Entity<Gpu>,
     scene: Scene,
@@ -64,9 +91,18 @@ pub struct SceneView {
     /// message.
     coloring: Coloring,
     dragging: Option<Point<Pixels>>,
+    rounding: Rounding,
 }
 
 impl SceneView {
+    /// The same pane, rounded to fill a card edge to edge rather than to sit
+    /// inside one with padding around it.
+    pub fn filling_a_card(cx: &mut App) -> Entity<Self> {
+        let view = Self::view(cx);
+        view.update(cx, |view, _| view.rounding = Rounding::FillsACard);
+        view
+    }
+
     pub fn view(cx: &mut App) -> Entity<Self> {
         let gpu = RobotWhisperer::global(cx).gpu.clone();
         cx.new(|cx| {
@@ -78,6 +114,7 @@ impl SceneView {
                 rendered: (0, 0),
                 dirty: true,
                 framed: false,
+                rounding: Rounding::default(),
                 coloring: Coloring::default(),
                 dragging: None,
             }
@@ -304,7 +341,14 @@ impl SceneView {
 
         if let Some(image) = self.shown.clone() {
             window
-                .paint_image(bounds, bounds, Corners::default(), image, 0, false)
+                .paint_image(
+                    bounds,
+                    bounds,
+                    Corners::all(self.rounding.radius(cx)),
+                    image,
+                    0,
+                    false,
+                )
                 .ok();
         }
     }
@@ -389,7 +433,7 @@ impl Render for SceneView {
             .min_h_0()
             .relative()
             .overflow_hidden()
-            .rounded(cx.theme().radius)
+            .rounded(self.rounding.radius(cx))
             .cursor_crosshair()
             .on_mouse_down(
                 gpui::MouseButton::Left,

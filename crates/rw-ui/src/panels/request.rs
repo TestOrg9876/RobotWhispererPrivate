@@ -1573,7 +1573,7 @@ impl RequestPanel {
         // A segmented bar rather than document tabs: these are three views of one
         // response, not three things that can be closed.
         let tabs = TabBar::new("response-views")
-            .segmented()
+            .with_variant(tokens::tab_variant())
             .selected_index(active.index())
             .children(View::ALL.map(|tab| Tab::new().label(tab.label())))
             .on_click(cx.listener(|this, index: &usize, _, cx| {

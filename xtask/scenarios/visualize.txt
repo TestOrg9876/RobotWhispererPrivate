@@ -4,7 +4,7 @@
 
 # A Dummy ROS system, so there is something to look at.
 wait 900
-click 789 484
+click 105 888
 wait 900
 click 1403 81
 wait 700
@@ -14,48 +14,48 @@ click 1269 211
 type Simulator
 wait 500
 click 1395 242
-wait 1400
-
-# Close the connections dock so the request has the full width.
+wait 1500
 click 1327 16
 wait 600
 click 1272 102
 wait 900
 
 # A request on the wave topic, which is one number over time.
-click 261 81
+click 244 49
 wait 1400
-click 700 133
-wait 900
+click 700 100
+wait 700
 type /dummy/wave
 wait 700
 key Return
 wait 600
-click 1364 133
+click 1266 100
 wait 2500
 shot 01-raw
 
-# The field table.
-click 399 203
-wait 700
+# Visualize. A plain number has no picture and nothing to draw in 3D, so the
+# registry sends it to the field table — which is a real answer rather than a
+# failed guess at something else.
+click 400 261
+wait 900
 shot 02-fields
 
 # The plot, after a few seconds of samples.
-click 464 203
+click 464 261
 wait 3000
 shot 03-plot
 
 # The image topic renders as a picture rather than as a wall of bytes.
-click 261 81
+click 244 49
 wait 1400
-click 700 133
-wait 900
+click 700 100
+wait 700
 type /dummy/image
 wait 700
 key Return
 wait 600
-click 1364 133
+click 1266 100
 wait 2000
-click 399 203
-wait 900
+click 400 155
+wait 1400
 shot 04-image

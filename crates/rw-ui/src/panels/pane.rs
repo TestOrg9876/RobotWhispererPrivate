@@ -407,11 +407,22 @@ impl Panel for VizPanel {
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement> {
         let count = self.incoming.lock().expect("incoming mutex").count;
+        // The rate beside the count, when there is one: two short readings in
+        // the space a tab suffix already takes, rather than a status strip
+        // inside the pane that would cost a row of it forever.
+        let rate = self
+            .subscription
+            .as_ref()
+            .and_then(|handle| self.sessions.read(cx).pipeline().stats(handle))
+            .and_then(|stats| stats.hz_label());
         (count > 0).then(|| {
             div()
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
-                .child(compact(count))
+                .child(match rate {
+                    Some(rate) => SharedString::from(format!("{}  {rate}", compact(count))),
+                    None => compact(count),
+                })
                 .into_any_element()
         })
     }

@@ -380,6 +380,20 @@ impl RequestPanel {
         !self.activity.is_idle()
     }
 
+    /// What the open subscription is doing, if this request has one.
+    ///
+    /// `ros2 topic hz` is the most-run command in robotics, and every time
+    /// someone runs it they leave the tool they were already looking at. The
+    /// numbers go where the message count already is rather than in a strip of
+    /// their own.
+    fn stats(&self, cx: &App) -> Option<rw_pipeline::stats::Stats> {
+        let Activity::Subscribed(subscription) = &self.activity else {
+            return None;
+        };
+        let stats = self.sessions.read(cx).pipeline().stats(subscription)?;
+        (!stats.is_empty()).then_some(stats)
+    }
+
     /// Records what this request is doing where the sidebar can see it.
     ///
     /// Called from the one place `activity` changes rather than beside each
@@ -1379,6 +1393,17 @@ impl RequestPanel {
                 )
             })
             .child(tokens::meta("Messages", count.to_string(), cx))
+            .when_some(self.stats(cx), |row, stats| {
+                row.when_some(stats.hz_label(), |row, hz| {
+                    row.child(tokens::meta("Rate", hz, cx))
+                })
+                .when_some(stats.bandwidth_label(), |row, rate| {
+                    row.child(tokens::meta("Bandwidth", rate, cx))
+                })
+                .when_some(stats.latency_label(), |row, latency| {
+                    row.child(tokens::meta("Latency", latency, cx))
+                })
+            })
             .when_some(schema, |row, schema| {
                 row.child(tokens::meta("Schema", schema, cx))
             });

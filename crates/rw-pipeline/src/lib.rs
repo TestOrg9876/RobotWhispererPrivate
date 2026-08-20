@@ -1,5 +1,7 @@
 #![deny(missing_debug_implementations)]
 
+pub mod stats;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -48,6 +50,10 @@ impl std::fmt::Debug for CanonicalPipeline {
 
 struct Inner {
     subscription_manager: SubscriptionManager,
+    /// One meter per subscription, behind a plain lock rather than the async
+    /// one the rest of this uses: a view asks for a rate while it renders, and
+    /// a render cannot await.
+    meters: std::sync::Mutex<HashMap<String, stats::Meter>>,
     connections: Mutex<HashMap<ConnectionId, Arc<dyn Transport>>>,
     subscriptions: Mutex<HashMap<String, ActiveSubscription>>,
     action_goals: Mutex<HashMap<String, (ConnectionId, ActionCancelToken)>>,
@@ -94,6 +100,7 @@ impl CanonicalPipeline {
         CanonicalPipeline {
             inner: Arc::new(Inner {
                 subscription_manager: SubscriptionManager::default(),
+                meters: std::sync::Mutex::new(HashMap::new()),
                 connections: Mutex::new(HashMap::new()),
                 subscriptions: Mutex::new(HashMap::new()),
                 action_goals: Mutex::new(HashMap::new()),
@@ -253,13 +260,31 @@ impl CanonicalPipeline {
             pack_and_send(&subscription_id, latest.as_ref(), true);
         }
 
+        self.inner
+            .meters
+            .lock()
+            .expect("meter mutex")
+            .insert(subscription_id.clone(), stats::Meter::new());
+
         let mut receiver = handle.receiver.resubscribe();
         let forwarder_id = subscription_id.clone();
+        let meters = Arc::clone(&self.inner);
         let forwarder = spawn_task(async move {
             use tokio::sync::broadcast::error::RecvError;
             loop {
                 match receiver.recv().await {
-                    Ok(frame) => pack_and_send(&forwarder_id, frame.as_ref(), false),
+                    Ok(frame) => {
+                        // Measured here rather than in the consumer: every
+                        // subscriber of a topic sees the same frames through
+                        // the same fan-out, and a rate that depended on which
+                        // pane was looking would be a rate about the UI.
+                        if let Ok(mut meters) = meters.meters.lock() {
+                            if let Some(meter) = meters.get_mut(&forwarder_id) {
+                                meter.observe(rw_wire::now_ns(), frame.as_ref());
+                            }
+                        }
+                        pack_and_send(&forwarder_id, frame.as_ref(), false)
+                    }
                     Err(RecvError::Lagged(n)) => {
                         tracing::warn!(
                             subscription_id = %forwarder_id,
@@ -340,7 +365,21 @@ impl CanonicalPipeline {
         self.inner.action_goals.lock().await.remove(goal_id);
     }
 
+    /// What a subscription is doing: rate, bandwidth and latency.
+    ///
+    /// Synchronous, because the caller is a view in the middle of drawing
+    /// itself. `None` for a subscription that has been closed or never opened.
+    pub fn stats(&self, subscription_id: &str) -> Option<stats::Stats> {
+        let meters = self.inner.meters.lock().ok()?;
+        Some(meters.get(subscription_id)?.stats(rw_wire::now_ns()))
+    }
+
     pub async fn unsubscribe(&self, subscription_id: &str) -> TransportResult<()> {
+        self.inner
+            .meters
+            .lock()
+            .expect("meter mutex")
+            .remove(subscription_id);
         let removed = self
             .inner
             .subscriptions

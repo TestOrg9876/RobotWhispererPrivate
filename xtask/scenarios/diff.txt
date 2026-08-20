@@ -30,6 +30,13 @@ click 1266 100
 wait 2000
 shot 01-subscribed
 
+# Rate, bandwidth and latency go where the message count already is, rather
+# than in a strip of their own. `ros2 topic hz` is the most-run command in
+# robotics and it should not need a second terminal.
+wait 2500
+move 700 500
+shot 01b-rate
+
 # Pin this message. The stream keeps running underneath.
 click 1178 262
 wait 300

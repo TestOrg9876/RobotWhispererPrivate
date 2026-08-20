@@ -142,7 +142,7 @@ impl RowData {
 
 /// What is being dragged.
 #[derive(Clone)]
-pub enum Dragged {
+pub(crate) enum Dragged {
     Request { id: i64, name: SharedString },
     Collection { id: i64, name: SharedString },
 }

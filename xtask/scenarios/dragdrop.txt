@@ -1,0 +1,56 @@
+# Dragging a topic out of the sidebar and into a live pane.
+#
+# Coordinates are relative to the app window, which GPUI opens at 1440x900.
+
+# A Dummy ROS system, so the rest of the scenario has something to talk to.
+wait 900
+click 105 888
+wait 900
+click 1403 81
+wait 700
+click 1384 158
+wait 500
+click 1269 211
+type Simulator
+wait 500
+click 1395 242
+wait 1500
+click 1327 16
+wait 600
+click 1272 102
+wait 900
+
+# A saved topic request, which is what the sidebar has to drag.
+click 244 49
+wait 1400
+click 700 92
+wait 700
+type /dummy/wave
+wait 700
+key Return
+wait 600
+# The check saves it. Until it is saved the sidebar's row is a request with no
+# target stored, and dropping one of those is what the drop refuses.
+click 1194 92
+wait 900
+shot 01-saved
+
+# A dashboard with one empty pane.
+click 261 835
+wait 1800
+shot 02-empty-pane
+
+# Drag the request onto the pane. The pane lights up while the drop would be
+# taken — a pane cannot subscribe to a service or a node's parameters, so those
+# rows do not light it — and taking it points the pane at that topic on that
+# request's environment.
+dragover 140 106 -> 860 470
+wait 900
+shot 03-drag-over
+release
+wait 2200
+move 700 700
+wait 400
+move 700 650
+wait 400
+shot 04-dropped

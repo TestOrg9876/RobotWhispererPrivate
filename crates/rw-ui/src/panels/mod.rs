@@ -3,10 +3,11 @@
 //! Each is an `Entity<T: Panel>` living in the dock, which is what gives them
 //! tabs that drag, reorder, split and restore without any of them knowing.
 
-mod collections;
+pub(crate) mod collections;
 mod connections;
 mod console;
 mod dashboard;
+pub(crate) mod drop;
 mod palette_view;
 pub(crate) mod pane;
 mod request;

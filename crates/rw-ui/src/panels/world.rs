@@ -21,6 +21,8 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
+use crate::panels::collections::Dragged;
+use crate::panels::drop;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
@@ -1003,12 +1005,35 @@ impl Render for WorldPanel {
 
         // No header strip: the tab above says "World" and its suffix says which
         // frame, so a row here would repeat both and spend height doing it.
+        // A topic dragged out of the sidebar becomes a layer. The world takes
+        // a connection to subscribe on, so a request that was never given one
+        // cannot be dropped here — and does not light up.
+        let workspace = self.workspace.clone();
+
         v_flex()
             .id("world")
             .size_full()
             .min_h_0()
             .track_focus(&self.focus_handle)
             .bg(cx.theme().background)
+            .drag_over::<Dragged>(
+                move |style, dragged: &Dragged, _, cx| match drop::target_of_drag(
+                    dragged,
+                    workspace.read(cx),
+                ) {
+                    Some(target) if target.connection.is_some() => style.bg(cx.theme().drop_target),
+                    _ => style,
+                },
+            )
+            .on_drop(cx.listener(|this, dragged: &Dragged, _, cx| {
+                let Some(target) = drop::target_of_drag(dragged, this.workspace.read(cx)) else {
+                    return;
+                };
+                let Some(connection) = target.connection else {
+                    return;
+                };
+                this.add_topic(connection, target.topic, cx);
+            }))
             .when_some(self.problem.clone(), |pane, problem| {
                 pane.child(
                     div()

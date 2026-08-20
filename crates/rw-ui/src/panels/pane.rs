@@ -23,6 +23,8 @@ use gpui_component::{
 };
 use rw_canonical::CanonicalValue;
 
+use crate::panels::collections::Dragged;
+use crate::panels::drop;
 use crate::scene_view::SceneView;
 use crate::series::History;
 use crate::session::{RobotWhisperer, Sessions};
@@ -147,7 +149,13 @@ impl VizPanel {
         cx.notify();
     }
 
-    fn set_target(&mut self, connection: Option<i64>, topic: String, cx: &mut Context<Self>) {
+    /// Points the pane at a topic on a connection in one step.
+    ///
+    /// Both at once rather than one after the other: a drop knows both, and
+    /// setting them separately would resubscribe twice — once to the new topic
+    /// on the old connection, which is a subscription to something nobody asked
+    /// for.
+    pub fn set_target(&mut self, connection: Option<i64>, topic: String, cx: &mut Context<Self>) {
         self.connection = connection;
         self.topic = topic;
         self.resubscribe(cx);
@@ -551,6 +559,11 @@ impl Render for VizPanel {
         // card with a hairline border, inset from the pane's edge. Without it a
         // dashboard reads as bare text on the window while every other surface
         // in the app is a card, which is what made it look unfinished.
+        // A topic dragged out of the sidebar lands here and retargets the
+        // pane. The whole pane is the target rather than a strip of it: at the
+        // sizes a dashboard pane comes in, anything smaller is a game.
+        let workspace = self.workspace.clone();
+
         v_flex()
             .id("pane")
             .size_full()
@@ -559,12 +572,35 @@ impl Render for VizPanel {
             .track_focus(&self.focus_handle)
             .bg(cx.theme().background)
             .child(
-                tokens::card(cx).flex_1().min_h_0().child(
-                    tokens::card_body()
-                        .id("pane-body")
-                        .overflow_scroll()
-                        .child(body),
-                ),
+                tokens::card(cx)
+                    .id("pane-drop")
+                    .flex_1()
+                    .min_h_0()
+                    // The card rather than the pane around it: the card is what
+                    // fills the pane, so tinting anything else lights up an
+                    // eight-pixel frame and calls it an affordance.
+                    .drag_over::<Dragged>(move |style, dragged: &Dragged, _, cx| {
+                        match drop::target_of_drag(dragged, workspace.read(cx)) {
+                            Some(_) => style.bg(cx.theme().drop_target),
+                            None => style,
+                        }
+                    })
+                    .on_drop(cx.listener(|this, dragged: &Dragged, _, cx| {
+                        let Some(target) = drop::target_of_drag(dragged, this.workspace.read(cx))
+                        else {
+                            return;
+                        };
+                        // A request with no environment of its own still names
+                        // a topic, and the pane keeps the one it already has.
+                        let connection = target.connection.or(this.connection);
+                        this.set_target(connection, target.topic, cx);
+                    }))
+                    .child(
+                        tokens::card_body()
+                            .id("pane-body")
+                            .overflow_scroll()
+                            .child(body),
+                    ),
             )
     }
 }

@@ -41,12 +41,18 @@ shot 01-subscribed
 # /dummy/wave at 10 Hz, so the published value is overwritten before a capture
 # can catch it. What the last shot proves is that the form is filled, the
 # publish goes out, and the subscription keeps running through it.
-click 975 203
-wait 400
+click 975 194
+wait 500
 type 42
 wait 500
+# Nudge before the capture. The typing lands, but `import` reads whatever the
+# window last composited, and without a repaint this shot showed the empty
+# field it had a moment ago — for long enough that the scenario was quietly
+# proving nothing.
+move 700 500
+wait 400
 shot 02-message
-click 1372 92
+click 1372 96
 wait 1800
 move 700 500
 shot 03-published

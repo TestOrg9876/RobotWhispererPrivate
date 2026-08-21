@@ -39,14 +39,14 @@ shot 03-form
 
 # Fill both arguments and call. The inputs start at x=535; clicking at 700
 # lands in the label column, which is a quiet way to fill in nothing.
-click 975 203
-wait 400
+click 975 194
+wait 500
 type 20
-wait 400
-click 975 245
-wait 400
+wait 500
+click 975 237
+wait 500
 type 22
-wait 400
+wait 500
 shot 04-filled
 click 1370 92
 wait 1800

@@ -39,12 +39,16 @@ shot 01-goal-form
 
 # An order to compute, then send. Feedback arrives while the goal runs, and
 # the result replaces it when it finishes.
-click 975 203
-wait 500
+click 975 194
+wait 800
 type 8
-wait 500
-click 1363 92
-wait 1400
+wait 800
+click 1363 96
+# Mid-run: the dummy sends a feedback message every 150 ms, so an order of 8
+# takes something over a second. Shooting at 700 ms catches the sequence part
+# built, which is the whole point of feedback — a shot after it finished would
+# be the result under another name.
+wait 700
 shot 02-feedback
 wait 4000
 move 700 500

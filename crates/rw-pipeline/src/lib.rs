@@ -58,6 +58,16 @@ struct Inner {
     subscriptions: Mutex<HashMap<String, ActiveSubscription>>,
     action_goals: Mutex<HashMap<String, (ConnectionId, ActionCancelToken)>>,
     schema_registry: Option<Arc<SchemaRegistry>>,
+    /// Which registry entry each connection's targets resolved to, keyed by
+    /// connection and target name.
+    ///
+    /// A schema name is not an identity. Two robots can publish
+    /// `sensor_msgs/Image` and mean different things by it — different ROS
+    /// versions, different distros — and the registry holds both. This is what
+    /// lets a view ask for *this* connection's answer rather than for whichever
+    /// definition of that name sorted first. Behind a plain lock for the same
+    /// reason `meters` is: a render reads it and a render cannot await.
+    schemas: std::sync::Mutex<HashMap<(ConnectionId, String), String>>,
 }
 
 #[derive(Debug)]
@@ -105,12 +115,39 @@ impl CanonicalPipeline {
                 subscriptions: Mutex::new(HashMap::new()),
                 action_goals: Mutex::new(HashMap::new()),
                 schema_registry,
+                schemas: std::sync::Mutex::new(HashMap::new()),
             }),
         }
     }
 
     pub fn schema_registry(&self) -> Option<&Arc<SchemaRegistry>> {
         self.inner.schema_registry.as_ref()
+    }
+
+    /// The registry entry that describes `target` on `connection`.
+    ///
+    /// This is the answer a view wants whenever it is about to build a form or
+    /// flatten a message: looking the schema up by name instead returns
+    /// whichever definition of that name happens to sort first, and with a ROS 1
+    /// robot and a ROS 2 robot connected at once that is a coin toss between two
+    /// different meanings of `std_msgs/Header`.
+    ///
+    /// `None` before discovery has described the target, or when the transport
+    /// sent no definition for it — the name is then all there is to go on.
+    pub fn schema_hash(&self, connection: ConnectionId, target: &str) -> Option<String> {
+        self.inner
+            .schemas
+            .lock()
+            .ok()?
+            .get(&(connection, target.to_string()))
+            .cloned()
+    }
+
+    /// Forgets what a connection described, when it goes away.
+    pub fn forget_schemas(&self, connection: ConnectionId) {
+        if let Ok(mut schemas) = self.inner.schemas.lock() {
+            schemas.retain(|(owner, _), _| *owner != connection);
+        }
     }
 
     #[allow(dead_code)]
@@ -128,7 +165,7 @@ impl CanonicalPipeline {
             .lock()
             .await
             .insert(id, dyn_transport.clone());
-        self.spawn_schema_watcher(dyn_transport);
+        self.spawn_schema_watcher(id, dyn_transport);
         Ok(id)
     }
 
@@ -142,7 +179,7 @@ impl CanonicalPipeline {
             .lock()
             .await
             .insert(id, dyn_transport.clone());
-        self.spawn_schema_watcher(dyn_transport);
+        self.spawn_schema_watcher(id, dyn_transport);
         Ok(id)
     }
 
@@ -163,7 +200,7 @@ impl CanonicalPipeline {
             .lock()
             .await
             .insert(id, dyn_transport.clone());
-        self.spawn_schema_watcher(dyn_transport);
+        self.spawn_schema_watcher(id, dyn_transport);
         Ok(id)
     }
 
@@ -177,21 +214,22 @@ impl CanonicalPipeline {
             .lock()
             .await
             .insert(id, dyn_transport.clone());
-        self.spawn_schema_watcher(dyn_transport);
+        self.spawn_schema_watcher(id, dyn_transport);
         Ok(id)
     }
 
-    fn spawn_schema_watcher(&self, transport: Arc<dyn Transport>) {
+    fn spawn_schema_watcher(&self, connection: ConnectionId, transport: Arc<dyn Transport>) {
         let Some(registry) = self.inner.schema_registry.clone() else {
             return;
         };
+        let inner = Arc::clone(&self.inner);
         let mut discovery_rx = transport.discovery();
         spawn_detached(async move {
             let snapshot = discovery_rx.borrow().clone();
-            register_discovery(&registry, &snapshot).await;
+            register_discovery(&registry, &snapshot, connection, &inner).await;
             while discovery_rx.changed().await.is_ok() {
                 let snapshot = discovery_rx.borrow().clone();
-                register_discovery(&registry, &snapshot).await;
+                register_discovery(&registry, &snapshot, connection, &inner).await;
             }
         });
     }
@@ -211,6 +249,10 @@ impl CanonicalPipeline {
 
     pub async fn close(&self, connection_id: ConnectionId) -> TransportResult<()> {
         let removed = self.inner.connections.lock().await.remove(&connection_id);
+        // What this connection said its targets were is only true while it is
+        // open. Reconnecting re-describes them, and a robot reflashed in between
+        // is entitled to a different answer.
+        self.forget_schemas(connection_id);
         if let Some(transport) = removed {
             transport.disconnect().await?;
         }
@@ -395,7 +437,35 @@ impl CanonicalPipeline {
     }
 }
 
-async fn register_discovery(registry: &Arc<SchemaRegistry>, discovery: &Discovery) {
+async fn register_discovery(
+    registry: &Arc<SchemaRegistry>,
+    discovery: &Discovery,
+    connection: ConnectionId,
+    inner: &Arc<Inner>,
+) {
+    // Which target each definition belongs to, so the hash it registers under
+    // can be recorded against this connection rather than only against a name
+    // the whole workspace shares.
+    let mut owner: HashMap<&str, Vec<&str>> = HashMap::new();
+    for topic in &discovery.topics {
+        owner
+            .entry(&topic.schema_name)
+            .or_default()
+            .push(&topic.name);
+    }
+    for service in &discovery.services {
+        owner
+            .entry(&service.schema_name)
+            .or_default()
+            .push(&service.name);
+    }
+    for action in &discovery.actions {
+        owner
+            .entry(&action.schema_name)
+            .or_default()
+            .push(&action.name);
+    }
+
     let mut pending: Vec<(&str, &str, SchemaKind)> = Vec::new();
     for (name, body) in &discovery.dependency_schemas {
         pending.push((name.as_str(), body.as_str(), SchemaKind::Message));
@@ -420,10 +490,12 @@ async fn register_discovery(registry: &Arc<SchemaRegistry>, discovery: &Discover
         let mut still = Vec::new();
         let mut progressed = false;
         for (name, body, kind) in pending {
-            if register_one(registry, name, body, kind).await {
-                progressed = true;
-            } else {
-                still.push((name, body, kind));
+            match register_one(registry, name, body, kind).await {
+                Some(hash) => {
+                    record_schema(inner, connection, &owner, name, hash);
+                    progressed = true;
+                }
+                None => still.push((name, body, kind)),
             }
         }
         pending = still;
@@ -432,19 +504,50 @@ async fn register_discovery(registry: &Arc<SchemaRegistry>, discovery: &Discover
         }
     }
     for (name, body, kind) in &pending {
-        if let Err(err) = registry.register(name, *kind, body).await {
-            tracing::warn!(?err, name, "schema failed to register during discovery");
+        match registry.register(name, *kind, body).await {
+            Ok(reference) => record_schema(inner, connection, &owner, name, reference.hash),
+            Err(err) => tracing::warn!(?err, name, "schema failed to register during discovery"),
         }
     }
 }
 
+/// Notes that every target of `schema_name` on this connection is described by
+/// the registry entry `hash`.
+fn record_schema(
+    inner: &Arc<Inner>,
+    connection: ConnectionId,
+    owner: &HashMap<&str, Vec<&str>>,
+    schema_name: &str,
+    hash: String,
+) {
+    let Some(targets) = owner.get(schema_name) else {
+        // A dependency rather than a target of its own. It is in the registry
+        // and reachable through the definitions that name it.
+        return;
+    };
+    let Ok(mut schemas) = inner.schemas.lock() else {
+        return;
+    };
+    for target in targets {
+        schemas.insert((connection, target.to_string()), hash.clone());
+    }
+}
+
+/// Registers one definition, giving back the hash it landed on.
+///
+/// The hash rather than a bare success: it is the only thing that tells this
+/// connection's `sensor_msgs/Image` from another connection's.
 async fn register_one(
     registry: &Arc<SchemaRegistry>,
     name: &str,
     definition: &str,
     kind: SchemaKind,
-) -> bool {
-    registry.register(name, kind, definition).await.is_ok()
+) -> Option<String> {
+    registry
+        .register(name, kind, definition)
+        .await
+        .ok()
+        .map(|reference| reference.hash)
 }
 
 #[derive(Debug, Clone)]

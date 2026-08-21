@@ -985,10 +985,27 @@ impl RequestPanel {
 
     /// The message definition a form should be built from: a service's request
     /// or an action's goal.
+    /// The form's fields for `name`, resolved the way *this* connection
+    /// described it.
+    ///
+    /// Two robots can publish a schema of the same name and mean different
+    /// things by it — a ROS 1 `std_msgs/Header` carries `seq` and a ROS 2 one
+    /// does not — and the registry holds both the moment both are connected.
+    /// So the connection's own entry is asked for first, and the name is only
+    /// consulted when discovery never described the target.
     fn message_for(&self, name: &str, cx: &App) -> Option<Vec<Field>> {
         let pipeline = self.sessions.read(cx).pipeline();
         let registry = pipeline.schema_registry()?.clone();
-        let definition = registry.get_by_name(name).into_iter().next()?;
+
+        let hash = self
+            .draft
+            .connection_id
+            .and_then(|id| self.sessions.read(cx).session(id))
+            .and_then(|session| pipeline.schema_hash(session, self.draft.target.trim()));
+        let definition = match hash.and_then(|hash| registry.get_by_hash(&hash)) {
+            Some(definition) => definition,
+            None => registry.get_by_name(name).into_iter().next()?,
+        };
 
         let message = match &definition.parsed {
             rw_core::schema::ParsedSchema::Service { request, .. } => request,
@@ -996,12 +1013,39 @@ impl RequestPanel {
             rw_core::schema::ParsedSchema::Message(message) => message,
         };
 
-        let lookup = move |type_name: &str| {
-            registry
-                .get_by_name(type_name)
+        // A nested type comes from the sections this definition arrived with,
+        // before the registry is asked at all. Those are the publisher's own
+        // copies, and they are the only correct answer for it — resolving
+        // `std_msgs/Header` by name here is exactly how one robot's header ends
+        // up describing another's.
+        let own: std::collections::HashMap<&str, &str> =
+            rw_core::schema::parser::split_bundle(&definition.definition)
+                .1
                 .into_iter()
-                .next()
-                .map(|definition| definition.parsed.primary().clone())
+                .map(|part| (part.name, part.body))
+                .collect();
+        let own: std::collections::HashMap<String, rw_core::schema::MessageDef> = own
+            .into_iter()
+            .filter_map(|(type_name, body)| {
+                let package = type_name.split('/').next().filter(|part| !part.is_empty());
+                let parsed = rw_core::schema::parser::parse_with_package(
+                    rw_core::schema::SchemaKind::Message,
+                    body,
+                    package,
+                )
+                .ok()?;
+                Some((type_name.to_string(), parsed.primary().clone()))
+            })
+            .collect();
+
+        let lookup = move |type_name: &str| {
+            own.get(type_name).cloned().or_else(|| {
+                registry
+                    .get_by_name(type_name)
+                    .into_iter()
+                    .next()
+                    .map(|definition| definition.parsed.primary().clone())
+            })
         };
         Some(form::fields(message, &lookup))
     }

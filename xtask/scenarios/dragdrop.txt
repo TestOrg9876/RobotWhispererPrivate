@@ -29,9 +29,13 @@ type /dummy/wave
 wait 700
 key Return
 wait 600
-# The check saves it. Until it is saved the sidebar's row is a request with no
-# target stored, and dropping one of those is what the drop refuses.
-click 1194 92
+# Saved with the keybinding rather than the check on the bar. The check sits to
+# the left of the run button, so its x moves with the width of the connection
+# name beside it — a coordinate that changes when the environment is renamed is
+# a coordinate that will be wrong again. Until it is saved the sidebar's row is
+# a request with no target stored, and dropping one of those is what the drop
+# refuses.
+key ctrl+s
 wait 900
 shot 01-saved
 

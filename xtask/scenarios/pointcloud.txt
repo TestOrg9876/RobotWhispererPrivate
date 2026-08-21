@@ -26,7 +26,7 @@ type /dummy/points
 wait 700
 key Return
 wait 600
-click 1266 100
+click 1364 96
 wait 2000
 
 # Pretty is what a request opens on: the message laid out the way the request
@@ -39,12 +39,12 @@ shot 00-pretty
 # Folding `fields` puts four sub-trees away behind one row. A folded branch
 # costs one row whatever is under it, which is what keeps this cheap on a
 # message that arrives ten times a second.
-click 400 240
+click 400 246
 wait 900
 shot 00b-folded
 
 # Visualize, which is where the 3D pane lives.
-click 462 155
+click 462 154
 wait 2500
 shot 01-cloud
 
@@ -54,6 +54,6 @@ wait 900
 shot 02-orbited
 
 # Colour by intensity instead of height.
-click 381 194
+click 387 197
 wait 900
 shot 03-intensity

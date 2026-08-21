@@ -97,7 +97,7 @@ shot 02-nested
 # two still at the root — so the topic is at 135.
 click 139 135
 wait 1200
-click 1266 101
+click 1364 96
 wait 2500
 move 700 500
 wait 400

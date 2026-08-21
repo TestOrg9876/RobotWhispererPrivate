@@ -29,19 +29,19 @@ type /dummy/wave
 wait 700
 key Return
 wait 600
-click 1266 100
+click 1364 96
 wait 2500
 shot 01-pretty
 
 # The same message as text, which is the other half of reading one.
-click 397 261
+click 397 154
 wait 900
 shot 02-raw
 
 # The plot, after a few seconds of samples. Third in the strip, not fourth:
 # a `std_msgs/Float64` has nothing to draw, so it is not offered a Visualize
 # tab and Plot sits where that would have been.
-click 447 261
+click 447 154
 wait 3000
 shot 03-plot
 
@@ -54,8 +54,8 @@ type /dummy/image
 wait 700
 key Return
 wait 600
-click 1266 100
+click 1364 96
 wait 2000
-click 462 155
+click 462 154
 wait 1400
 shot 04-image

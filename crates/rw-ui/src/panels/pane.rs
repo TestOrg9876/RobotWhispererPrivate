@@ -307,7 +307,7 @@ impl VizPanel {
         let Some(layers) = crate::viz::layers_for(
             &crate::viz::role_for(&schema),
             &value,
-            tree(self.connection, cx).as_ref(),
+            crate::tf::tree(self.connection, cx).as_ref(),
         ) else {
             return;
         };
@@ -650,17 +650,6 @@ impl Render for VizPanel {
                     ),
             )
     }
-}
-
-/// A connection's transform tree, for placing what a pane is showing.
-///
-/// A copy rather than a borrow: the tree is behind a lock that frames arriving
-/// off the UI thread also take, and holding it across a render would stall the
-/// subscription. Trees are a few dozen frames of a few dozen samples.
-pub(crate) fn tree(connection: Option<i64>, cx: &App) -> Option<rw_tf::Buffer> {
-    let held = RobotWhisperer::global(cx).tf.read(cx).peek(connection?)?;
-    let tree = held.lock().ok()?;
-    Some(tree.clone())
 }
 
 /// A message count short enough to sit beside a tab title.

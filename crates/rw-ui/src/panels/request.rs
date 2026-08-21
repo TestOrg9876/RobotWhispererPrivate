@@ -1688,7 +1688,7 @@ impl RequestPanel {
         let Some(layers) = crate::viz::layers_for(
             &crate::viz::role_for(&schema),
             &value,
-            crate::panels::pane::tree(self.draft.connection_id, cx).as_ref(),
+            crate::tf::tree(self.draft.connection_id, cx).as_ref(),
         ) else {
             return;
         };

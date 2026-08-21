@@ -88,6 +88,68 @@ pub fn decode(value: &CanonicalValue) -> Option<Vec<Stamped>> {
     Some(stamped)
 }
 
+/// A connection's transform tree, held rather than copied.
+///
+/// Every method takes the lock for the length of one question and no longer.
+/// That matters in both directions. Frames arrive off the UI thread and take
+/// the same lock, so a render that held it across a decode would stall the
+/// subscription — but *copying* the buffer to get out of the lock is worse. A
+/// thirty-frame tree publishing at 100 Hz holds thirty thousand stamped
+/// transforms inside a `BTreeMap` of `String`s, and a pane resolving one layer
+/// per frame would deep-copy all of it sixty times a second. A lookup is
+/// microseconds; the copy was a megabyte.
+#[derive(Clone)]
+pub struct Tree(Arc<Mutex<Buffer>>);
+
+impl Tree {
+    /// Wraps a buffer that is not in the store — the tests' way in.
+    pub fn of(buffer: Buffer) -> Self {
+        Self(Arc::new(Mutex::new(buffer)))
+    }
+
+    /// Where `source` sits inside `target`, at `at_ns`.
+    pub fn lookup(
+        &self,
+        target: &str,
+        source: &str,
+        at_ns: u64,
+    ) -> Result<Transform, rw_tf::TfError> {
+        self.buffer().lookup(target, source, at_ns)
+    }
+
+    /// Every frame this tree knows, for the fixed-frame list.
+    pub fn frames(&self) -> Vec<String> {
+        self.buffer().frames()
+    }
+
+    /// The frame everything else hangs off, which is what a person means by
+    /// "the world". `None` until something has been published.
+    pub fn root(&self) -> Option<String> {
+        self.buffer()
+            .tree()
+            .into_iter()
+            .find(|node| node.parent.is_none())
+            .map(|node| node.frame)
+    }
+
+    /// A poisoned lock is read through rather than treated as no tree at all.
+    /// The panic that poisoned it happened elsewhere; the transforms already in
+    /// the buffer are still the last true thing anyone said about the robot,
+    /// and dropping them would blank every layer in every pane.
+    fn buffer(&self) -> std::sync::MutexGuard<'_, Buffer> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// The transform tree of a connection, for a view that needs to place
+/// something. `None` for no connection, or for one nothing has arrived on.
+pub fn tree(connection: Option<i64>, cx: &App) -> Option<Tree> {
+    let held = RobotWhisperer::global(cx).tf.read(cx).peek(connection?)?;
+    Some(Tree(held))
+}
+
 /// One transform tree per connection.
 ///
 /// Held in the [`RobotWhisperer`] global beside `sessions` and `gpu`, because a
@@ -469,5 +531,58 @@ mod tests {
             .lookup("map", "base", 1_000_000_000)
             .expect("the tree answers");
         assert_eq!(placed.apply([0., 0., 0.]), [1., 2., 3.]);
+    }
+
+    /// A `Tree` is a handle onto the same buffer, so it must answer the same
+    /// question the same way — the whole point of it is that no copy happens.
+    #[test]
+    fn a_tree_answers_what_the_buffer_it_wraps_would() {
+        let mut buffer = Buffer::new();
+        buffer.insert_static("map", "base", Transform::translation([1., 2., 3.]));
+        buffer.insert_static("base", "laser", Transform::translation([0., 0., 1.]));
+
+        let expected = buffer
+            .lookup("map", "laser", rw_tf::LATEST)
+            .expect("buffer");
+        let tree = Tree::of(buffer);
+        let placed = tree.lookup("map", "laser", rw_tf::LATEST).expect("tree");
+
+        assert_eq!(placed.translation, expected.translation);
+        assert_eq!(placed.apply([0., 0., 0.]), [1., 2., 4.]);
+        assert_eq!(tree.frames(), vec!["base", "laser", "map"]);
+        assert_eq!(tree.root().as_deref(), Some("map"));
+    }
+
+    /// A tree nothing has published has no root to offer, and saying so is how
+    /// the world pane knows to fall back to whatever frame a layer arrived in.
+    #[test]
+    fn an_empty_tree_has_no_root() {
+        let tree = Tree::of(Buffer::new());
+        assert_eq!(tree.root(), None);
+        assert!(tree.frames().is_empty());
+    }
+
+    /// A panic while some other thread held the lock poisons it. The transforms
+    /// already in the buffer are still the last true thing anyone said about
+    /// the robot, so they keep being answered rather than every layer in every
+    /// pane going blank.
+    #[test]
+    fn a_poisoned_tree_still_answers() {
+        let mut buffer = Buffer::new();
+        buffer.insert_static("map", "base", Transform::translation([1., 0., 0.]));
+        let tree = Tree::of(buffer);
+
+        let poisoner = tree.clone();
+        std::thread::spawn(move || {
+            let _held = poisoner.0.lock().expect("first lock");
+            panic!("poisons the lock");
+        })
+        .join()
+        .expect_err("the thread panicked");
+
+        let placed = tree
+            .lookup("map", "base", rw_tf::LATEST)
+            .expect("still answers");
+        assert_eq!(placed.translation, [1., 0., 0.]);
     }
 }

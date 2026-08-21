@@ -41,11 +41,11 @@ use rw_assets::kinematics::{self, Pose};
 use rw_assets::math;
 use rw_canonical::CanonicalValue;
 use rw_render::{Content, Layer, MeshVertex, Solid};
-use rw_tf::Buffer;
 
 use crate::actions::{AddWorldRobot, RemoveWorldLayer, SetWorldFrame};
 use crate::scene_view::SceneView;
 use crate::session::{RobotWhisperer, Sessions};
+use crate::tf::Tree;
 use crate::workspace::Workspace;
 use crate::{tokens, viz};
 
@@ -428,20 +428,13 @@ impl WorldPanel {
     /// is already showing. Without that a catalog robot could never be attached
     /// to a running robot at all, which is the entire point of putting one in a
     /// world rather than in a viewer of its own.
-    fn tree_for(&self, index: usize, cx: &App) -> Option<Buffer> {
+    fn tree_for(&self, index: usize, cx: &App) -> Option<Tree> {
         let connection = self
             .layers
             .get(index)
             .and_then(WorldLayer::connection)
             .or_else(|| self.layers.iter().find_map(WorldLayer::connection));
-        self.tree(connection, cx)
-    }
-
-    /// The transform tree of a connection, copied out from under its lock.
-    fn tree(&self, connection: Option<i64>, cx: &App) -> Option<Buffer> {
-        let held = RobotWhisperer::global(cx).tf.read(cx).peek(connection?)?;
-        let tree = held.lock().ok()?;
-        Some(tree.clone())
+        crate::tf::tree(connection, cx)
     }
 
     /// Every frame the pane could be fixed to.
@@ -458,7 +451,7 @@ impl WorldPanel {
             .filter_map(WorldLayer::connection)
             .collect::<BTreeSet<_>>()
         {
-            if let Some(tree) = self.tree(Some(connection), cx) {
+            if let Some(tree) = crate::tf::tree(Some(connection), cx) {
                 frames.extend(tree.frames());
             }
         }
@@ -489,13 +482,8 @@ impl WorldPanel {
             .layers
             .iter()
             .filter_map(WorldLayer::connection)
-            .filter_map(|connection| self.tree(Some(connection), cx))
-            .find_map(|tree| {
-                tree.tree()
-                    .into_iter()
-                    .find(|node| node.parent.is_none())
-                    .map(|node| node.frame)
-            });
+            .filter_map(|connection| crate::tf::tree(Some(connection), cx))
+            .find_map(|tree| tree.root());
         if let Some(root) = from_tree {
             self.fixed = root;
             return;
@@ -543,7 +531,7 @@ impl WorldPanel {
         &self,
         index: usize,
         fixed: &str,
-        tree: Option<&Buffer>,
+        tree: Option<&Tree>,
     ) -> (Vec<Layer>, Option<SharedString>, Option<SharedString>) {
         let (value, schema) = {
             let Ok(incoming) = self.layers[index].incoming.lock() else {
@@ -599,7 +587,7 @@ impl WorldPanel {
         &self,
         index: usize,
         fixed: &str,
-        tree: Option<&Buffer>,
+        tree: Option<&Tree>,
     ) -> (Vec<Layer>, Option<SharedString>, Option<SharedString>) {
         let Source::Robot { anchor, loaded, .. } = &self.layers[index].source else {
             return (Vec::new(), None, None);

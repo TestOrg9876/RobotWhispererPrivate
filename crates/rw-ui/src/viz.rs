@@ -14,8 +14,8 @@
 
 use rw_canonical::{CanonicalValue, VisualizationRole};
 use rw_render::{Content, Layer};
-use rw_tf::Buffer;
 
+use crate::tf::Tree;
 use crate::{cloud, geometry, image, marker};
 
 /// The colour a message's own geometry is drawn in when it did not name one.
@@ -176,7 +176,7 @@ pub struct Placed {
 /// silently drawn in the wrong place is the failure mode this whole crate
 /// exists to prevent, and it is worse than a layer that is missing, because
 /// nothing about it looks wrong.
-pub fn place(pieces: Vec<Piece>, fixed: &str, tree: Option<&Buffer>) -> Vec<Placed> {
+pub fn place(pieces: Vec<Piece>, fixed: &str, tree: Option<&Tree>) -> Vec<Placed> {
     pieces
         .into_iter()
         .map(|piece| {
@@ -241,7 +241,7 @@ pub fn place(pieces: Vec<Piece>, fixed: &str, tree: Option<&Buffer>) -> Vec<Plac
 pub fn layers_for(
     role: &VisualizationRole,
     value: &CanonicalValue,
-    tree: Option<&Buffer>,
+    tree: Option<&Tree>,
 ) -> Option<Vec<Layer>> {
     let pieces = draw(role, value)?;
     let fixed = pieces.iter().find_map(|piece| piece.frame.clone());

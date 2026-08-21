@@ -1,0 +1,76 @@
+# History: a run is still there after the next one.
+#
+# The panel holds one response and the next call replaces it. History is what
+# makes "call it, change an argument, call it again, compare" possible — and
+# clicking a past run puts its arguments back in the form, which is the only
+# reason to keep any of it.
+
+wait 900
+click 105 888
+wait 900
+click 1403 81
+wait 700
+click 1384 158
+wait 500
+click 1269 211
+type Simulator
+wait 500
+click 1395 242
+wait 1500
+click 1327 16
+wait 600
+click 1272 102
+wait 900
+
+# A service, called with 20 + 22.
+click 244 49
+wait 1400
+click 331 92
+wait 800
+click 351 149
+wait 800
+click 700 92
+wait 900
+key Return
+wait 1000
+click 975 194
+wait 500
+type 20
+wait 500
+click 975 237
+wait 500
+type 22
+wait 500
+click 1385 96
+wait 1400
+move 700 500
+wait 400
+shot 01-first-answer
+
+# Called again with a different second argument — typing appends, so 22 becomes
+# 220. The first answer is gone from the response the moment the second lands,
+# which is the thing history exists to undo.
+click 975 237
+wait 500
+type 0
+wait 500
+click 1385 96
+wait 1400
+move 700 500
+wait 400
+shot 02-second-answer
+
+# Both runs are there, newest first.
+click 507 303
+wait 900
+move 700 500
+wait 400
+shot 03-both-runs
+
+# Clicking the older run puts its arguments back in the form. That is the whole
+# reason to keep any of this: not to admire what you did, but to do it again.
+click 700 369
+wait 1000
+move 700 600
+wait 400
+shot 04-reused

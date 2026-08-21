@@ -37,15 +37,18 @@ pub enum View {
     Plot,
     /// What has changed since a message was pinned.
     Diff,
+    /// What this request has done before.
+    History,
 }
 
 impl View {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Pretty,
         Self::Raw,
         Self::Visualize,
         Self::Plot,
         Self::Diff,
+        Self::History,
     ];
 
     pub fn label(self) -> &'static str {
@@ -55,6 +58,7 @@ impl View {
             Self::Visualize => "Visualize",
             Self::Plot => "Plot",
             Self::Diff => "Diff",
+            Self::History => "History",
         }
     }
 
@@ -71,6 +75,7 @@ impl View {
             Self::Visualize => "visualize",
             Self::Plot => "plot",
             Self::Diff => "diff",
+            Self::History => "history",
         }
     }
 
@@ -80,6 +85,7 @@ impl View {
             "visualize" => Self::Visualize,
             "plot" => Self::Plot,
             "diff" => Self::Diff,
+            "history" => Self::History,
             _ => Self::Pretty,
         }
     }
@@ -100,6 +106,9 @@ impl View {
         }
         if offers.pinned {
             views.push(Self::Diff);
+        }
+        if offers.recorded {
+            views.push(Self::History);
         }
         views
     }
@@ -129,6 +138,9 @@ pub struct Offers {
     /// Something is pinned, so there is a before to diff against. Nothing is
     /// lost by hiding Diff until then: the Freeze button opens it.
     pub pinned: bool,
+    /// This request has run before and the runs were kept. A topic never has
+    /// any — a subscription has no discrete runs — so it never offers the tab.
+    pub recorded: bool,
 }
 
 impl Offers {
@@ -138,7 +150,14 @@ impl Offers {
             visual: viz::visual_for(role) != Visual::Fields,
             plottable: !history.is_empty(),
             pinned,
+            recorded: false,
         }
+    }
+
+    /// With past runs to look at, which only a request editor knows about.
+    pub fn recorded(mut self, recorded: bool) -> Self {
+        self.recorded = recorded;
+        self
     }
 }
 
@@ -417,7 +436,10 @@ mod tests {
     #[test]
     fn view_labels_are_stable_and_distinct() {
         let labels = View::ALL.map(View::label);
-        assert_eq!(labels, ["Pretty", "Raw", "Visualize", "Plot", "Diff"]);
+        assert_eq!(
+            labels,
+            ["Pretty", "Raw", "Visualize", "Plot", "Diff", "History"]
+        );
     }
 
     #[test]

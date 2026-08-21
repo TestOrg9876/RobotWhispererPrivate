@@ -25,7 +25,14 @@ use gpui_component::{
     v_flex,
 };
 use rw_canonical::CanonicalValue;
-use rw_core::domain::{Request, RequestKind, Value};
+use rw_core::domain::{HistoryEntry, NewHistoryEntry, Outcome, Request, RequestKind, Value};
+
+/// How many runs of one request are kept.
+///
+/// Enough that a morning's worth of calls is still there, few enough that a
+/// workspace of two hundred requests is not a database of everything anyone has
+/// ever done. Enforced on write, so it holds without anything having to sweep.
+const HISTORY_CAP: usize = 50;
 use rw_transport::ConnectionId;
 
 use crate::discovery::{self, Suggestion};
@@ -232,6 +239,12 @@ pub struct RequestPanel {
     /// watching it drift is the question people are asking when they stare at
     /// a raw view.
     frozen: Option<(CanonicalValue, u64)>,
+    /// What this request has done before, newest first.
+    ///
+    /// Read from storage rather than accumulated in memory, so it is still
+    /// there after the tab is closed and after the app is — which is the whole
+    /// difference between this and the live response beside it.
+    past: Vec<HistoryEntry>,
     /// The tab group this editor is sitting in, which changes whenever the user
     /// drags its tab somewhere else.
     home: Home,
@@ -310,6 +323,7 @@ impl RequestPanel {
             scene_at: 0,
             tree: None,
             frozen: None,
+            past: Vec::new(),
             home: Home::default(),
             _repaint: None,
             _subscriptions: subscriptions,
@@ -317,7 +331,13 @@ impl RequestPanel {
     }
 
     pub fn view(request: &Request, window: &mut Window, cx: &mut App) -> Entity<Self> {
-        cx.new(|cx| Self::new(request, window, cx))
+        cx.new(|cx| {
+            let panel = Self::new(request, window, cx);
+            // Reopening a request should show what it has already done, which is
+            // the difference between history and the live response beside it.
+            panel.reload_history(cx);
+            panel
+        })
     }
 
     pub fn request_id(&self) -> Option<i64> {
@@ -596,6 +616,7 @@ impl RequestPanel {
         let pipeline = self.sessions.read(cx).pipeline();
         self.set_activity(Activity::Calling, cx);
 
+        let sent = request.clone();
         cx.spawn(async move |panel, cx| {
             let outcome = pipeline
                 .call_service(session, &target, request.into())
@@ -605,12 +626,22 @@ impl RequestPanel {
                 .update(cx, |panel, cx| {
                     match outcome {
                         Ok(response) => {
+                            panel.record(
+                                sent.clone(),
+                                Outcome::Answered,
+                                Some(Value::from(response.clone())),
+                                cx,
+                            );
                             let mut incoming = panel.incoming.lock().expect("incoming mutex");
                             incoming.history.observe(&response);
                             incoming.value = Some(response);
                             incoming.count += 1;
                         }
-                        Err(error) => panel.failed(error, cx),
+                        Err(error) => {
+                            let reason = error.to_string();
+                            panel.record(sent.clone(), Outcome::Failed { reason }, None, cx);
+                            panel.failed(error, cx);
+                        }
                     }
                     // A call is over the moment it answers; there is nothing to
                     // stop afterwards.
@@ -635,6 +666,7 @@ impl RequestPanel {
         let pipeline = self.sessions.read(cx).pipeline();
         let incoming = Arc::clone(&self.incoming);
 
+        let sent = goal.clone();
         cx.spawn(async move |panel, cx| {
             let mut stream = match pipeline
                 .send_action_goal(session, &target, goal.into())
@@ -681,12 +713,24 @@ impl RequestPanel {
                 .update(cx, |panel, cx| {
                     match result {
                         Ok(Ok(value)) => {
+                            // The result, not the feedback: a goal ends once,
+                            // and the entry is about how it ended.
+                            panel.record(
+                                sent.clone(),
+                                Outcome::Answered,
+                                Some(Value::from(value.clone())),
+                                cx,
+                            );
                             let mut incoming = panel.incoming.lock().expect("incoming mutex");
                             incoming.history.observe(&value);
                             incoming.value = Some(value);
                             incoming.count += 1;
                         }
-                        Ok(Err(error)) => panel.failed(error, cx),
+                        Ok(Err(error)) => {
+                            let reason = error.to_string();
+                            panel.record(sent.clone(), Outcome::Failed { reason }, None, cx);
+                            panel.failed(error, cx);
+                        }
                         // The sender was dropped: the goal was cancelled, or the
                         // transport went away. Neither is worth an error banner.
                         Err(_) => {}
@@ -719,8 +763,25 @@ impl RequestPanel {
             panel
                 .update(cx, |panel, cx| {
                     match outcome {
-                        Ok((values, kinds)) => panel.parameters_arrived(values, kinds),
-                        Err(error) => panel.failed(error, cx),
+                        Ok((values, kinds)) => {
+                            panel.record(
+                                Value::empty_struct(),
+                                Outcome::Answered,
+                                Some(Value::from(values.clone())),
+                                cx,
+                            );
+                            panel.parameters_arrived(values, kinds);
+                        }
+                        Err(error) => {
+                            let reason = error.to_string();
+                            panel.record(
+                                Value::empty_struct(),
+                                Outcome::Failed { reason },
+                                None,
+                                cx,
+                            );
+                            panel.failed(error, cx);
+                        }
                     }
                     panel.set_activity(Activity::Idle, cx);
                     panel._repaint = None;
@@ -791,6 +852,7 @@ impl RequestPanel {
         self.set_activity(Activity::Calling, cx);
         let pipeline = self.sessions.read(cx).pipeline();
 
+        let written = Value::from(values.clone());
         cx.spawn(async move |panel, cx| {
             let outcome = write_parameters(&pipeline, session, &node, &values, &kinds).await;
             // Read back whatever happened: a partial refusal leaves the node
@@ -806,8 +868,15 @@ impl RequestPanel {
                         panel.parameters_arrived(values, kinds);
                     }
                     match outcome {
-                        Ok(count) => panel.say(format!("set {count} on {node}"), cx),
-                        Err(error) => panel.failed(error, cx),
+                        Ok(count) => {
+                            panel.record(written.clone(), Outcome::Answered, None, cx);
+                            panel.say(format!("set {count} on {node}"), cx);
+                        }
+                        Err(error) => {
+                            let reason = error.to_string();
+                            panel.record(written.clone(), Outcome::Failed { reason }, None, cx);
+                            panel.failed(error, cx);
+                        }
                     }
                     cx.notify();
                 })
@@ -1100,6 +1169,167 @@ impl RequestPanel {
             }
         }
         (form::assemble(leaves), problem)
+    }
+
+    /// Keeps this run, so it is still there after the next one.
+    ///
+    /// A service call and an action goal each happen once and are over, which
+    /// is the shape history is for. A topic is a subscription: it has no one
+    /// answer to keep, and recording every message as its own entry would be
+    /// the recorder's job done badly.
+    ///
+    /// `input` is handed in rather than read off the draft. `draft.input` is
+    /// only written when the request is *saved*, so recording that would
+    /// remember the arguments of some earlier edit — and "put these back in the
+    /// form" would put back something that was never sent.
+    fn record(
+        &self,
+        input: Value,
+        outcome: Outcome,
+        response: Option<Value>,
+        cx: &mut Context<Self>,
+    ) {
+        // Only the kinds that can show it back. A topic is a subscription and
+        // has no discrete runs to keep. A parameter request has runs, but its
+        // form *is* its response — there is no response card to hang a History
+        // tab on — and writing rows nobody can ever read is worse than not
+        // keeping them. If parameter history is wanted it needs somewhere to
+        // live on the PARAMETERS card first.
+        if !matches!(self.draft.kind, RequestKind::Service | RequestKind::Action) {
+            return;
+        }
+        let entry = NewHistoryEntry {
+            request_id: self.saved.id,
+            kind: self.draft.kind,
+            target: self.draft.target.trim().to_string(),
+            connection_id: self.draft.connection_id,
+            outcome,
+            input,
+            response,
+        };
+        let storage = self.workspace.read(cx).storage();
+        let id = self.saved.id;
+        cx.spawn(async move |panel, cx| {
+            if let Err(error) = storage.record_history(entry, HISTORY_CAP).await {
+                // Not being able to write the history of a call is not a reason
+                // to tell someone their call failed.
+                tracing::warn!(?error, "could not record this run");
+                return;
+            }
+            let past = storage
+                .list_history(id, HISTORY_CAP)
+                .await
+                .unwrap_or_default();
+            panel
+                .update(cx, |panel, cx| {
+                    panel.past = past;
+                    cx.notify();
+                })
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Re-reads this request's runs from storage.
+    fn reload_history(&self, cx: &mut Context<Self>) {
+        let storage = self.workspace.read(cx).storage();
+        let id = self.saved.id;
+        cx.spawn(async move |panel, cx| {
+            let past = storage
+                .list_history(id, HISTORY_CAP)
+                .await
+                .unwrap_or_default();
+            panel
+                .update(cx, |panel, cx| {
+                    panel.past = past;
+                    cx.notify();
+                })
+                .ok();
+        })
+        .detach();
+    }
+
+    /// Puts a past run's arguments back in the form.
+    ///
+    /// The reason to keep history at all: not to admire what you did, but to do
+    /// it again. The response is left alone — this loads the question, it does
+    /// not pretend to have re-asked it.
+    fn reuse(&mut self, entry: &HistoryEntry, window: &mut Window, cx: &mut Context<Self>) {
+        self.draft.input = entry.input.clone();
+        for (field, inputs) in &self.payload {
+            let Inputs::One(input) = inputs else { continue };
+            let text = form::text_at(&entry.input, &field.path, field.editor).unwrap_or_default();
+            input.update(cx, |state, cx| state.set_value(text, window, cx));
+        }
+        self.tab = View::Pretty;
+        cx.notify();
+    }
+
+    /// This request's past runs, newest first.
+    ///
+    /// Each row is what you want at a glance: when, whether it worked, and what
+    /// came back. Clicking one puts its arguments back in the form.
+    fn past_runs(&self, cx: &mut Context<Self>) -> AnyElement {
+        v_flex()
+            .id("history")
+            .size_full()
+            .gap_0p5()
+            .children(
+                self.past
+                    .iter()
+                    .enumerate()
+                    .map(|(index, entry)| self.past_run(index, entry, cx)),
+            )
+            .into_any_element()
+    }
+
+    fn past_run(&self, index: usize, entry: &HistoryEntry, cx: &mut Context<Self>) -> AnyElement {
+        let at = entry.at.with_timezone(&chrono::Local).format("%H:%M:%S");
+        let (tint, summary) = match &entry.outcome {
+            Outcome::Answered => (
+                cx.theme().muted_foreground,
+                entry
+                    .response
+                    .as_ref()
+                    .map(|value| one_line(&CanonicalValue::from(value.clone())))
+                    .unwrap_or_else(|| "done".to_string()),
+            ),
+            Outcome::Failed { reason } => (cx.theme().danger, reason.clone()),
+        };
+
+        h_flex()
+            .id(("run", index))
+            .w_full()
+            .px_2()
+            .py_1()
+            .gap_3()
+            .items_baseline()
+            .rounded(cx.theme().radius)
+            .cursor_pointer()
+            .hover(|row| row.bg(cx.theme().list_hover))
+            .child(
+                tokens::mono(cx)
+                    .flex_shrink_0()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(at.to_string()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_xs()
+                    .truncate()
+                    .text_color(tint)
+                    .child(summary),
+            )
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                let Some(entry) = this.past.get(index).cloned() else {
+                    return;
+                };
+                this.reuse(&entry, window, cx);
+            }))
+            .into_any_element()
     }
 
     fn failed(&mut self, error: impl std::fmt::Display, cx: &mut Context<Self>) {
@@ -1836,7 +2066,10 @@ impl RequestPanel {
         // numbers to plot and nothing to draw, and tabs for both would be two
         // places in the strip that open on an apology.
         let role = crate::viz::role_for(schema_name.as_deref().unwrap_or_default());
-        let offered = View::offered(views::Offers::of(&role, &history, self.frozen.is_some()));
+        let offered = View::offered(
+            views::Offers::of(&role, &history, self.frozen.is_some())
+                .recorded(!self.past.is_empty()),
+        );
         let active = active.or_pretty(&offered);
 
         // A segmented bar rather than document tabs: these are views of one
@@ -1898,6 +2131,7 @@ impl RequestPanel {
             (Some(value), View::Diff) => {
                 views::changes(self.frozen.as_ref().map(|(value, _)| value), value, cx)
             }
+            (_, View::History) => self.past_runs(cx),
             (Some(_), View::Pretty) => self.tree(cx),
             (Some(value), View::Visualize) => {
                 views::visualize(&role, value, self.scene.as_ref(), self.tree(cx), cx)
@@ -1941,6 +2175,29 @@ impl RequestPanel {
             )
             .into_any_element()
     }
+}
+
+/// A response as one line, for a row in a list.
+///
+/// `value::preview` pretty-prints across several lines, which is right in a
+/// pane and wrong in a row — it pushes the timestamp beside it down to the
+/// closing brace. The leaves are already flat, so this is the same information
+/// with the shape a list wants.
+fn one_line(value: &CanonicalValue) -> String {
+    const SHOWN: usize = 4;
+    let leaves = crate::value::leaves(value);
+    if leaves.is_empty() {
+        return crate::value::scalar(value);
+    }
+    let mut parts: Vec<String> = leaves
+        .iter()
+        .take(SHOWN)
+        .map(|(path, shown)| format!("{path} {shown}"))
+        .collect();
+    if leaves.len() > SHOWN {
+        parts.push(format!("+{} more", leaves.len() - SHOWN));
+    }
+    parts.join("   ")
 }
 
 /// Asks a node what parameters it has and what they hold.
@@ -2195,6 +2452,9 @@ mod tests {
     #[test]
     fn response_tabs_have_distinct_labels() {
         let labels: Vec<_> = View::ALL.iter().map(|tab| tab.label()).collect();
-        assert_eq!(labels, ["Pretty", "Raw", "Visualize", "Plot", "Diff"]);
+        assert_eq!(
+            labels,
+            ["Pretty", "Raw", "Visualize", "Plot", "Diff", "History"]
+        );
     }
 }

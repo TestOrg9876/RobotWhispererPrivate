@@ -598,6 +598,10 @@ impl Render for VizPanel {
             (Some(value), View::Diff) => {
                 views::changes(self.frozen.as_ref().map(|(value, _)| value), value, cx)
             }
+            // A pane has no history of its own: it is a live view of a topic,
+            // and a topic has no discrete runs. The tab is never offered here,
+            // and a stored view saying otherwise falls back like any other.
+            (_, View::History) => self.tree(cx),
             (Some(_), View::Pretty) => self.tree(cx),
             (Some(value), View::Visualize) => views::visualize(
                 &crate::viz::role_for(schema.as_deref().unwrap_or_default()),

@@ -767,4 +767,72 @@ mod tests {
             },
         )])
     }
+
+    /// What a saved request has to survive: fill a form, store it, and get the
+    /// same text back in the same boxes.
+    #[test]
+    fn a_filled_form_round_trips_through_a_stored_value() {
+        let leaves = vec![
+            ("a".to_string(), Value::Int(20)),
+            ("b".to_string(), Value::Int(22)),
+            ("pose.position.x".to_string(), Value::F64(1.5)),
+        ];
+        let stored = assemble(leaves);
+
+        assert_eq!(
+            text_at(&stored, "a", Editor::Integer).as_deref(),
+            Some("20")
+        );
+        assert_eq!(
+            text_at(&stored, "b", Editor::Integer).as_deref(),
+            Some("22")
+        );
+        assert_eq!(
+            text_at(&stored, "pose.position.x", Editor::Decimal).as_deref(),
+            Some("1.5")
+        );
+    }
+
+    /// An emptied box is an absent field, and absent is what comes back — so
+    /// clearing a value and saving really does clear it, rather than the old
+    /// one reappearing on reload.
+    #[test]
+    fn a_cleared_field_stays_cleared() {
+        assert_eq!(parse(Editor::Integer, ""), Ok(None));
+
+        // The form that produced it had `a` and `b`; `b` was then emptied.
+        let stored = assemble(vec![("a".to_string(), Value::Int(20))]);
+        assert_eq!(
+            text_at(&stored, "a", Editor::Integer).as_deref(),
+            Some("20")
+        );
+        assert_eq!(text_at(&stored, "b", Editor::Integer), None);
+    }
+
+    /// A field the schema no longer has is simply not found, rather than
+    /// poisoning the rest of the form.
+    #[test]
+    fn a_path_the_schema_dropped_is_not_found() {
+        let stored = assemble(vec![("kept".to_string(), Value::Bool(true))]);
+        assert_eq!(text_at(&stored, "gone", Editor::Text), None);
+        assert_eq!(text_at(&stored, "kept.deeper", Editor::Text), None);
+        assert_eq!(
+            text_at(&stored, "kept", Editor::Bool).as_deref(),
+            Some("true")
+        );
+    }
+
+    /// A list round-trips as its rows, which is how the per-element editor
+    /// re-fills itself.
+    #[test]
+    fn a_list_round_trips_as_rows() {
+        let stored = assemble(vec![(
+            "footprint".to_string(),
+            Value::Array(vec![Value::F64(0.2), Value::F64(-0.2)]),
+        )]);
+        assert_eq!(
+            rows_at(&stored, "footprint", Element::Decimal),
+            Some(vec!["0.2".to_string(), "-0.2".to_string()])
+        );
+    }
 }

@@ -471,9 +471,14 @@ impl RequestPanel {
     fn save(&mut self, cx: &mut Context<Self>) {
         // The form is the truth for the payload, so it is collected before the
         // comparison rather than tracked field by field.
-        if let Ok(payload) = self.payload_value(cx) {
-            self.draft.input = payload;
-        }
+        //
+        // Everything that parsed is kept, and a field that did not is said out
+        // loud rather than silently taking the other nine down with it — which
+        // is what the old `if let Ok(…)` did, writing back the previous input
+        // while the screen still showed what had been typed.
+        let (payload, problem) = self.read_form(cx);
+        self.draft.input = payload;
+        self.problem = problem.map(Problem::new);
         if !self.dirty() {
             return;
         }
@@ -1055,7 +1060,24 @@ impl RequestPanel {
     /// Topics carry nothing, so they get an empty message rather than a special
     /// case at every call site.
     fn payload_value(&self, cx: &App) -> Result<Value, String> {
+        let (value, problem) = self.read_form(cx);
+        match problem {
+            Some(problem) => Err(problem),
+            None => Ok(value),
+        }
+    }
+
+    /// The form's contents, keeping every field that parsed, and the first one
+    /// that did not.
+    ///
+    /// Sending and saving want different things from a half-filled form.
+    /// Sending has to refuse it — there is no such thing as most of a message.
+    /// Saving must not: a form you have not finished is a perfectly good thing
+    /// to come back to, and throwing away the nine fields you got right because
+    /// the tenth says "twelve" is the kind of loss nobody forgives.
+    fn read_form(&self, cx: &App) -> (Value, Option<String>) {
         let mut leaves = Vec::new();
+        let mut problem = None;
         for (field, inputs) in &self.payload {
             let parsed = match inputs {
                 Inputs::One(input) => form::parse(field.editor, &input.read(cx).value()),
@@ -1069,11 +1091,15 @@ impl RequestPanel {
             };
             match parsed {
                 Ok(Some(value)) => leaves.push((field.path.clone(), value)),
+                // An empty box is an absent field, not a zero. It is left out
+                // of the value, so clearing one and saving really does clear it.
                 Ok(None) => {}
-                Err(reason) => return Err(format!("{}: {reason}", field.path)),
+                Err(reason) => {
+                    problem.get_or_insert(format!("{}: {reason}", field.path));
+                }
             }
         }
-        Ok(form::assemble(leaves))
+        (form::assemble(leaves), problem)
     }
 
     fn failed(&mut self, error: impl std::fmt::Display, cx: &mut Context<Self>) {

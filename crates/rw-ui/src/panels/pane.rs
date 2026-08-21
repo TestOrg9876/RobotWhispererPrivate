@@ -286,6 +286,23 @@ impl VizPanel {
         )
     }
 
+    /// The views this pane's topic can actually fill.
+    ///
+    /// The same decision the request editor's strip makes, from the same
+    /// function, because a pane and an editor showing one topic must offer the
+    /// same things.
+    fn offered(&self) -> Vec<View> {
+        let incoming = self.incoming.lock().expect("incoming mutex");
+        if incoming.value.is_none() {
+            return Vec::new();
+        }
+        View::offered(views::Offers::of(
+            &crate::viz::role_for(incoming.schema.as_deref().unwrap_or_default()),
+            &incoming.history,
+            self.frozen.is_some(),
+        ))
+    }
+
     fn sync_scene(&mut self, cx: &mut Context<Self>) {
         if self.view != View::Visualize {
             return;
@@ -495,10 +512,15 @@ impl Panel for VizPanel {
         let pane = cx.entity_id().as_u64();
         let systems = self.systems(cx);
         let topics = self.offered_topics(cx);
-        for view in View::ALL {
+        // Only the views this message can fill, and none at all before the
+        // first one arrives — a menu offering Plot on a topic with no numbers
+        // in it is a line that exists to disappoint.
+        let offered = self.offered();
+        let active = self.view.or_pretty(&offered);
+        for view in &offered {
             menu = menu.menu_with_check(
                 view.label(),
-                view == self.view,
+                *view == active,
                 Box::new(crate::actions::SetPaneView {
                     pane,
                     view: view.as_str().into(),
@@ -506,15 +528,18 @@ impl Panel for VizPanel {
             );
         }
         // One entry, whose wording says whether there is already a pin — the
-        // alternative is two entries, one of which is always inert.
-        menu = menu.menu(
-            if self.frozen.is_some() {
-                "Freeze again"
-            } else {
-                "Freeze"
-            },
-            Box::new(crate::actions::FreezePane { pane }),
-        );
+        // alternative is two entries, one of which is always inert. Nothing has
+        // arrived means nothing to pin, so there is no entry at all.
+        if !offered.is_empty() {
+            menu = menu.separator().menu(
+                if self.frozen.is_some() {
+                    "Freeze again"
+                } else {
+                    "Freeze"
+                },
+                Box::new(crate::actions::FreezePane { pane }),
+            );
+        }
         if !systems.is_empty() {
             menu = menu.separator();
             for (id, name) in systems {
@@ -566,7 +591,8 @@ impl Render for VizPanel {
             )
         };
 
-        let body = match (&value, self.view) {
+        let showing = self.view.or_pretty(&self.offered());
+        let body = match (&value, showing) {
             (Some(value), View::Raw) => views::raw(value, cx),
             (Some(_), View::Plot) => views::plot(&history, cx),
             (Some(value), View::Diff) => {

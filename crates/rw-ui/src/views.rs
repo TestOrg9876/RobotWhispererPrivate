@@ -58,8 +58,9 @@ impl View {
         }
     }
 
-    pub fn index(self) -> usize {
-        Self::ALL.iter().position(|view| *view == self).unwrap_or(0)
+    /// Where this view sits in a strip drawing `offered`.
+    pub fn index_in(self, offered: &[Self]) -> usize {
+        offered.iter().position(|view| *view == self).unwrap_or(0)
     }
 
     /// The stored form, so a dashboard pane keeps its view across a restart.
@@ -80,6 +81,63 @@ impl View {
             "plot" => Self::Plot,
             "diff" => Self::Diff,
             _ => Self::Pretty,
+        }
+    }
+
+    /// The views this particular response can actually fill.
+    ///
+    /// Pretty and Raw always: every message can be laid out and every message
+    /// can be printed. The other three carry something only sometimes, and a
+    /// tab that opens on an apology is a tab that cost a place in the strip to
+    /// say nothing.
+    pub fn offered(offers: Offers) -> Vec<Self> {
+        let mut views = vec![Self::Pretty, Self::Raw];
+        if offers.visual {
+            views.push(Self::Visualize);
+        }
+        if offers.plottable {
+            views.push(Self::Plot);
+        }
+        if offers.pinned {
+            views.push(Self::Diff);
+        }
+        views
+    }
+
+    /// Falls back to Pretty when this view is no longer on offer.
+    ///
+    /// A pane sitting on Plot when its topic changes to one with no numbers in
+    /// it has to move, and Pretty is the view that is always there.
+    pub fn or_pretty(self, offered: &[Self]) -> Self {
+        if offered.contains(&self) {
+            self
+        } else {
+            Self::Pretty
+        }
+    }
+}
+
+/// What a response has in it, for deciding which views to offer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Offers {
+    /// The role gives a picture or something with a place in the world. When it
+    /// does not, "Visualize" draws the field tree — which is what "Pretty"
+    /// already is, so offering both would be offering one view twice.
+    pub visual: bool,
+    /// The message has numbers a line chart can hold.
+    pub plottable: bool,
+    /// Something is pinned, so there is a before to diff against. Nothing is
+    /// lost by hiding Diff until then: the Freeze button opens it.
+    pub pinned: bool,
+}
+
+impl Offers {
+    /// What a message of this role, with this history, offers.
+    pub fn of(role: &VisualizationRole, history: &History, pinned: bool) -> Self {
+        Self {
+            visual: viz::visual_for(role) != Visual::Fields,
+            plottable: !history.is_empty(),
+            pinned,
         }
     }
 }
@@ -378,7 +436,64 @@ mod tests {
     #[test]
     fn indices_match_the_order_the_tabs_are_drawn_in() {
         for (index, view) in View::ALL.iter().enumerate() {
-            assert_eq!(view.index(), index);
+            assert_eq!(view.index_in(&View::ALL), index);
         }
+    }
+
+    /// The index is into the strip actually drawn, not into `ALL` — a pane
+    /// offering three views and highlighting the fourth would light the wrong
+    /// tab.
+    #[test]
+    fn an_index_is_into_the_strip_that_is_drawn() {
+        let offered = View::offered(Offers::default());
+        assert_eq!(offered, vec![View::Pretty, View::Raw]);
+        assert_eq!(View::Raw.index_in(&offered), 1);
+    }
+
+    #[test]
+    fn a_message_with_nothing_in_it_offers_only_the_two_that_always_work() {
+        let offers = Offers::of(&VisualizationRole::Text, &History::default(), false);
+        assert_eq!(View::offered(offers), vec![View::Pretty, View::Raw]);
+    }
+
+    #[test]
+    fn a_cloud_offers_the_third_dimension_and_a_plain_string_does_not() {
+        assert!(Offers::of(&VisualizationRole::PointCloud2, &History::default(), false).visual);
+        assert!(Offers::of(&VisualizationRole::Image, &History::default(), false).visual);
+        assert!(!Offers::of(&VisualizationRole::Text, &History::default(), false).visual);
+        assert!(!Offers::of(&VisualizationRole::JsonTree, &History::default(), false).visual);
+    }
+
+    #[test]
+    fn numbers_bring_the_plot_and_a_pin_brings_the_diff() {
+        let mut history = History::default();
+        history.observe(&CanonicalValue::Struct(
+            [("data".to_string(), CanonicalValue::F64(1.))]
+                .into_iter()
+                .collect(),
+        ));
+        assert!(Offers::of(&VisualizationRole::Text, &history, false).plottable);
+
+        let offers = Offers::of(&VisualizationRole::PointCloud2, &history, true);
+        assert_eq!(
+            View::offered(offers),
+            vec![
+                View::Pretty,
+                View::Raw,
+                View::Visualize,
+                View::Plot,
+                View::Diff
+            ]
+        );
+    }
+
+    /// A pane sitting on Plot when its topic changes to one with no numbers has
+    /// to move, or it renders an apology where a view used to be.
+    #[test]
+    fn a_view_no_longer_offered_falls_back_to_pretty() {
+        let offered = View::offered(Offers::default());
+        assert_eq!(View::Plot.or_pretty(&offered), View::Pretty);
+        assert_eq!(View::Diff.or_pretty(&offered), View::Pretty);
+        assert_eq!(View::Raw.or_pretty(&offered), View::Raw);
     }
 }

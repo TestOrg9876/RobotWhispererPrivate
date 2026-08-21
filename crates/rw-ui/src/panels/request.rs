@@ -1773,18 +1773,30 @@ impl RequestPanel {
         // below consumes `schema` on its way into the chip.
         let schema_name = schema.clone();
 
-        // A segmented bar rather than document tabs: these are three views of one
-        // response, not three things that can be closed.
-        let tabs = TabBar::new("response-views")
-            .segmented()
-            .selected_index(active.index())
-            .children(View::ALL.map(|tab| Tab::new().label(tab.label())))
-            .on_click(cx.listener(|this, index: &usize, _, cx| {
-                if let Some(tab) = View::ALL.get(*index) {
-                    this.tab = *tab;
-                    cx.notify();
-                }
-            }));
+        // Only the views this response can fill. A `std_msgs/String` has no
+        // numbers to plot and nothing to draw, and tabs for both would be two
+        // places in the strip that open on an apology.
+        let role = crate::viz::role_for(schema_name.as_deref().unwrap_or_default());
+        let offered = View::offered(views::Offers::of(&role, &history, self.frozen.is_some()));
+        let active = active.or_pretty(&offered);
+
+        // A segmented bar rather than document tabs: these are views of one
+        // response, not things that can be closed. Drawn only once something has
+        // arrived — before that every tab shows the same empty state, so the row
+        // costs height and carries nothing.
+        let labels = offered.clone();
+        let tabs = value.is_some().then(|| {
+            TabBar::new("response-views")
+                .segmented()
+                .selected_index(active.index_in(&offered))
+                .children(labels.iter().map(|tab| Tab::new().label(tab.label())))
+                .on_click(cx.listener(move |this, index: &usize, _, cx| {
+                    if let Some(tab) = offered.get(*index) {
+                        this.tab = *tab;
+                        cx.notify();
+                    }
+                }))
+        });
 
         // "Freeze" only once there is something to freeze, and once there is a
         // pin the chip says which message it holds — which is the one thing a
@@ -1828,13 +1840,9 @@ impl RequestPanel {
                 views::changes(self.frozen.as_ref().map(|(value, _)| value), value, cx)
             }
             (Some(_), View::Pretty) => self.tree(cx),
-            (Some(value), View::Visualize) => views::visualize(
-                &crate::viz::role_for(schema_name.as_deref().unwrap_or_default()),
-                value,
-                self.scene.as_ref(),
-                self.tree(cx),
-                cx,
-            ),
+            (Some(value), View::Visualize) => {
+                views::visualize(&role, value, self.scene.as_ref(), self.tree(cx), cx)
+            }
             (None, _) => tokens::empty_state(
                 IconName::Inbox,
                 if running {
@@ -1857,7 +1865,13 @@ impl RequestPanel {
             // pane's main event rather than a box that grows with its content.
             .flex_1()
             .min_h_0()
-            .child(tokens::card_header(cx).child(tabs).child(stats))
+            // No header at all until something arrives. Before that it is a
+            // strip of tabs that all show the same empty state next to the
+            // words "Messages 0" — which the empty state under it already
+            // says, at length.
+            .when_some(tabs, |card, tabs| {
+                card.child(tokens::card_header(cx).child(tabs).child(stats))
+            })
             .child(
                 tokens::card_body()
                     .id("response-body")

@@ -62,7 +62,18 @@ impl SchemaRegistry {
         let parsed = parser::parse_with_package(kind, definition, package)?;
         let dependencies = parser::collect_dependencies(&parsed);
 
-        let resolved: BTreeMap<String, String> = {
+        // What this definition's nested types mean, resolved the publisher's
+        // way first.
+        //
+        // A concatenated definition carries the sender's own copy of every type
+        // it references, and those are the only correct answer for it: a ROS 1
+        // robot's `Header` has `seq` and a ROS 2 one does not, and the registry
+        // holds both the moment two robots are connected at once. Falling back
+        // to the cache — where a name maps to several hashes and this took
+        // whichever sorted first — is for definitions that arrived with no
+        // sections at all, which is the only case where there is nothing better
+        // to go on.
+        let mut resolved: BTreeMap<String, String> = {
             let cache = self.cache.read().expect("schema cache poisoned");
             cache
                 .by_name
@@ -74,6 +85,10 @@ impl SchemaRegistry {
                 })
                 .collect()
         };
+        let (_, parts) = parser::split_bundle(definition);
+        for part in &parts {
+            resolved.insert(part.name.to_string(), part.body.to_string());
+        }
 
         let hash_value =
             hash::canonical_hash_with_package(kind, definition, package, |dep_name| {
@@ -275,5 +290,86 @@ mod tests {
             .unwrap();
         let versions = registry.get_by_name("custom/Type");
         assert_eq!(versions.len(), 2);
+    }
+
+    /// The defect this whole change exists for.
+    ///
+    /// Two robots are connected at once — a ROS 1 one and a ROS 2 one — and
+    /// both publish a message whose header is `std_msgs/Header`. They do not
+    /// mean the same thing by it: ROS 1's carries `seq` and ROS 2's does not.
+    /// Each definition arrives with its own copy in its bundle, and each has to
+    /// be answered with the one it brought, not with whichever landed first.
+    #[tokio::test]
+    async fn a_bundle_resolves_its_nested_types_against_its_own_sections() {
+        // Deliberately an empty registry: a bundle carries everything it needs,
+        // so it must register against nothing at all.
+        let registry = make_registry().await;
+
+        const ROS2: &str = concat!(
+            "std_msgs/Header header\n",
+            "float64 value\n",
+            "================================\n",
+            "MSG: std_msgs/Header\n",
+            "builtin_interfaces/Time stamp\n",
+            "string frame_id\n",
+            "================================\n",
+            "MSG: builtin_interfaces/Time\n",
+            "int32 sec\n",
+            "uint32 nanosec\n",
+        );
+        const ROS1: &str = concat!(
+            "std_msgs/Header header\n",
+            "float64 value\n",
+            "================================\n",
+            "MSG: std_msgs/Header\n",
+            "uint32 seq\n",
+            "time stamp\n",
+            "string frame_id\n",
+        );
+
+        let modern = registry
+            .register("pkg/Reading", SchemaKind::Message, ROS2)
+            .await
+            .expect("the ROS 2 definition registers");
+        let legacy = registry
+            .register("pkg/Reading", SchemaKind::Message, ROS1)
+            .await
+            .expect("the ROS 1 definition registers");
+
+        // Same name, different meaning, so they must not collapse onto one
+        // entry — the hash is what tells them apart.
+        assert_ne!(
+            modern.hash, legacy.hash,
+            "two headers that disagree about `seq` are not the same schema"
+        );
+        assert_eq!(registry.get_by_name("pkg/Reading").len(), 2);
+
+        // And each is still reachable as itself, which is what a lookup by id
+        // relies on.
+        assert_eq!(
+            registry
+                .get_by_hash(&legacy.hash)
+                .expect("the ROS 1 entry is there")
+                .definition,
+            ROS1
+        );
+    }
+
+    /// The single-definition path is unchanged: no sections, nothing to resolve
+    /// against, and the cache is still what answers.
+    #[tokio::test]
+    async fn a_definition_with_no_sections_still_registers() {
+        let registry = make_registry().await;
+        let reference = registry
+            .register("pkg/Plain", SchemaKind::Message, "float64 value\n")
+            .await
+            .expect("registers");
+        assert_eq!(
+            registry
+                .get_by_hash(&reference.hash)
+                .expect("is there")
+                .name,
+            "pkg/Plain"
+        );
     }
 }

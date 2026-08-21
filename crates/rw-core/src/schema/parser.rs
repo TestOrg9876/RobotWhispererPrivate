@@ -16,7 +16,13 @@ pub fn parse_with_package(
     source: &str,
     default_package: Option<&str>,
 ) -> CoreResult<ParsedSchema> {
-    let parts = split_sections(source);
+    // The dependency sections come off first. A concatenated definition is the
+    // shape every ROS source hands one over in, and without this the rule of
+    // `=` before the first `MSG:` reaches `parse_message` as a field and the
+    // whole definition is refused — so a real robot's schemas never registered
+    // at all.
+    let (root, _) = split_bundle(source);
+    let parts = split_sections(root);
     match (kind, parts.as_slice()) {
         (SchemaKind::Message, [single]) => Ok(ParsedSchema::Message(parse_message(
             single,
@@ -38,6 +44,87 @@ pub fn parse_with_package(
             parts.len(),
         ))),
     }
+}
+
+/// One dependency section of a concatenated definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BundlePart<'a> {
+    /// The type this section defines, as written after `MSG:`.
+    pub name: &'a str,
+    pub body: &'a str,
+}
+
+/// Splits a ROS concatenated definition into its root text and the dependency
+/// sections that follow it.
+///
+/// This is the shape every ROS source hands over a message definition in: the
+/// root, then a rule of `=` and `MSG: pkg/Type` before each type it references,
+/// transitively. ROS 1's TCPROS connection header, rosbridge's
+/// `get_message_details` and Foxglove's schema field all use it.
+///
+/// It matters for more than parsing. A bundle carries *the publisher's own*
+/// version of every type it depends on, so resolving those sections against
+/// each other — rather than against whatever else is in the registry — is what
+/// keeps a ROS 1 robot's `Header` from being answered with a ROS 2 one.
+///
+/// A definition with no sections comes back as the whole text and an empty
+/// list, which is the single-message path unchanged.
+pub fn split_bundle(source: &str) -> (&str, Vec<BundlePart<'_>>) {
+    let Some(first) = find_separator(source) else {
+        return (source, Vec::new());
+    };
+
+    let mut parts = Vec::new();
+    let mut rest = &source[first..];
+    while let Some(part) = take_part(&mut rest) {
+        parts.push(part);
+    }
+    (&source[..first], parts)
+}
+
+/// The byte offset of the first separator rule, if there is one.
+fn find_separator(source: &str) -> Option<usize> {
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        if is_rule(line) {
+            return Some(offset);
+        }
+        offset += line.len();
+    }
+    None
+}
+
+/// A separator is a line of nothing but `=`.
+///
+/// Conventionally eighty of them, but nothing guarantees the count, and a
+/// message whose *comment* happens to underline something with `===` is why the
+/// name on the next line is what actually decides a section.
+fn is_rule(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.len() >= 3 && trimmed.chars().all(|c| c == '=')
+}
+
+/// Takes the next `MSG:` section off the front, leaving the remainder.
+fn take_part<'a>(rest: &mut &'a str) -> Option<BundlePart<'a>> {
+    let mut lines = rest.split_inclusive('\n');
+    let rule = lines.next()?;
+    if !is_rule(rule) {
+        return None;
+    }
+    let header = lines.next()?;
+    let name = header.trim().strip_prefix("MSG:")?.trim();
+    if name.is_empty() {
+        return None;
+    }
+
+    let consumed = rule.len() + header.len();
+    let body = &rest[consumed..];
+    let end = find_separator(body).unwrap_or(body.len());
+    *rest = &body[end..];
+    Some(BundlePart {
+        name,
+        body: &body[..end],
+    })
 }
 
 fn expected_section_count(kind: SchemaKind) -> &'static str {
@@ -547,5 +634,126 @@ mod tests {
         );
         let deps = collect_dependencies(&parsed);
         assert_eq!(deps, vec!["geometry_msgs/Pose", "std_msgs/Header"]);
+    }
+
+    /// The single-message path, which every existing caller and the dummy
+    /// transport use: no sections, and the text comes back untouched.
+    #[test]
+    fn a_definition_with_no_sections_is_its_own_root() {
+        let source = "uint32 seq\nstring frame_id\n";
+        let (root, parts) = split_bundle(source);
+        assert_eq!(root, source);
+        assert!(parts.is_empty());
+    }
+
+    /// What a ROS 1 publisher actually sends: the root, then a rule and a
+    /// `MSG:` line before each type it references.
+    #[test]
+    fn a_bundle_splits_into_its_root_and_its_parts() {
+        let source = concat!(
+            "std_msgs/Header header\n",
+            "float64 value\n",
+            "================================\n",
+            "MSG: std_msgs/Header\n",
+            "uint32 seq\n",
+            "time stamp\n",
+            "string frame_id\n",
+        );
+        let (root, parts) = split_bundle(source);
+
+        assert_eq!(root, "std_msgs/Header header\nfloat64 value\n");
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].name, "std_msgs/Header");
+        assert_eq!(parts[0].body, "uint32 seq\ntime stamp\nstring frame_id\n");
+    }
+
+    #[test]
+    fn every_part_of_a_longer_bundle_is_taken() {
+        let source = concat!(
+            "geometry_msgs/Pose pose\n",
+            "====\n",
+            "MSG: geometry_msgs/Pose\n",
+            "geometry_msgs/Point position\n",
+            "====\n",
+            "MSG: geometry_msgs/Point\n",
+            "float64 x\nfloat64 y\nfloat64 z\n",
+        );
+        let (root, parts) = split_bundle(source);
+
+        assert_eq!(root, "geometry_msgs/Pose pose\n");
+        let names: Vec<&str> = parts.iter().map(|part| part.name).collect();
+        assert_eq!(names, ["geometry_msgs/Pose", "geometry_msgs/Point"]);
+        assert_eq!(parts[1].body, "float64 x\nfloat64 y\nfloat64 z\n");
+    }
+
+    /// A service's `---` lives inside the root, and the sections come after the
+    /// whole thing. Splitting the bundle first is what keeps the two apart.
+    #[test]
+    fn a_service_bundle_keeps_its_request_and_response_together_in_the_root() {
+        let source = concat!(
+            "std_msgs/Header header\n---\nbool ok\n",
+            "====\nMSG: std_msgs/Header\nuint32 seq\n",
+        );
+        let (root, parts) = split_bundle(source);
+
+        assert_eq!(root, "std_msgs/Header header\n---\nbool ok\n");
+        assert_eq!(split_sections(root).len(), 2);
+        assert_eq!(parts.len(), 1);
+    }
+
+    /// A rule with no `MSG:` after it is not a section. Ending a definition
+    /// with a row of `=` should not invent a nameless dependency.
+    #[test]
+    fn a_rule_without_a_name_after_it_is_not_a_part() {
+        let source = "float64 value\n====\n";
+        let (root, parts) = split_bundle(source);
+        assert_eq!(root, "float64 value\n");
+        assert!(parts.is_empty());
+    }
+
+    /// The last section runs to the end of the text rather than needing a rule
+    /// to close it.
+    #[test]
+    fn the_last_part_runs_to_the_end() {
+        let source = "A a\n====\nMSG: pkg/A\nfloat64 x";
+        let (_, parts) = split_bundle(source);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].body, "float64 x");
+    }
+
+    /// The join between the two halves of this file's job: a bundle parses as
+    /// its root, rather than choking on the rule before the first `MSG:`.
+    #[test]
+    fn a_bundle_parses_as_its_root() {
+        let source = concat!(
+            "std_msgs/Header header\n",
+            "float64 value\n",
+            "================================\n",
+            "MSG: std_msgs/Header\n",
+            "uint32 seq\n",
+        );
+        let ParsedSchema::Message(message) = parse(SchemaKind::Message, source).expect("parses")
+        else {
+            panic!("expected a message");
+        };
+        let names: Vec<&str> = message.fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["header", "value"]);
+    }
+
+    /// And a service bundle still finds its two sections, because the parts are
+    /// taken off before the `---` is looked for.
+    #[test]
+    fn a_service_bundle_parses_both_sections() {
+        let source = concat!(
+            "float64 a\n---\nbool ok\n",
+            "====\nMSG: std_msgs/Header\nuint32 seq\n",
+        );
+        let ParsedSchema::Service { request, response } =
+            parse(SchemaKind::Service, source).expect("parses")
+        else {
+            panic!("expected a service");
+        };
+        assert_eq!(request.fields.len(), 1);
+        assert_eq!(response.fields.len(), 1);
     }
 }

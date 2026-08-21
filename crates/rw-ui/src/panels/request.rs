@@ -530,50 +530,6 @@ impl RequestPanel {
         cx.notify();
     }
 
-    /// Sends the payload to the topic, once.
-    ///
-    /// Separate from `start`, because publishing is not a thing you stop: it
-    /// happens and it is over, and a request can be subscribed while it does.
-    fn publish(&mut self, cx: &mut Context<Self>) {
-        let target = self.draft.target.trim().to_string();
-        if target.is_empty() {
-            self.problem = Some(Problem::new("Enter a target first"));
-            cx.notify();
-            return;
-        }
-        let Some(session) = self.session(cx) else {
-            self.problem = Some(self.why_not_connected(cx));
-            cx.notify();
-            return;
-        };
-        let message = match self.payload_value(cx) {
-            Ok(message) => message,
-            Err(error) => {
-                self.problem = Some(Problem::new(error));
-                cx.notify();
-                return;
-            }
-        };
-
-        self.problem = None;
-        self.publish_state(cx);
-        let pipeline = self.sessions.read(cx).pipeline();
-
-        cx.spawn(async move |panel, cx| {
-            let outcome = pipeline.publish(session, &target, message.into()).await;
-            panel
-                .update(cx, |panel, cx| {
-                    match outcome {
-                        Ok(()) => panel.say(format!("published to {target}"), cx),
-                        Err(error) => panel.failed(error, cx),
-                    }
-                    cx.notify();
-                })
-                .ok();
-        })
-        .detach();
-    }
-
     /// Puts a line in the console, which is where this app says things.
     fn say(&self, message: impl Into<String>, cx: &mut Context<Self>) {
         self.sessions.update(cx, |sessions, cx| {
@@ -879,6 +835,12 @@ impl RequestPanel {
     /// the request stores it so a saved request still shows its form before the
     /// robot is reachable.
     fn payload_schema_name(&self, cx: &App) -> Option<String> {
+        // A topic has no form to key on. `None` here is what empties `payload`
+        // when a request is switched from a service to a topic, rather than
+        // leaving the service's boxes behind an invisible card.
+        if self.draft.kind == RequestKind::Topic {
+            return None;
+        }
         let target = self.draft.target.trim();
         if target.is_empty() {
             return self.draft.schema.as_ref().map(|schema| schema.name.clone());
@@ -894,17 +856,14 @@ impl RequestPanel {
                     .map(|entry| entry.schema_name.clone())
             };
             match self.draft.kind {
-                RequestKind::Topic => discovery
-                    .topics
-                    .iter()
-                    .find(|topic| topic.name == target)
-                    .map(|topic| topic.schema_name.clone()),
                 RequestKind::Service => named(&discovery.services),
                 RequestKind::Action => named(&discovery.actions),
                 // A node's parameters are not in any schema, so the key the
                 // form is rebuilt on is the reading itself: a fresh one has to
                 // replace the boxes, and nothing else may.
                 RequestKind::Param => None,
+                // Returned above.
+                RequestKind::Topic => None,
             }
         });
 
@@ -1327,21 +1286,7 @@ impl RequestPanel {
                         }
                     })),
             )
-            // Publishing sits beside subscribing rather than replacing it: the
-            // same saved request is how you watch a topic *and* how you drive
-            // it, and needing two requests for one topic would be silly.
-            .when(matches!(kind, RequestKind::Topic), |bar| {
-                bar.child(
-                    Button::new("publish")
-                        .outline()
-                        .icon(IconName::ArrowUp)
-                        .label("Publish")
-                        .tooltip("Send the message above to this topic, once")
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.publish(cx))),
-                )
-            })
-            // Write sits beside Read for the same reason Publish sits beside
-            // Subscribe, and is disabled until there has been a read: a node
+            // Write is disabled until there has been a read: a node
             // will not accept a value for a parameter it has not declared, and
             // the form is how the declared ones become editable at all.
             .when(matches!(kind, RequestKind::Param), |bar| {
@@ -1425,6 +1370,12 @@ impl RequestPanel {
     /// The schema-driven form: a message to publish, a service's request, or an
     /// action's goal.
     fn payload(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // A topic is a subscription. There is nothing to send it, so there is
+        // nothing to fill in — the form only ever existed to compose a message
+        // to publish.
+        if self.draft.kind == RequestKind::Topic {
+            return None;
+        }
         let is_param = self.draft.kind == RequestKind::Param;
         // Nothing to fill in, nothing to show. A card saying "this takes no
         // arguments" is a paragraph of chrome explaining an empty box, and it
@@ -1439,10 +1390,11 @@ impl RequestPanel {
         }
 
         let title = match self.draft.kind {
-            RequestKind::Topic => "Message",
             RequestKind::Service => "Request",
             RequestKind::Action => "Goal",
             RequestKind::Param => "Parameters",
+            // Returned above; a topic has no form.
+            RequestKind::Topic => "",
         };
         // One schema chip on screen. The response header carries it once
         // anything has arrived, and until then this does — the two are the same
@@ -1887,10 +1839,12 @@ impl RequestPanel {
                 } else {
                     "Not running"
                 },
-                if running {
-                    "The subscription is open; nothing has arrived yet."
-                } else {
-                    "Send the request to see its response here."
+                match (running, self.draft.kind) {
+                    (true, _) => "The subscription is open; nothing has arrived yet.",
+                    // A topic is not sent. "Send the request" is the wording for
+                    // the three kinds that are.
+                    (false, RequestKind::Topic) => "Subscribe to watch this topic.",
+                    (false, _) => "Send the request to see its response here.",
                 },
                 cx,
             )

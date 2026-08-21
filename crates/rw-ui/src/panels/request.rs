@@ -1425,11 +1425,16 @@ impl RequestPanel {
     /// The schema-driven form: a message to publish, a service's request, or an
     /// action's goal.
     fn payload(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let is_param = self.draft.kind == RequestKind::Param;
         // Nothing to fill in, nothing to show. A card saying "this takes no
         // arguments" is a paragraph of chrome explaining an empty box, and it
         // pushes the response — the part anyone is here for — down the pane.
         // `std_srvs/Trigger` and a great many topics take nothing at all.
-        if self.payload.is_empty() {
+        //
+        // Parameters are the exception: this card is the only thing a parameter
+        // request draws, so before a read it says so rather than leaving the
+        // pane blank below the bar.
+        if self.payload.is_empty() && !is_param {
             return None;
         }
 
@@ -1439,17 +1444,53 @@ impl RequestPanel {
             RequestKind::Action => "Goal",
             RequestKind::Param => "Parameters",
         };
-        // The key a parameter form is rebuilt on is the node and the reading it
-        // came from, which is the target field and the response — both already
-        // on screen. Repeating them here would be a header that says nothing.
-        let schema = match self.draft.kind {
-            RequestKind::Param => None,
+        // One schema chip on screen. The response header carries it once
+        // anything has arrived, and until then this does — the two are the same
+        // string, and a hundred pixels apart they read as a stutter.
+        //
+        // A parameter form has no schema at all: the key it is rebuilt on is
+        // the node and the reading, which are the target field and the boxes
+        // themselves.
+        let schema = match (is_param, self.has_response()) {
+            (true, _) | (_, true) => None,
             _ => self.payload_schema.clone(),
+        };
+
+        let body = if self.payload.is_empty() {
+            tokens::empty_state(
+                IconName::Inbox,
+                "Nothing read yet",
+                "Read to see what this node holds, then change a value and write it back.",
+                cx,
+            )
+            .into_any_element()
+        } else {
+            v_flex()
+                .id("payload-form")
+                // A parameter form is the pane, so it takes the height. A
+                // message form shares the pane with the response, so it is
+                // capped and the response gets the rest.
+                .when(is_param, |form| form.flex_1().min_h_0())
+                .when(!is_param, |form| form.max_h(px(280.)))
+                .overflow_y_scroll()
+                .p_3()
+                .gap_2()
+                .children(
+                    self.payload
+                        .iter()
+                        .enumerate()
+                        .map(|(index, (field, inputs))| self.row(index, field, inputs, cx)),
+                )
+                .into_any_element()
         };
 
         Some(
             tokens::card(cx)
-                .flex_shrink_0()
+                // The parameter form is the whole pane, so it takes the height
+                // the response card would have. Everywhere else it stays the
+                // size of its contents and the response gets the rest.
+                .when(is_param, |card| card.flex_1().min_h_0())
+                .when(!is_param, |card| card.flex_shrink_0())
                 .child(
                     tokens::card_header(cx)
                         .child(tokens::section_label(title, cx))
@@ -1457,22 +1498,18 @@ impl RequestPanel {
                             header.child(tokens::meta("Schema", schema, cx))
                         }),
                 )
-                .child(
-                    v_flex()
-                        .id("payload-form")
-                        .max_h(px(280.))
-                        .overflow_y_scroll()
-                        .p_3()
-                        .gap_2()
-                        .children(
-                            self.payload
-                                .iter()
-                                .enumerate()
-                                .map(|(index, (field, inputs))| self.row(index, field, inputs, cx)),
-                        ),
-                )
+                .child(body)
                 .into_any_element(),
         )
+    }
+
+    /// Whether anything has come back yet, which decides who draws the schema.
+    fn has_response(&self) -> bool {
+        self.incoming
+            .lock()
+            .expect("incoming mutex")
+            .schema
+            .is_some()
     }
 
     /// One leaf of the form: its name, its type, and its editor.
@@ -2040,7 +2077,11 @@ impl Render for RequestPanel {
         // a request, and the message you publish is the same form. Absent
         // entirely when the message has no fields to fill in.
         let payload = self.payload(cx);
-        let response = self.response(cx);
+        // A parameter request has no second half. The form above *is* the
+        // reading — same rows, same labels, same values — so a response card
+        // under it drew the node's answer twice. The write's outcome comes back
+        // as a run result and lands where every other one does.
+        let response = (self.draft.kind != RequestKind::Param).then(|| self.response(cx));
         let problem = self.problem(cx);
 
         v_flex()
@@ -2101,7 +2142,7 @@ impl Render for RequestPanel {
                     .p_4()
                     .gap_3()
                     .children(payload)
-                    .child(response),
+                    .children(response),
             )
     }
 }

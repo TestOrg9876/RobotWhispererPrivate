@@ -42,7 +42,7 @@ use crate::panels::{
     WelcomePanel, WorldPanel,
 };
 use crate::prefs::Prefs;
-use crate::session::{Notice, RobotWhisperer, Sessions, Status};
+use crate::session::{Notice, RobotWhisperer, SessionEvent, Sessions, Status};
 use crate::theme::{self, Preference};
 use crate::tokens;
 use crate::workspace::Workspace;
@@ -82,6 +82,50 @@ pub struct WorkspaceView {
     dashboards: HashMap<i64, Entity<DashboardPanel>>,
     prefs: Prefs,
     _subscriptions: Vec<Subscription>,
+}
+
+/// Raises a toast for the notices worth interrupting someone for.
+///
+/// Two kinds qualify. **Failures**, because something you did did not work and
+/// the console is not where you are looking. And **connection lifecycle**,
+/// because a robot dropping while you are watching a dashboard is otherwise a
+/// colour change in the footer at the other end of the window.
+///
+/// Nothing else. In particular not [`Notice::Robot`]: `/rosout` comes through
+/// this same bus, and a node logging a warning at ten hertz would bury the
+/// screen. The console still keeps every one of them, which is what a console
+/// is for.
+fn toast(notice: &Notice, window: &mut Window, cx: &mut App) {
+    use gpui_component::notification::Notification;
+
+    // Bottom right, not the default top right: the right dock's own header
+    // lives up there, and a toast that covers the thing it is telling you about
+    // is a toast in the wrong place.
+    let placement = gpui::Anchor::BottomRight;
+    let note = match notice {
+        // Keyed on the connection, so a flapping link replaces its own toast
+        // rather than stacking one per attempt.
+        Notice::Link {
+            connection,
+            text,
+            status,
+        } => {
+            // Not every state change is worth a toast. Connecting and connected
+            // are the expected answer to a button that was just pressed, and
+            // the connection's own row turns green where the eye already is —
+            // toasting them made twenty screenshots grow a box saying what had
+            // plainly just happened.
+            let note = match status {
+                Status::Failed(_) => Notification::error(text.clone()),
+                Status::Disconnected | Status::Reconnecting => Notification::warning(text.clone()),
+                Status::Connecting | Status::Connected => return,
+            };
+            note.id1::<Notice>(gpui::SharedString::from(connection.clone()))
+        }
+        Notice::Error(text) => Notification::error(text.clone()),
+        Notice::Info(_) | Notice::Robot { .. } => return,
+    };
+    window.push_notification(note.placement(placement), cx);
 }
 
 impl WorkspaceView {
@@ -126,6 +170,11 @@ impl WorkspaceView {
             cx.subscribe_in(&dock, window, |this, _, _: &DockEvent, _, cx| {
                 this.save_layout(cx)
             }),
+            cx.subscribe_in(
+                &sessions,
+                window,
+                |_, _, event: &SessionEvent, window, cx| toast(&event.0, window, cx),
+            ),
         ];
 
         // The saved arrangement names requests by id, so it cannot be rebuilt

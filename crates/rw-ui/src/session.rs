@@ -77,6 +77,22 @@ pub struct Live {
 pub enum Notice {
     Info(String),
     Error(String),
+    /// A connection changing state.
+    ///
+    /// Its own variant rather than an `Info` with a recognisable sentence in
+    /// it. This is the one thing worth interrupting someone for — a robot
+    /// dropping while they are looking at a dashboard is otherwise a colour
+    /// change in the footer — and deciding that by matching on message text
+    /// would break the first time someone reworded one.
+    Link {
+        connection: String,
+        text: String,
+        /// The state it moved to, which is what decides whether this is worth
+        /// interrupting for. Carried rather than a bare severity so the
+        /// decision is about what happened, not about how loudly it was
+        /// phrased.
+        status: Status,
+    },
     /// A line the robot itself wrote, off `/rosout`.
     ///
     /// The same route as the app's own notices rather than a console of its
@@ -99,7 +115,7 @@ pub enum Severity {
 impl Notice {
     pub fn text(&self) -> String {
         match self {
-            Self::Info(text) | Self::Error(text) => text.clone(),
+            Self::Info(text) | Self::Error(text) | Self::Link { text, .. } => text.clone(),
             Self::Robot { connection, entry } => format!("{connection}  {}", entry.text()),
         }
     }
@@ -108,6 +124,10 @@ impl Notice {
         match self {
             Self::Info(_) => Severity::Info,
             Self::Error(_) => Severity::Error,
+            Self::Link { status, .. } => match status {
+                Status::Failed(_) => Severity::Error,
+                _ => Severity::Info,
+            },
             Self::Robot { entry, .. } => match entry.level {
                 crate::log::Level::Debug | crate::log::Level::Info => Severity::Info,
                 crate::log::Level::Warn => Severity::Warn,
@@ -195,7 +215,11 @@ impl Sessions {
         let live = self.live.entry(id).or_default();
         live.status = Status::Connecting;
         live.name = name.clone();
-        cx.emit(SessionEvent(Notice::Info(format!("connecting to {name}"))));
+        cx.emit(SessionEvent(Notice::Link {
+            connection: name.clone(),
+            text: format!("connecting to {name}"),
+            status: Status::Connecting,
+        }));
         cx.notify();
 
         cx.spawn(async move |sessions, cx| {
@@ -226,7 +250,11 @@ impl Sessions {
                             let reason = error.to_string();
                             sessions.live.entry(id).or_default().status =
                                 Status::Failed(reason.clone());
-                            cx.emit(SessionEvent(Notice::Error(format!("{name}: {reason}"))));
+                            cx.emit(SessionEvent(Notice::Link {
+                                connection: name.clone(),
+                                text: format!("{name}: {reason}"),
+                                status: Status::Failed(reason.clone()),
+                            }));
                             cx.notify();
                         })
                         .ok();
@@ -253,7 +281,11 @@ impl Sessions {
                     let live = sessions.live.entry(id).or_default();
                     live.session = Some(session);
                     live.status = Status::Connected;
-                    cx.emit(SessionEvent(Notice::Info(format!("connected to {name}"))));
+                    cx.emit(SessionEvent(Notice::Link {
+                        connection: name.clone(),
+                        text: format!("connected to {name}"),
+                        status: Status::Connected,
+                    }));
                     cx.notify();
                 })
                 .ok();
@@ -421,12 +453,16 @@ impl Sessions {
                     match outcome {
                         // Named, because with several systems connected at once
                         // a bare "disconnected" says nothing worth logging.
-                        Ok(()) => cx.emit(SessionEvent(Notice::Info(format!(
-                            "disconnected from {name}"
-                        )))),
-                        Err(error) => cx.emit(SessionEvent(Notice::Error(format!(
-                            "{name}: close failed: {error}"
-                        )))),
+                        Ok(()) => cx.emit(SessionEvent(Notice::Link {
+                            connection: name.clone(),
+                            text: format!("disconnected from {name}"),
+                            status: Status::Disconnected,
+                        })),
+                        Err(error) => cx.emit(SessionEvent(Notice::Link {
+                            connection: name.clone(),
+                            text: format!("{name}: close failed: {error}"),
+                            status: Status::Failed(error.to_string()),
+                        })),
                     }
                     cx.notify();
                 })

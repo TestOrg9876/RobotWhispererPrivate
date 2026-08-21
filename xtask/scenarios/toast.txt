@@ -1,0 +1,31 @@
+# Toasts: the things worth interrupting someone for, and nothing else.
+#
+# The notification layer has always been rendered and nothing ever pushed to
+# it. Two kinds land here: a connection dropping or failing, and a failure of
+# something you asked for. Never the robot's own /rosout — it arrives on the
+# same bus and a node warning at ten hertz would bury the screen — and never
+# "connected", which is the expected answer to a button just pressed and is
+# already said by the connection's own row turning green.
+
+wait 900
+click 789 484
+wait 900
+click 1403 81
+wait 700
+click 1384 158
+wait 500
+click 1269 211
+type Simulator
+wait 500
+click 1395 242
+wait 1200
+move 700 600
+wait 400
+shot 01-connected-quietly
+
+# Disconnecting is the one you need when you are looking elsewhere.
+click 1313 128
+wait 1200
+move 700 600
+wait 400
+shot 02-disconnected

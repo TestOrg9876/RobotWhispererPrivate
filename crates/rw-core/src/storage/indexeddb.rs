@@ -3,7 +3,7 @@ use idb::{
 };
 use wasm_bindgen::JsValue;
 
-use crate::domain::{Collection, Connection, Dashboard, Request};
+use crate::domain::{Collection, Connection, Dashboard, HistoryEntry, NewHistoryEntry, Request};
 use crate::ids::{CollectionId, ConnectionId, DashboardId, RequestId};
 use crate::schema::SchemaDefinition;
 use crate::storage::{NewCollection, NewConnection, NewDashboard, NewRequest, Storage};
@@ -11,15 +11,16 @@ use crate::{CoreError, CoreResult};
 
 const DB_NAME: &str = "RobotWhispererWorkspace";
 // Bumped when a store is added: the browser only runs `upgrade` when the
-// version changes, so an existing database would otherwise have no dashboards
+// version changes, so an existing database would otherwise have no history
 // store and every read of one would fail.
-const DB_VERSION: u32 = 2;
+const DB_VERSION: u32 = 3;
 
 const REQUESTS: &str = "requests";
 const COLLECTIONS: &str = "collections";
 const CONNECTIONS: &str = "connections";
 const SCHEMAS: &str = "schemas";
 const DASHBOARDS: &str = "dashboards";
+const HISTORY: &str = "history";
 
 #[derive(Debug)]
 pub struct IdbStorage {
@@ -80,6 +81,22 @@ fn upgrade(event: idb::event::VersionChangeEvent) -> CoreResult<()> {
     dashboard_params.auto_increment(true);
     dashboard_params.key_path(Some(KeyPath::new_single("id")));
     db.create_object_store(DASHBOARDS, dashboard_params)
+        .map_err(idb_err)?;
+
+    // New in version 3, indexed by the request it belongs to because that is
+    // the only question ever asked of it.
+    let mut history_params = ObjectStoreParams::new();
+    history_params.auto_increment(true);
+    history_params.key_path(Some(KeyPath::new_single("id")));
+    let history = db
+        .create_object_store(HISTORY, history_params)
+        .map_err(idb_err)?;
+    history
+        .create_index(
+            "request_id",
+            KeyPath::new_single("request_id"),
+            Some(IndexParams::new()),
+        )
         .map_err(idb_err)?;
 
     let mut schema_params = ObjectStoreParams::new();
@@ -548,10 +565,136 @@ impl Storage for IdbStorage {
         Ok(out)
     }
 
+    async fn record_history(&self, entry: NewHistoryEntry, cap: usize) -> CoreResult<HistoryEntry> {
+        let candidate = HistoryEntry {
+            id: 0,
+            request_id: entry.request_id,
+            kind: entry.kind,
+            target: entry.target,
+            connection_id: entry.connection_id,
+            at: chrono::Utc::now(),
+            outcome: entry.outcome,
+            input: entry.input,
+            response: entry.response,
+        };
+        let request_id = candidate.request_id;
+
+        let tx = self.rw(&[HISTORY])?;
+        let store = tx.object_store(HISTORY).map_err(idb_err)?;
+        let js = to_js(&candidate)?;
+        // The key is auto-assigned, so the placeholder has to go or the store
+        // takes the zero as the id.
+        let _ = js_sys::Reflect::delete_property(
+            js.unchecked_ref::<js_sys::Object>(),
+            &JsValue::from_str("id"),
+        );
+        let added = store.add(&js, None).map_err(idb_err)?;
+        let inserted = finishing(tx);
+        let key = added.await.map_err(idb_err)?;
+        let id = key
+            .as_f64()
+            .ok_or_else(|| CoreError::Storage("idb: history key was not a number".into()))?
+            as i64;
+        inserted.wait().await?;
+
+        // Trimmed after the write rather than during it: IndexedDB has no
+        // equivalent of the delete-all-but-the-newest-N that SQLite does in one
+        // statement, and a second transaction is simpler than holding the first
+        // open across a cursor walk.
+        let oldest_kept = self
+            .list_history(request_id, cap)
+            .await?
+            .last()
+            .map(|entry| entry.id);
+        if let Some(oldest) = oldest_kept {
+            let tx = self.rw(&[HISTORY])?;
+            let store = tx.object_store(HISTORY).map_err(idb_err)?;
+            let all = store
+                .get_all(None, None)
+                .map_err(idb_err)?
+                .await
+                .map_err(idb_err)?;
+            for raw in all {
+                let existing: HistoryEntry = from_js(raw)?;
+                if existing.request_id == request_id && existing.id < oldest {
+                    store
+                        .delete(idb::Query::Key(JsValue::from_f64(existing.id as f64)))
+                        .map_err(idb_err)?
+                        .await
+                        .map_err(idb_err)?;
+                }
+            }
+            let trimmed = finishing(tx);
+            trimmed.wait().await?;
+        }
+
+        Ok(HistoryEntry { id, ..candidate })
+    }
+
+    async fn list_history(
+        &self,
+        request_id: RequestId,
+        limit: usize,
+    ) -> CoreResult<Vec<HistoryEntry>> {
+        let tx = self.ro(&[HISTORY])?;
+        let store = tx.object_store(HISTORY).map_err(idb_err)?;
+        let all = store
+            .get_all(None, None)
+            .map_err(idb_err)?
+            .await
+            .map_err(idb_err)?;
+        let mut out: Vec<HistoryEntry> = Vec::new();
+        for raw in all {
+            let entry: HistoryEntry = from_js(raw)?;
+            if entry.request_id == request_id {
+                out.push(entry);
+            }
+        }
+        // Newest first, which is the end anyone looks at.
+        out.sort_by(|left, right| right.id.cmp(&left.id));
+        out.truncate(limit);
+        Ok(out)
+    }
+
+    async fn clear_history(&self, request_id: RequestId) -> CoreResult<()> {
+        let tx = self.rw(&[HISTORY])?;
+        let store = tx.object_store(HISTORY).map_err(idb_err)?;
+        let all = store
+            .get_all(None, None)
+            .map_err(idb_err)?
+            .await
+            .map_err(idb_err)?;
+        for raw in all {
+            let entry: HistoryEntry = from_js(raw)?;
+            if entry.request_id == request_id {
+                store
+                    .delete(idb::Query::Key(JsValue::from_f64(entry.id as f64)))
+                    .map_err(idb_err)?
+                    .await
+                    .map_err(idb_err)?;
+            }
+        }
+        finishing(tx).wait().await
+    }
+
     async fn clear_all(&self) -> CoreResult<()> {
-        let tx = self.rw(&[REQUESTS, COLLECTIONS, CONNECTIONS, SCHEMAS, DASHBOARDS])?;
+        let tx = self.rw(&[
+            REQUESTS,
+            COLLECTIONS,
+            CONNECTIONS,
+            SCHEMAS,
+            DASHBOARDS,
+            HISTORY,
+        ])?;
         let mut clears = Vec::new();
-        for store_name in [REQUESTS, COLLECTIONS, CONNECTIONS, SCHEMAS, DASHBOARDS] {
+        for store_name in [
+            REQUESTS,
+            COLLECTIONS,
+            CONNECTIONS,
+            SCHEMAS,
+            DASHBOARDS,
+            HISTORY,
+        ] {
             clears.push(
                 tx.object_store(store_name)
                     .map_err(idb_err)?

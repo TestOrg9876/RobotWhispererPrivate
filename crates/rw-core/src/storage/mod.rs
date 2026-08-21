@@ -1,6 +1,6 @@
 use crate::domain::{
-    Collection, Connection, Dashboard, Request, RequestKind, SchemaRef, TransportConfig, Value,
-    Visualization,
+    Collection, Connection, Dashboard, HistoryEntry, NewHistoryEntry, Request, RequestKind,
+    SchemaRef, TransportConfig, Value, Visualization,
 };
 use crate::ids::{CollectionId, ConnectionId, DashboardId, RequestId};
 use crate::schema::SchemaDefinition;
@@ -86,6 +86,17 @@ pub trait Storage: Send + Sync {
     async fn get_schema(&self, hash: &str) -> CoreResult<Option<SchemaDefinition>>;
     async fn list_schemas(&self) -> CoreResult<Vec<SchemaDefinition>>;
 
+    /// Records a run. Trims that request's history to `cap` on the way in, so
+    /// the ceiling holds without anything having to sweep.
+    async fn record_history(&self, entry: NewHistoryEntry, cap: usize) -> CoreResult<HistoryEntry>;
+    /// A request's runs, newest first.
+    async fn list_history(
+        &self,
+        request_id: RequestId,
+        limit: usize,
+    ) -> CoreResult<Vec<HistoryEntry>>;
+    async fn clear_history(&self, request_id: RequestId) -> CoreResult<()>;
+
     async fn clear_all(&self) -> CoreResult<()>;
 }
 
@@ -121,6 +132,17 @@ pub trait Storage {
     async fn put_schema(&self, definition: &SchemaDefinition) -> CoreResult<()>;
     async fn get_schema(&self, hash: &str) -> CoreResult<Option<SchemaDefinition>>;
     async fn list_schemas(&self) -> CoreResult<Vec<SchemaDefinition>>;
+
+    /// Records a run. Trims that request's history to `cap` on the way in, so
+    /// the ceiling holds without anything having to sweep.
+    async fn record_history(&self, entry: NewHistoryEntry, cap: usize) -> CoreResult<HistoryEntry>;
+    /// A request's runs, newest first.
+    async fn list_history(
+        &self,
+        request_id: RequestId,
+        limit: usize,
+    ) -> CoreResult<Vec<HistoryEntry>>;
+    async fn clear_history(&self, request_id: RequestId) -> CoreResult<()>;
 
     async fn clear_all(&self) -> CoreResult<()>;
 }

@@ -10,6 +10,7 @@ const MIGRATIONS: &[fn(&Transaction<'_>) -> rusqlite::Result<()>] = &[
     migration_5,
     migration_6,
     migration_7,
+    migration_8,
 ];
 
 pub(super) fn run(conn: &mut Connection) -> CoreResult<()> {
@@ -211,6 +212,35 @@ fn migration_7(tx: &Transaction<'_>) -> rusqlite::Result<()> {
         ALTER TABLE requests_new RENAME TO requests;
         CREATE INDEX idx_requests_collection ON requests(collection_id);
         CREATE INDEX idx_requests_connection ON requests(connection_id);
+        "#,
+    )?;
+    Ok(())
+}
+
+/// What a request did, kept after the fact.
+///
+/// `ON DELETE CASCADE` from the request: history is about a request, and
+/// leaving it behind would hand it to whatever gets that rowid next. The kind
+/// and target are copied rather than joined, because history outlives edits —
+/// repointing a request must not rewrite what you did with it yesterday — and
+/// the connection is `SET NULL` for the same reason, so deleting a robot does
+/// not delete the record of having talked to it.
+fn migration_8(tx: &Transaction<'_>) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        r#"
+        CREATE TABLE history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id INTEGER NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+            connection_id INTEGER REFERENCES connections(id) ON DELETE SET NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('topic','service','action','param')),
+            target TEXT NOT NULL,
+            at TEXT NOT NULL,
+            outcome_json TEXT NOT NULL,
+            input_json TEXT NOT NULL DEFAULT '{}',
+            response_json TEXT
+        );
+        -- The only query there is: this request's runs, newest first.
+        CREATE INDEX idx_history_request ON history(request_id, id DESC);
         "#,
     )?;
     Ok(())

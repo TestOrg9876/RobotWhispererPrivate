@@ -5,8 +5,8 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection as SqliteConnection, OptionalExtension, Row};
 
 use crate::domain::{
-    Collection, Connection, Dashboard, Request, RequestKind, SchemaRef, TransportConfig,
-    TransportKind, Value,
+    Collection, Connection, Dashboard, HistoryEntry, NewHistoryEntry, Request, RequestKind,
+    SchemaRef, TransportConfig, TransportKind, Value,
 };
 use crate::ids::{CollectionId, ConnectionId, DashboardId, RequestId};
 use crate::schema::SchemaDefinition;
@@ -93,6 +93,34 @@ fn row_to_collection(row: &Row<'_>) -> rusqlite::Result<Collection> {
         created_at: from_rfc3339(&created_at).map_err(|err| {
             rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(err))
         })?,
+    })
+}
+
+fn row_to_history(row: &Row<'_>) -> rusqlite::Result<HistoryEntry> {
+    let bad = |err: Box<dyn std::error::Error + Send + Sync>| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, err)
+    };
+    let kind_text: String = row.get("kind")?;
+    let kind = RequestKind::parse(&kind_text)
+        .ok_or_else(|| bad(format!("unknown request kind '{kind_text}'").into()))?;
+    let at: String = row.get("at")?;
+    let outcome_json: String = row.get("outcome_json")?;
+    let input_json: String = row.get("input_json")?;
+    let response_json: Option<String> = row.get("response_json")?;
+
+    Ok(HistoryEntry {
+        id: row.get("id")?,
+        request_id: row.get("request_id")?,
+        kind,
+        target: row.get("target")?,
+        connection_id: row.get("connection_id")?,
+        at: from_rfc3339(&at).map_err(|err| bad(Box::new(err)))?,
+        outcome: serde_json::from_str(&outcome_json).map_err(|err| bad(Box::new(err)))?,
+        input: serde_json::from_str(&input_json).map_err(|err| bad(Box::new(err)))?,
+        response: response_json
+            .map(|raw| serde_json::from_str(&raw))
+            .transpose()
+            .map_err(|err| bad(Box::new(err)))?,
     })
 }
 
@@ -628,6 +656,88 @@ impl Storage for SqliteStorage {
         .await
     }
 
+    async fn record_history(&self, entry: NewHistoryEntry, cap: usize) -> CoreResult<HistoryEntry> {
+        let now = self.now();
+        self.run(move |conn| {
+            let outcome = serde_json::to_string(&entry.outcome)
+                .map_err(|err| CoreError::Storage(err.to_string()))?;
+            let input = serde_json::to_string(&entry.input)
+                .map_err(|err| CoreError::Storage(err.to_string()))?;
+            let response = entry
+                .response
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|err| CoreError::Storage(err.to_string()))?;
+
+            conn.execute(
+                "INSERT INTO history \
+                 (request_id, connection_id, kind, target, at, outcome_json, input_json, response_json) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    entry.request_id,
+                    entry.connection_id,
+                    entry.kind.as_str(),
+                    entry.target,
+                    to_rfc3339(now),
+                    outcome,
+                    input,
+                    response,
+                ],
+            )
+            .map_err(map_sqlite)?;
+            let id = conn.last_insert_rowid();
+
+            // Trimmed here rather than by a sweep somewhere else: the ceiling is
+            // only ever exceeded by one, at exactly this moment, which makes
+            // this the cheapest place in the program to hold it.
+            conn.execute(
+                "DELETE FROM history WHERE request_id = ?1 AND id NOT IN \
+                 (SELECT id FROM history WHERE request_id = ?1 ORDER BY id DESC LIMIT ?2)",
+                params![entry.request_id, cap as i64],
+            )
+            .map_err(map_sqlite)?;
+
+            conn.query_row(
+                "SELECT * FROM history WHERE id = ?1",
+                params![id],
+                row_to_history,
+            )
+            .map_err(map_sqlite)
+        })
+        .await
+    }
+
+    async fn list_history(
+        &self,
+        request_id: RequestId,
+        limit: usize,
+    ) -> CoreResult<Vec<HistoryEntry>> {
+        self.run(move |conn| {
+            let mut stmt = conn
+                .prepare("SELECT * FROM history WHERE request_id = ?1 ORDER BY id DESC LIMIT ?2")
+                .map_err(map_sqlite)?;
+            let mapped = stmt
+                .query_map(params![request_id, limit as i64], row_to_history)
+                .map_err(map_sqlite)?;
+            let collected: rusqlite::Result<Vec<_>> = mapped.collect();
+            collected.map_err(map_sqlite)
+        })
+        .await
+    }
+
+    async fn clear_history(&self, request_id: RequestId) -> CoreResult<()> {
+        self.run(move |conn| {
+            conn.execute(
+                "DELETE FROM history WHERE request_id = ?1",
+                params![request_id],
+            )
+            .map_err(map_sqlite)?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn clear_all(&self) -> CoreResult<()> {
         self.run(|conn| {
             let tx = conn.transaction().map_err(map_sqlite)?;
@@ -1074,5 +1184,123 @@ mod tests {
             mig_count > 0,
             "schema_migrations row must persist across clear_all"
         );
+    }
+
+    use crate::domain::Outcome;
+
+    async fn a_request_to_run(storage: &SqliteStorage) -> Request {
+        storage
+            .create_request(NewRequest {
+                name: "Add two ints".into(),
+                kind: RequestKind::Service,
+                target: "/dummy/add_two_ints".into(),
+                collection_id: None,
+                connection_id: None,
+                schema: None,
+                input: Value::empty_struct(),
+                visualization: None,
+            })
+            .await
+            .expect("a request to run")
+    }
+
+    fn a_run(request: &Request, sum: i64) -> NewHistoryEntry {
+        NewHistoryEntry {
+            request_id: request.id,
+            kind: request.kind,
+            target: request.target.clone(),
+            connection_id: None,
+            outcome: Outcome::Answered,
+            input: Value::empty_struct(),
+            response: Some(Value::Int(sum)),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_run_is_recorded_and_read_back_newest_first() {
+        let storage = make_storage(fixed_clock(2026, 1, 1));
+        let request = a_request_to_run(&storage).await;
+
+        for sum in [1, 2, 3] {
+            storage
+                .record_history(a_run(&request, sum), 50)
+                .await
+                .expect("records");
+        }
+
+        let history = storage.list_history(request.id, 10).await.expect("lists");
+        let sums: Vec<Option<&Value>> = history.iter().map(|e| e.response.as_ref()).collect();
+        assert_eq!(
+            sums,
+            vec![
+                Some(&Value::Int(3)),
+                Some(&Value::Int(2)),
+                Some(&Value::Int(1))
+            ],
+            "newest first, because that is the end you look at"
+        );
+        assert_eq!(history[0].target, "/dummy/add_two_ints");
+        assert_eq!(history[0].kind, RequestKind::Service);
+    }
+
+    /// The cap holds on the way in. It is only ever exceeded by one, at exactly
+    /// the moment of a write, so nothing has to sweep for it later.
+    #[tokio::test]
+    async fn the_cap_is_enforced_as_runs_arrive() {
+        let storage = make_storage(fixed_clock(2026, 1, 1));
+        let request = a_request_to_run(&storage).await;
+
+        for sum in 0..10 {
+            storage
+                .record_history(a_run(&request, sum), 3)
+                .await
+                .expect("records");
+        }
+
+        let history = storage.list_history(request.id, 100).await.expect("lists");
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].response, Some(Value::Int(9)));
+        assert_eq!(history[2].response, Some(Value::Int(7)));
+    }
+
+    #[tokio::test]
+    async fn a_failure_is_kept_with_its_reason_and_no_response() {
+        let storage = make_storage(fixed_clock(2026, 1, 1));
+        let request = a_request_to_run(&storage).await;
+
+        storage
+            .record_history(
+                NewHistoryEntry {
+                    outcome: Outcome::Failed {
+                        reason: "no such service".into(),
+                    },
+                    response: None,
+                    ..a_run(&request, 0)
+                },
+                50,
+            )
+            .await
+            .expect("records");
+
+        let history = storage.list_history(request.id, 10).await.expect("lists");
+        assert_eq!(history[0].outcome.reason(), Some("no such service"));
+        assert!(history[0].response.is_none());
+    }
+
+    /// History is about a request, so it goes when the request does — and it
+    /// has to, or the next request handed that rowid inherits it.
+    #[tokio::test]
+    async fn deleting_a_request_takes_its_history_with_it() {
+        let storage = make_storage(fixed_clock(2026, 1, 1));
+        let request = a_request_to_run(&storage).await;
+        storage
+            .record_history(a_run(&request, 1), 50)
+            .await
+            .expect("records");
+
+        storage.delete_request(request.id).await.expect("deletes");
+
+        let history = storage.list_history(request.id, 10).await.expect("lists");
+        assert!(history.is_empty());
     }
 }

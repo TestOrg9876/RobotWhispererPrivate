@@ -188,20 +188,37 @@ impl Meter {
             return stats;
         };
 
-        // The span is measured to *now* rather than to the last arrival: with
-        // two messages 10 ms apart and then four seconds of silence, the rate
-        // is not 100 Hz.
-        let span_ns = now_ns.saturating_sub(first.arrived_ns).max(1);
-        let span = span_ns as f64 / 1e9;
-        if live.len() >= 2 {
-            // Intervals, not messages: n arrivals across a span describe n
-            // intervals counting the one still open at `now`.
-            stats.hz = Some(live.len() as f64 / span);
-        }
+        if let (Some(last), true) = (live.last(), live.len() >= 2) {
+            // Completed intervals over the time they took. n arrivals bound
+            // n−1 intervals, not n — counting the one still open at `now` as
+            // if it had closed reads about 1/2(n−1) high, which is nothing at
+            // 100 Hz and a quarter at 1 Hz. This is the estimator
+            // `ros2 topic hz` uses, and agreeing with it matters more than any
+            // refinement: a number that disagrees with the tool beside it is a
+            // number nobody trusts.
+            let intervals = (live.len() - 1) as f64;
+            let closed_ns = last.arrived_ns.saturating_sub(first.arrived_ns);
 
-        let sized: usize = live.iter().filter_map(|sample| sample.bytes).sum();
-        if live.iter().any(|sample| sample.bytes.is_some()) {
-            stats.bytes_per_second = Some(sized as f64 / span);
+            // The open interval counts only once it has outlasted a normal
+            // one. A topic keeping pace reads its true rate; one that has gone
+            // quiet reads a falling one rather than staying frozen at whatever
+            // it was when the robot went away.
+            let mean_ns = (closed_ns as f64 / intervals) as u64;
+            let overdue_ns = now_ns
+                .saturating_sub(last.arrived_ns)
+                .saturating_sub(mean_ns);
+
+            let measured_ns = closed_ns.saturating_add(overdue_ns).max(1);
+            let measured = measured_ns as f64 / 1e9;
+            stats.hz = Some(intervals / measured);
+
+            // The same n−1 messages over the same span, so bandwidth is the
+            // rate times the mean message size — which is the arithmetic
+            // anyone reading both numbers will do in their head.
+            if live.iter().any(|sample| sample.bytes.is_some()) {
+                let sized: usize = live.iter().skip(1).filter_map(|sample| sample.bytes).sum();
+                stats.bytes_per_second = Some(sized as f64 / measured);
+            }
         }
 
         let mut latencies: Vec<u64> = live.iter().filter_map(|sample| sample.latency_ns).collect();
@@ -289,15 +306,51 @@ mod tests {
             .stats(SECOND + 4000 * MS)
             .hz
             .expect("two samples is a rate");
-        assert!((hz - 10.).abs() < 0.5, "got {hz} Hz");
+        assert!((hz - 10.).abs() < 0.01, "got {hz} Hz");
     }
 
     #[test]
     fn a_topic_at_one_hertz_reads_as_one_hertz() {
+        // The tolerance is tight on purpose. The old estimator counted the
+        // still-open interval as a message and read 1.25 Hz here — inside a
+        // loose tolerance, and 25% wrong.
         let mut meter = Meter::new();
         steady(&mut meter, SECOND, SECOND, 5, None);
         let hz = meter.stats(SECOND + 4 * SECOND).hz.expect("a rate");
-        assert!((hz - 1.).abs() < 0.3, "got {hz} Hz");
+        assert!((hz - 1.).abs() < 0.01, "got {hz} Hz");
+    }
+
+    #[test]
+    fn a_rate_does_not_jump_while_waiting_for_the_next_message() {
+        // Between two arrivals of a 10 Hz topic the reading should stay 10 Hz,
+        // not climb as the gap since the last one grows.
+        let mut meter = Meter::new();
+        steady(&mut meter, SECOND, 100 * MS, 20, None);
+        let last = SECOND + 1900 * MS;
+        for wait in [0, 20 * MS, 50 * MS, 90 * MS] {
+            let hz = meter.stats(last + wait).hz.expect("a rate");
+            assert!(
+                (hz - 10.).abs() < 0.01,
+                "at {wait} ns into the gap the rate read {hz} Hz"
+            );
+        }
+    }
+
+    #[test]
+    fn the_rate_matches_the_way_ros2_topic_hz_computes_it() {
+        // n arrivals bound n−1 intervals. Anyone checking this app against the
+        // command line is comparing against exactly this number.
+        let mut meter = Meter::new();
+        let arrivals = [0, 90 * MS, 210 * MS, 300 * MS, 405 * MS];
+        for at in arrivals {
+            meter.observe(SECOND + at, &frame(0, None));
+        }
+        let expected = 4. / 0.405;
+        let hz = meter.stats(SECOND + 405 * MS).hz.expect("a rate");
+        assert!(
+            (hz - expected).abs() < 0.01,
+            "got {hz} Hz, ros2 topic hz would say {expected}"
+        );
     }
 
     #[test]
@@ -397,7 +450,22 @@ mod tests {
             .stats(SECOND + 1000 * MS)
             .bytes_per_second
             .expect("bytes were kept");
-        assert!((rate - 10_000.).abs() < 1500., "got {rate} B/s");
+        assert!((rate - 10_000.).abs() < 10., "got {rate} B/s");
+    }
+
+    #[test]
+    fn bandwidth_is_the_rate_times_the_message_size() {
+        // The arithmetic anyone reading both numbers does in their head. If
+        // these two disagree, one of them is wrong and neither gets believed.
+        let mut meter = Meter::new();
+        steady(&mut meter, SECOND, 100 * MS, 30, Some(4096));
+        let stats = meter.stats(SECOND + 2950 * MS);
+        let hz = stats.hz.expect("a rate");
+        let bytes = stats.bytes_per_second.expect("a bandwidth");
+        assert!(
+            (bytes - hz * 4096.).abs() < 1.,
+            "{bytes} B/s is not {hz} Hz of 4096-byte messages"
+        );
     }
 
     #[test]

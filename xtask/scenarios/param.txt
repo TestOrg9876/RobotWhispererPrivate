@@ -73,3 +73,20 @@ wait 400
 move 700 700
 wait 500
 shot 05-written
+
+# Dracula, to show that the kind's colour comes from the theme rather than from
+# the library's fallback palette. Before `base.yellow` was emitted, PARAM was
+# the same gold in all seven themes, because no theme declared the slot and the
+# library quietly supplied its own — which is exactly the failure this shot
+# would have caught.
+key ctrl+comma
+wait 1300
+click 614 297
+wait 1000
+click 1009 109
+wait 900
+move 700 500
+wait 400
+move 700 550
+wait 400
+shot 06-dracula

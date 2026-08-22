@@ -36,6 +36,22 @@ wait 700
 click 1265 45
 wait 900
 shot 02-palette
+
+# And it filters. This shot was taken immediately after the one above and named
+# "filtered" without anything ever having been typed into the field, so the
+# search path — the part that actually runs on every keystroke — was never in a
+# picture at all.
+click 720 141
+wait 500
+type conn
+wait 800
+# GPUI paints on demand and the capture reads whatever the window last
+# composited, so a shot that follows typing needs the pointer nudged more than
+# once before it: one nudge leaves the previous frame on screen.
+move 720 250
+wait 400
+move 720 300
+wait 400
 shot 03-palette-filtered
 
 # Settings, chosen from the palette.

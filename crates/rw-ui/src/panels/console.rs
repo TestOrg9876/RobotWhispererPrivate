@@ -254,7 +254,10 @@ impl Render for ConsolePanel {
                             .ghost()
                             .xsmall()
                             .label(floor_label)
-                            .icon(IconName::ChevronDown)
+                            // The button's own caret, which sits after the
+                            // label. `icon` puts it in front, where it reads as
+                            // part of the value rather than as "there is more".
+                            .dropdown_caret(true)
                             .tooltip("The quietest level shown")
                             .selected(floor != Severity::Info)
                             .dropdown_menu(move |mut menu, _window, _cx| {

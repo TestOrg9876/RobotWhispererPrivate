@@ -42,11 +42,20 @@ wait 9000
 move 700 500
 shot 02-rosout
 
-# One control that cycles rather than three that are mutually exclusive: the
-# button's own label says which level it is showing.
-click 503 739
-wait 500
-shot 03-warnings
-click 503 739
-wait 500
-shot 04-errors
+# The level filter is a menu rather than a button that cycles. Three levels
+# with the current one checked, so both what else there is and the way back are
+# visible — a cycling button spends the same pixel and shows neither.
+click 510 747
+wait 800
+shot 03-level-menu
+click 530 803
+wait 800
+shot 04-warnings
+
+# And back through the menu to errors only, which is the level anybody actually
+# reaches for.
+click 510 747
+wait 800
+click 530 831
+wait 800
+shot 05-console-errors

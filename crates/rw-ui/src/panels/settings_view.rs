@@ -16,8 +16,9 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, Window, div, px,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::list::ListItem;
 use gpui_component::switch::Switch;
-use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
+use gpui_component::{ActiveTheme as _, IconName, Sizable as _, h_flex, v_flex};
 
 use crate::prefs::{Prefs, Settings};
 use crate::theme::{self, Preference};
@@ -344,20 +345,21 @@ impl SettingsView {
     /// One theme, shown as itself: the list is a preview rather than a column
     /// of names.
     fn themes(&self, cx: &mut Context<Self>) -> AnyElement {
+        // `ListItem`, which the sidebar already draws every request with. It
+        // carries the selected fill, the hover, the accent border and the slot
+        // the check sits in — all four of which this row used to spell out for
+        // itself, and one of which it was missing.
+        //
+        // `selected` paints it and `confirmed` is what reveals the check, so a
+        // chosen theme is both.
         let swatch = |preference: Preference, label: String, cx: &mut Context<Self>| {
             let chosen = self.preference == preference;
-            h_flex()
-                .id(SharedString::from(format!("theme:{label}")))
+            ListItem::new(SharedString::from(format!("theme:{label}")))
                 .h(px(tokens::CONTROL_HEIGHT))
-                .w_full()
                 .px_3()
-                .gap_3()
-                .items_center()
-                .rounded(cx.theme().radius)
-                .when(chosen, |row| row.bg(cx.theme().list_active))
-                .when(!chosen, |row| {
-                    row.hover(|row| row.bg(cx.theme().list_hover))
-                })
+                .selected(chosen)
+                .confirmed(chosen)
+                .check_icon(IconName::Check)
                 .child(
                     div()
                         .flex_1()
@@ -366,13 +368,6 @@ impl SettingsView {
                         .text_color(cx.theme().foreground)
                         .child(label),
                 )
-                .when(chosen, |row| {
-                    row.child(
-                        Icon::new(IconName::Check)
-                            .small()
-                            .text_color(cx.theme().primary),
-                    )
-                })
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.choose_theme(preference.clone(), cx)
                 }))

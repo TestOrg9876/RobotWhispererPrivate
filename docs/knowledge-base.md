@@ -213,6 +213,19 @@ From review. These are not preferences and should not be re-litigated.
   (`series::Limits`, the point budget): a callback has the frame and nothing
   else, and reaching for a global from off the UI thread is not available.
 
+- **Nothing gets hand-rolled that a dependency already does.** `ActionGoalId`
+  was a second `Uuid`, two crates carried identical hex encoders, two carried
+  identical 4×4 matrix code, and two transports carried a `spawn_task` worse
+  than the shared one. Before writing a helper, check what is already in
+  `Cargo.toml` — and before adding a dependency for sixteen hex digits, don't.
+- **A `Vec` is not a ring.** Dropping the oldest with `remove(0)` shifts the
+  whole buffer. `VecDeque` is the std type for a bounded history and both the
+  plot series and the console line buffer use it.
+- **Shared code goes in the crate with no dependencies.** `Mat4` lives in
+  `rw-tf` so that `rw-render` and `rw-assets` can both reach it without either
+  reaching the other: an asset loader does not want wgpu and a renderer does
+  not want a URDF parser.
+
 ## 6. Open issues
 
 Ranked by what it costs you.
@@ -262,7 +275,7 @@ there.
 ```
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace          # 824 passing, 1 ignored
+cargo test --workspace          # 827 passing, 1 ignored
 ```
 
 The ignored test is `rw-transport-rosbridge/tests/live_action.rs`; it needs a

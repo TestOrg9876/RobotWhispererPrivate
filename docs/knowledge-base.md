@@ -230,26 +230,30 @@ From review. These are not preferences and should not be re-litigated.
 
 Ranked by what it costs you.
 
-1. **The pane header floats outside its card.** `/dummy/counter · 165 · 9.44 Hz ·
+1. **This app burns ~0.7% CPU drawing nothing.** Found by benchmarking, not by
+   looking. With no connection and no subscription the welcome screen should
+   cost nothing; something is repainting. Cheap to chase and it is the one
+   runtime number the Tauri app wins on its merits.
+2. **The pane header floats outside its card.** `/dummy/counter · 165 · 9.44 Hz ·
    ⋯` sits on the grey with the card starting beneath it. Asked for, not
    delivered — blocked on `Panel::title_style` or a decision about `Tiles`.
    See §4.
-2. **Parameter history is recorded nowhere visible** — so it is not recorded at
+3. **Parameter history is recorded nowhere visible** — so it is not recorded at
    all. Parameters have runs, but the parameter form is its own response and
    there is no response card to hang a History tab on. Needs somewhere on the
    PARAMETERS card first.
-3. **The drop target is a full-pane solid wash.** Heavy; a border or light tint
+4. **The drop target is a full-pane solid wash.** Heavy; a border or light tint
    would read better.
-4. **The world pane's layer rail** is 240px of full-height card for two rows.
-5. **Marker types 9 (text) and 10 (mesh resource) are not decoded.** Text needs
+5. **The world pane's layer rail** is 240px of full-height card for two rows.
+6. **Marker types 9 (text) and 10 (mesh resource) are not decoded.** Text needs
     glyph rendering, which `rw-render` does not have.
-6. **`/dummy/points` and `/dummy/image` build no payload form** — the schema
+7. **`/dummy/points` and `/dummy/image` build no payload form** — the schema
     does not reach `message_for` from the registry. Harmless now that topics do
     not publish, but the same gap would bite a service with those types.
-7. **Settings live only in a dialog.** The owner asked for "dialog now, panel
+8. **Settings live only in a dialog.** The owner asked for "dialog now, panel
     later"; the panel is not built. The content is a plain `v_flex` of rows, so
     moving it into a dock panel is a wrapper change, not a rewrite.
-8. **Three settings sections are thin.** Requests holds one row, Console holds
+9. **Three settings sections are thin.** Requests holds one row, Console holds
     one. `marker::LIST_BUDGET`, `tree::MAX_CHILDREN`, the console's default
     level filter and a request's default view are all still constants.
 
@@ -287,6 +291,25 @@ message-definition viewer, the command palette, connection toasts, and
 So: at parity except for joint articulation. Anything that claims otherwise
 should be checked against `src/lib/robotkit/` on `main` before it is believed.
 
+### Measured against it
+
+`docs/benchmarks.md` has the numbers and the method. In short: 2.8× faster to
+a mapped window, 3.1× less resident memory, one process instead of three, one
+toolchain instead of two, no system webview — and a bigger binary and a slower
+build. The under-load rendering comparison is **not** done: synthetic clicks
+are swallowed by the WebKit view under Xvfb with no window manager, so there is
+no honest number for it yet.
+
+Two traps that cost time and would cost it again:
+
+- **A plain `cargo build --release` on the Tauri package does not build the
+  app.** It produces a binary pointing at `devUrl`, which renders
+  `Could not connect to localhost`. The first set of numbers measured that.
+  Build it with `bunx tauri build --no-bundle`, and *look at a screenshot*
+  before believing anything.
+- **Measure the whole process tree.** Tauri renders in separate
+  `WebKitWebProcess` children; the launched PID accounts for almost none of it.
+
 ## 7. Frozen / out of scope
 
 Decided, not forgotten.
@@ -309,7 +332,7 @@ there.
 ```
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace          # 827 passing, 1 ignored
+cargo test --workspace          # 823 passing, 1 ignored
 ```
 
 The ignored test is `rw-transport-rosbridge/tests/live_action.rs`; it needs a
@@ -360,12 +383,17 @@ screenshots the regression test for the whole feature.
 
 **Next, in rough order of value:**
 
-1. **The pane header** (§6.1) — asked for, still floating outside its card, and
+1. **The 0.7% idle CPU** (§6.1). Found by benchmarking. Small, and it is the
+   one runtime number the old app beats us on fairly.
+2. **The pane header** (§6.2) — asked for, still floating outside its card, and
    the oldest thing on this list.
-2. **The drop-target wash and the layer rail** (§6.3, §6.4) — both are visual
+3. **The under-load benchmark** — the comparison that is still missing, and the
+   one that would say the most. Needs a window manager or Tauri's WebDriver
+   harness; see `docs/benchmarks.md`.
+4. **Joint articulation** (§6a) — the one feature the Tauri app has and this
+   does not.
+5. **The drop-target wash and the layer rail** (§6.4, §6.5) — both are visual
    debt already written down and both are an afternoon.
-3. **The settings panel** (§6.7), once there is enough in it to be worth
-   docking.
 
 **Delivered since the settings pass:**
 

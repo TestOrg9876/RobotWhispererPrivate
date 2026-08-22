@@ -71,6 +71,8 @@ Verified on screen, not just compiled.
   connection.
 - **Console** — the app's own notices and the robot's `/rosout`, one ordering.
 - **Toasts** — connection drops and failures only.
+- **Settings** — a dialog with a rail of six sections; every value reaches
+  something that reads it, live.
 - **Command palette**, searchable topic picker, topic Hz/bandwidth/latency.
 
 ## 4. Hard-won facts
@@ -126,6 +128,19 @@ Paths are inside `~/.cargo/git/checkouts/gpui-component-*/7acfc18/`.
 - **Prefer keybindings to buttons whose position moves.** The save check sits
   left of the run button, so its x depends on the connection name's width;
   `dragdrop` uses `ctrl+s` instead.
+- **Every shot in the run shares one output directory, so two scenarios naming
+  a shot the same thing means one silently overwrites the other.** `param` was
+  eating `dragdrop`'s `04-dropped` this way. Before adding a shot:
+
+  ```
+  grep -H "^shot " xtask/scenarios/*.txt | sed 's|xtask/scenarios/||' \
+    | awk '{split($0,a,":shot "); print a[2], a[1]}' | sort \
+    | awk '{if ($1==prev) print "COLLISION:", $1, prevfile, $2; prev=$1; prevfile=$2}'
+  ```
+- **Comparing two runs needs a metric, not `cmp`.** Half the shots hold live
+  data. `compare -metric AE old/x.png new/x.png null:` sorted descending puts
+  the real regressions at the top; anything animated (clouds, camera frames,
+  feedback counts) is expected to move.
 
 ### Rendering and assets
 
@@ -177,6 +192,17 @@ From review. These are not preferences and should not be re-litigated.
   not the view strip inside a response.
 - Every pane uses `tokens::card` and its content fills the pane.
 
+- **A setting nothing reads is worse than no setting.** Every value in the
+  dialog is wired to its consumer, and the two that cannot be re-read per frame
+  — the `/tf` subscriptions and the rate meters — are told about the change
+  instead (`TfStore::resettle`, `CanonicalPipeline::set_rate_window_ns`).
+- **`Settings` is a GPUI global**, because the numbers are read deep inside
+  decode and render paths that have a `cx` and nothing else. The preferences
+  file is only where it comes back from next launch.
+- **Values that a transport callback needs are captured at subscribe time**
+  (`series::Limits`, the point budget): a callback has the frame and nothing
+  else, and reaching for a global from off the UI thread is not available.
+
 ## 6. Open issues
 
 Ranked by what it costs you.
@@ -211,6 +237,12 @@ Ranked by what it costs you.
 11. **`/dummy/points` and `/dummy/image` build no payload form** — the schema
     does not reach `message_for` from the registry. Harmless now that topics do
     not publish, but the same gap would bite a service with those types.
+12. **Settings live only in a dialog.** The owner asked for "dialog now, panel
+    later"; the panel is not built. The content is a plain `v_flex` of rows, so
+    moving it into a dock panel is a wrapper change, not a rewrite.
+13. **Three settings sections are thin.** Requests holds one row, Console holds
+    one. `marker::LIST_BUDGET`, `tree::MAX_CHILDREN`, the console's default
+    level filter and a request's default view are all still constants.
 
 ## 7. Frozen / out of scope
 
@@ -230,7 +262,7 @@ there.
 ```
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace          # 791 passing, 1 ignored
+cargo test --workspace          # 802 passing, 1 ignored
 ```
 
 The ignored test is `rw-transport-rosbridge/tests/live_action.rs`; it needs a
@@ -241,7 +273,7 @@ Then on screen:
 ```
 cargo xtask list-scenarios
 cargo xtask screenshot-native <name> --out target/shots
-cargo xtask screenshot-native --out target/shots        # all 20, 89 shots
+cargo xtask screenshot-native --out target/shots        # all 21, 91 shots
 ```
 
 **Open the PNGs.** Then compare against the previous run's directory — a shot
@@ -260,26 +292,32 @@ cargo check -p rw-core --target wasm32-unknown-unknown \
 
 Done, in order: TF and the 3D world · freeze & diff · parameters · topic stats ·
 log console · searchable picker · drag-and-drop · dashboards · record/replay ·
-schema resolution per connection · toasts · history.
+schema resolution per connection · toasts · history · settings.
 
-**Next: settings.** Today `Settings` is a 460px modal holding a theme list and a
-version string. It becomes a left rail of sections and a content pane — content
-first, in the dialog; the move to a dock panel is a separate change. The values
-already exist as constants nobody can reach:
+**Settings, delivered.** Eight values, each one a constant nobody could reach
+before, now in a dialog and wired to what reads it:
 
-| Section | From |
-| --- | --- |
-| Appearance | theme (already there) |
-| Data | `cloud::BUDGET` 400k, `marker::LIST_BUDGET`, `tree::MAX_CHILDREN` |
-| Plots | `series::WINDOW` 600, `series::MAX_FIELDS` 12 |
-| Rates | `stats::WINDOW_NS` 5 s |
-| Transforms | `rw_tf::DEFAULT_WINDOW_NS` 10 s, and whether `/tf` is auto-subscribed |
-| Console | retention, default level filter |
-| Requests | default view, `HISTORY_CAP` 50 |
+| Setting | Default | Reaches |
+| --- | --- | --- |
+| `history_depth` | 50 | read where a run is recorded, so lowering it bites on the next call |
+| `console_lines` | 2000 | read on every line pushed |
+| `point_budget` | 400 000 | threaded through `viz::draw` → `cloud::decode` |
+| `plot_window` | 600 | `series::Limits`, captured at subscribe time |
+| `plot_fields` | 12 | same |
+| `follow_transforms` | on | a live switch — off drops the `/tf` subscriptions *and* the trees they filled |
+| `tf_window_secs` | 10 | `Buffer::set_window`, on the buffers already running |
+| `rate_window_secs` | 5 | `Meter::set_window`, on the meters already running |
 
-`prefs.rs` grows a `settings: Settings` beside `theme` and `layout`, same
-serde-defaulted pattern so an older preferences file still loads. Each default
-is today's constant, and the unchanged screenshots are what proves it.
+Every default is the old constant, which is what makes the unchanged
+screenshots the regression test for the whole feature.
 
-After that, in rough order of value: replay transport controls (§6.3),
-`robot_description` (§6.2), the pane header (§6.1).
+**Next, in rough order of value:**
+
+1. **Replay transport controls** (§6.3). `ReplayTransport` has `set_playing`,
+   `set_speed`, `set_looping`, `seek` and `progress()`, all tested, with zero UI
+   callers. Best effort-to-value ratio in the repo.
+2. **`robot_description`** (§6.2) — RViz's most basic behaviour, and today the
+   world pane can only draw one of 7 catalog robots.
+3. **The pane header** (§6.1) — asked for, still floating outside its card.
+4. **The settings panel** (§6.12), once there is enough in it to be worth
+   docking.

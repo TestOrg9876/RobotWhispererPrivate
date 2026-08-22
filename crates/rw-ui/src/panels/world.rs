@@ -42,7 +42,7 @@ use rw_assets::math;
 use rw_canonical::CanonicalValue;
 use rw_render::{Content, Layer, MeshVertex, Solid};
 
-use crate::actions::{AddWorldRobot, RemoveWorldLayer, SetWorldFrame};
+use crate::actions::{AddWorldDescription, AddWorldRobot, RemoveWorldLayer, SetWorldFrame};
 use crate::prefs::Settings;
 use crate::scene_view::SceneView;
 use crate::session::{RobotWhisperer, Sessions};
@@ -55,6 +55,22 @@ use crate::{tokens, viz};
 /// The same 240 the robot pane spent on its joint list: enough for a topic name
 /// and the frame it came in, and no more — the picture is what the pane is for.
 const RAIL: f32 = 240.;
+
+/// Where a running ROS graph puts its own URDF.
+///
+/// A latched `std_msgs/String`, which is the ROS 2 convention and what every
+/// bridge republishes. ROS 1's parameter of the same name is not read: it is
+/// reachable only through a node's parameter services, which are themselves a
+/// ROS 2 shape here.
+pub const DESCRIPTION_TOPIC: &str = "/robot_description";
+
+/// The layer key for the robot a connection describes.
+///
+/// Keyed by connection rather than by name so that two systems can each draw
+/// their own, and so adding it twice is the no-op it is for a catalog robot.
+fn described_id(connection: i64) -> String {
+    format!("{DESCRIPTION_TOPIC}@{connection}")
+}
 
 /// What a layer is showing.
 enum Source {
@@ -665,6 +681,141 @@ impl WorldPanel {
             .count()
     }
 
+    /// The connections whose graph advertises `/robot_description`.
+    ///
+    /// Offered only when it is actually there. A menu entry for something that
+    /// will fail is worse than no entry: it costs a click to find out.
+    fn described(&self, cx: &App) -> Vec<(i64, SharedString)> {
+        let workspace = self.workspace.read(cx);
+        let sessions = self.sessions.read(cx);
+        workspace
+            .connections()
+            .iter()
+            .filter(|connection| {
+                sessions.discovery(connection.id).is_some_and(|discovery| {
+                    discovery
+                        .topics
+                        .iter()
+                        .any(|topic| topic.name == DESCRIPTION_TOPIC)
+                })
+            })
+            .map(|connection| (connection.id, SharedString::from(connection.name.clone())))
+            .collect()
+    }
+
+    /// Draws the robot a connection describes on `/robot_description`.
+    ///
+    /// The description arrives as a message rather than sitting on disk, so
+    /// this subscribes and waits — the topic is latched, so the first message
+    /// is immediate on a graph that has one. Meshes it names live on the robot
+    /// and not here, so only the ones whose package happens to be under the
+    /// assets root resolve; the primitives always do, and the layer says how
+    /// many links it could not draw rather than pretending it drew them.
+    pub fn add_description(&mut self, connection: i64, cx: &mut Context<Self>) {
+        let Some(catalog) = self.catalog.clone() else {
+            self.problem = Some(
+                "The robot models could not be found. Set RW_ASSETS to the assets directory."
+                    .into(),
+            );
+            cx.notify();
+            return;
+        };
+        let id = described_id(connection);
+        if self.layers.iter().any(
+            |layer| matches!(&layer.source, Source::Robot { id: existing, .. } if *existing == id),
+        ) {
+            return;
+        }
+        let Some(session) = self.sessions.read(cx).session(connection) else {
+            self.problem = Some("That system is not connected.".into());
+            cx.notify();
+            return;
+        };
+
+        let name = self
+            .sessions
+            .read(cx)
+            .live(connection)
+            .map(|live| live.name.clone())
+            .unwrap_or_else(|| "Robot".to_string());
+
+        let mut layer = WorldLayer::robot(id.clone(), name.clone());
+        layer.problem = Some("Waiting for the description…".into());
+
+        let pipeline = self.sessions.read(cx).pipeline();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        layer._work = Some(cx.spawn(async move |panel, cx| {
+            let opened = pipeline
+                .subscribe_topic(session, DESCRIPTION_TOPIC, move |_handle, frame, _lossy| {
+                    if let Some(source) = description_of(&frame.value) {
+                        // One is enough: the description does not change under
+                        // a running robot, and re-parsing thirty megabytes of
+                        // mesh because it was republished would be a stall for
+                        // nothing.
+                        sender.send(source).ok();
+                    }
+                })
+                .await;
+            if let Err(error) = opened {
+                panel
+                    .update(cx, |panel, cx| {
+                        if let Some(layer) = panel.layer_mut(&id) {
+                            layer.problem = Some(error.to_string().into());
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                return;
+            }
+
+            let Ok(source) = cx
+                .background_spawn(async move {
+                    receiver
+                        .recv_timeout(std::time::Duration::from_secs(20))
+                        .map_err(|_| ())
+                })
+                .await
+            else {
+                panel
+                    .update(cx, |panel, cx| {
+                        if let Some(layer) = panel.layer_mut(&id) {
+                            layer.problem =
+                                Some("Nothing was published on /robot_description.".into());
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                return;
+            };
+
+            // Thirty megabytes of mesh must not be parsed on the thread that
+            // draws.
+            let loaded = cx
+                .background_spawn({
+                    let name = name.clone();
+                    async move {
+                        catalog
+                            .load_description(&name, &source)
+                            .map_err(|error| error.to_string())
+                    }
+                })
+                .await;
+            panel
+                .update(cx, |panel, cx| match loaded {
+                    Ok(loaded) => panel.adopt(&id, loaded, cx),
+                    Err(reason) => {
+                        if let Some(layer) = panel.layer_mut(&id) {
+                            layer.problem = Some(reason.into());
+                        }
+                        cx.notify();
+                    }
+                })
+                .ok();
+        }));
+        self.layers.push(layer);
+        cx.notify();
+    }
+
     /// The fixed frame row, and one row per layer.
     fn rail(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let pane = cx.entity_id().as_u64();
@@ -829,6 +980,7 @@ impl WorldPanel {
     fn add_button(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let pane = cx.entity_id().as_u64();
         let drawable = self.drawable_topics(cx);
+        let described = self.described(cx);
         let robots: Vec<(String, SharedString)> = self
             .catalog
             .as_ref()
@@ -847,7 +999,7 @@ impl WorldPanel {
             // clicks and a hunt for something that should be one click and a
             // read.
             .dropdown_menu(move |mut menu, _window, _cx| {
-                if drawable == 0 && robots.is_empty() {
+                if drawable == 0 && robots.is_empty() && described.is_empty() {
                     return menu.menu(
                         "Connect a system first",
                         Box::new(crate::actions::ManageConnections),
@@ -862,6 +1014,17 @@ impl WorldPanel {
                         SharedString::from(format!("Add a topic…  ({drawable} drawable)")),
                         Box::new(crate::actions::PickWorldTopic { pane }),
                     );
+                }
+                // The robot the system actually is, above the ones we ship:
+                // if the graph describes itself, that is the one you came for.
+                if !described.is_empty() {
+                    menu = menu.separator();
+                    for (connection, name) in described.clone() {
+                        menu = menu.menu(
+                            SharedString::from(format!("{name}'s own robot")),
+                            Box::new(AddWorldDescription { pane, connection }),
+                        );
+                    }
                 }
                 if !robots.is_empty() {
                     menu = menu.separator();
@@ -878,6 +1041,23 @@ impl WorldPanel {
                 menu
             })
     }
+}
+
+/// The URDF text out of a `/robot_description` message.
+///
+/// `std_msgs/String` is one field called `data`, but a bare string is accepted
+/// too: a bridge that unwraps single-field messages is a bridge that would
+/// otherwise make this fail for no reason anyone could see.
+fn description_of(value: &CanonicalValue) -> Option<String> {
+    let text = match value {
+        CanonicalValue::String(text) => text.clone(),
+        CanonicalValue::Struct(fields) => match fields.get("data") {
+            Some(CanonicalValue::String(text)) => text.clone(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    (!text.trim().is_empty()).then_some(text)
 }
 
 /// Flattens a link's parts into the renderer's vertex format.

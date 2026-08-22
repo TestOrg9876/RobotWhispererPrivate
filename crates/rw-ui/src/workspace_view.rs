@@ -27,9 +27,9 @@ use gpui_component::{
 };
 
 use crate::actions::{
-    AddWorldLayer, AddWorldRobot, CommandPalette, Connect, Disconnect, ExportWorkspace,
-    ImportWorkspace, ManageConnections, NewDashboard, NewRequest, OpenRecording, OpenSettings,
-    PickPaneTopic, PickWorldTopic, RemoveWorldLayer, ReplayRecording, ResetWorldView,
+    AddWorldDescription, AddWorldLayer, AddWorldRobot, CommandPalette, Connect, Disconnect,
+    ExportWorkspace, ImportWorkspace, ManageConnections, NewDashboard, NewRequest, OpenRecording,
+    OpenSettings, PickPaneTopic, PickWorldTopic, RemoveWorldLayer, ReplayRecording, ResetWorldView,
     SaveRecording, SetReplaySpeed, SetWorldAnchor, SetWorldFrame, ShowWorld, ToggleConsole,
     ToggleRecording, ToggleSidebar,
 };
@@ -1508,6 +1508,12 @@ impl Render for WorkspaceView {
             .on_action(cx.listener(|this, action: &AddWorldRobot, _, cx| {
                 this.with_world(action.pane, cx, |world, cx| {
                     world.add_robot(&action.robot, cx)
+                });
+            }))
+            .on_action(cx.listener(|this, action: &AddWorldDescription, _, cx| {
+                let connection = action.connection;
+                this.with_world(action.pane, cx, move |world, cx| {
+                    world.add_description(connection, cx)
                 });
             }))
             .on_action(cx.listener(|this, action: &RemoveWorldLayer, _, cx| {

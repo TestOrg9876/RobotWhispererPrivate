@@ -202,3 +202,12 @@ pub struct SetReplaySpeed {
     /// Hundredths: 100 is the captured rate, 25 is a quarter of it.
     pub hundredths: u32,
 }
+
+/// Draw the robot a connection describes on `/robot_description`, rather than
+/// one of the models that ship with the app.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
+pub struct AddWorldDescription {
+    pub pane: u64,
+    pub connection: i64,
+}

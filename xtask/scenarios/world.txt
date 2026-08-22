@@ -61,7 +61,11 @@ shot 05-cloud-and-path
 # being drawn at the origin where it would look plausible and be wrong.
 click 507 90
 wait 900
-click 530 321
+# UR10e, the last entry. The list moved down when the connection's own
+# published robot was added above it — see the collision note in the knowledge
+# base: a coordinate below anything that can grow is a coordinate that will be
+# wrong again.
+click 530 357
 wait 6000
 move 700 500
 wait 400

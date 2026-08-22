@@ -30,6 +30,7 @@ const SCAN: &str = "/scan";
 const PATH: &str = "/path";
 const POSE: &str = "/pose";
 const ROSOUT: &str = "/rosout";
+const DESCRIPTION: &str = "/robot_description";
 
 const TF_DEF: &str = "geometry_msgs/TransformStamped[] transforms\n";
 const SCAN_DEF: &str = "std_msgs/Header header\nfloat32 angle_min\nfloat32 angle_max\nfloat32 angle_increment\nfloat32 time_increment\nfloat32 scan_time\nfloat32 range_min\nfloat32 range_max\nfloat32[] ranges\nfloat32[] intensities\n";
@@ -130,6 +131,7 @@ impl DummyTransport {
         let path_schema = build_path_schema();
         let pose_schema = build_pose_schema();
         let rosout_schema = build_rosout_schema();
+        let description_schema = build_string_schema();
 
         let mut schemas = HashMap::new();
         schemas.insert("/dummy/counter".to_string(), counter_schema.clone());
@@ -144,6 +146,7 @@ impl DummyTransport {
         schemas.insert(PATH.to_string(), path_schema.clone());
         schemas.insert(POSE.to_string(), pose_schema.clone());
         schemas.insert(ROSOUT.to_string(), rosout_schema.clone());
+        schemas.insert(DESCRIPTION.to_string(), description_schema.clone());
 
         let discovery = Discovery {
             topics: vec![
@@ -192,6 +195,7 @@ impl DummyTransport {
                 advertise(PATH, &path_schema),
                 advertise(POSE, &pose_schema),
                 advertise(ROSOUT, &rosout_schema),
+                advertise(DESCRIPTION, &description_schema),
             ],
             services: vec![
                 TargetDescriptor {
@@ -712,6 +716,10 @@ async fn publish_tick(inner: &Arc<Inner>, tick: i64) {
     // would otherwise never learn where the sensor is bolted, which is exactly
     // what latching solves on a real graph and what this stands in for.
     publish_one(inner, TF_STATIC, world::tf_static(at_ns)).await;
+    // Republished for the same reason the statics are: `/robot_description` is
+    // latched on a real graph, and a pane opened a minute in still expects to
+    // be handed it.
+    publish_one(inner, DESCRIPTION, world::description()).await;
     publish_one(inner, SCAN, world::scan(tick, at_ns)).await;
     publish_one(inner, PATH, world::path(tick, at_ns)).await;
     publish_one(inner, POSE, world::pose(tick, at_ns)).await;

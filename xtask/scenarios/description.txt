@@ -1,0 +1,55 @@
+# The robot the system actually is, from `/robot_description`.
+#
+# Until this, the world pane could draw the seven robots that ship with the app
+# and nothing else — so pointing it at a real system showed its scan and its
+# path and no machine. The description arrives as a latched `std_msgs/String`,
+# and the simulator publishes one whose links are the frames its own transform
+# tree moves.
+
+wait 900
+click 105 888
+wait 900
+click 1403 81
+wait 700
+click 1384 158
+wait 500
+click 1269 211
+type Simulator
+wait 500
+click 1395 242
+wait 1500
+click 1327 16
+wait 600
+click 1272 102
+wait 900
+
+# Open the world.
+click 1327 16
+wait 600
+click 1231 193
+wait 1200
+
+# The system's own robot is offered above the ones we ship: if the graph
+# describes itself, that is the one you came for.
+click 507 90
+wait 900
+shot 01-offered
+
+click 560 153
+wait 3000
+move 700 500
+wait 500
+shot 02-described
+
+# The point of drawing the description at all: the robot and the data it is
+# producing, in one place. The cloud arrives in `laser`, which is a link of the
+# description — so it lands on the sensor rather than at the origin.
+click 507 90
+wait 900
+click 560 117
+wait 900
+click 600 226
+wait 3000
+move 700 500
+wait 600
+shot 03-robot-and-its-cloud

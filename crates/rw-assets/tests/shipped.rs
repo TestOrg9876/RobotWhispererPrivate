@@ -158,3 +158,128 @@ fn a_mesh_path_cannot_climb_out_of_the_assets_directory() {
         "an unknown robot is an error rather than an empty one"
     );
 }
+
+/// A description as a running robot publishes it: primitives inline, and a
+/// mesh naming a package that is not on this machine.
+const LIVE_DESCRIPTION: &str = r#"
+<robot name="live_bot">
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0.05"/>
+      <geometry><box size="0.4 0.3 0.1"/></geometry>
+    </visual>
+  </link>
+  <link name="mast">
+    <visual>
+      <geometry><cylinder radius="0.03" length="0.6"/></geometry>
+    </visual>
+  </link>
+  <link name="sensor">
+    <visual>
+      <geometry><mesh filename="package://nowhere_at_all/meshes/head.dae"/></geometry>
+    </visual>
+  </link>
+  <joint name="mast_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="mast"/>
+    <origin xyz="0 0 0.1"/>
+  </joint>
+  <joint name="pan" type="revolute">
+    <parent link="mast"/>
+    <child link="sensor"/>
+    <origin xyz="0 0 0.6"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14"/>
+  </joint>
+</robot>
+"#;
+
+#[test]
+fn a_description_from_the_robot_draws_everything_it_can() {
+    let catalog = catalog();
+    let loaded = catalog
+        .load_description("live_bot", LIVE_DESCRIPTION)
+        .expect("a published description parses");
+
+    assert_eq!(loaded.robot.links.len(), 3);
+    assert_eq!(
+        loaded.robot.root().map(|link| link.name.as_str()),
+        Some("base_link")
+    );
+    assert_eq!(loaded.robot.movable().count(), 1, "one revolute joint");
+
+    // The two primitive links draw; the one naming an absent package does not.
+    assert!(loaded.meshes.contains_key("base_link"));
+    assert!(loaded.meshes.contains_key("mast"));
+    assert!(!loaded.meshes.contains_key("sensor"));
+    assert!(loaded.triangle_count() > 0);
+
+    assert_eq!(
+        loaded.missing,
+        vec!["package://nowhere_at_all/meshes/head.dae"],
+        "what could not be found is reported rather than swallowed"
+    );
+}
+
+#[test]
+fn a_published_description_is_not_turned_the_way_the_catalog_turns_its_own() {
+    // The catalog's orientation angles exist because those models were authored
+    // in several conventions. A description read off a running robot is already
+    // in the convention its own TF tree uses, and correcting it would put the
+    // robot at odds with every frame around it.
+    let catalog = catalog();
+    let loaded = catalog
+        .load_description("live_bot", LIVE_DESCRIPTION)
+        .expect("parses");
+    assert_eq!(loaded.entry.orientation, [0., 0., 0.]);
+    assert_eq!(
+        loaded.entry.correction(),
+        rw_assets::math::from_rpy([0., 0., 0.])
+    );
+}
+
+#[test]
+fn a_description_that_is_not_a_description_is_an_error_rather_than_an_empty_robot() {
+    let catalog = catalog();
+    assert!(catalog.load_description("junk", "not xml at all").is_err());
+    assert!(catalog.load_description("junk", "").is_err());
+}
+
+#[test]
+fn a_published_description_is_drawn_at_the_size_it_says() {
+    // The one bug nobody spots in a screenshot: geometry at the wrong scale
+    // still looks like a robot. `<box size="0.4 0.3 0.1"/>` is metres, and the
+    // box is centred on its link origin.
+    let catalog = catalog();
+    let loaded = catalog
+        .load_description("live_bot", LIVE_DESCRIPTION)
+        .expect("parses");
+
+    let parts = loaded.meshes.get("base_link").expect("the body draws");
+    let mut low = [f32::INFINITY; 3];
+    let mut high = [f32::NEG_INFINITY; 3];
+    for part in parts {
+        for position in &part.positions {
+            for axis in 0..3 {
+                low[axis] = low[axis].min(position[axis]);
+                high[axis] = high[axis].max(position[axis]);
+            }
+        }
+    }
+
+    let size = [high[0] - low[0], high[1] - low[1], high[2] - low[2]];
+    let wanted = [0.4, 0.3, 0.1];
+    for axis in 0..3 {
+        assert!(
+            (size[axis] - wanted[axis]).abs() < 1e-4,
+            "the box measures {size:?}, the description says {wanted:?}"
+        );
+    }
+
+    // And the `<origin xyz="0 0 0.05"/>` lifted it, rather than being ignored.
+    assert!(
+        (low[2] - 0.).abs() < 1e-4,
+        "the box should sit on z=0 after its origin, its base is at {}",
+        low[2]
+    );
+}

@@ -6125,6 +6125,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "gloo-timers",
+ "rw-assets",
  "rw-canonical",
  "rw-tf",
  "rw-transport",

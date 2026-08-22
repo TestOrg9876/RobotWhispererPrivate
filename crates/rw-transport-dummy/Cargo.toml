@@ -24,3 +24,7 @@ gloo-timers = { version = "0.3", features = ["futures"] }
 
 [dev-dependencies]
 rw-tf.workspace = true
+# Only to check the description this transport publishes against the transform
+# tree it publishes beside it — the two drifting apart draws the robot in the
+# wrong place, and nothing about the result looks wrong.
+rw-assets.workspace = true

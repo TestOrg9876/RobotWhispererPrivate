@@ -174,6 +174,45 @@ impl Catalog {
             source,
         })?;
 
+        Ok(self.assemble(entry, robot))
+    }
+
+    /// Loads a description the robot itself published, rather than one of ours.
+    ///
+    /// This is what `/robot_description` carries, and reading it is the
+    /// difference between drawing the seven robots that ship with this app and
+    /// drawing the one actually in front of you.
+    ///
+    /// The meshes are the catch. A live description names
+    /// `package://my_robot/meshes/base.dae`, and that file is on the robot, not
+    /// here — so a mesh resolves only when a package of that name happens to be
+    /// under the assets root. Everything the description draws with primitives
+    /// works regardless, which for a collision description is usually all of
+    /// it. What could not be found comes back in `missing` rather than failing
+    /// the load: a robot with no covers is still a robot, and its joint
+    /// structure is worth seeing on its own.
+    pub fn load_description(&self, name: &str, source: &str) -> Result<Loaded, CatalogError> {
+        let robot = urdf::parse(source).map_err(|source| CatalogError::Urdf {
+            path: name.to_string(),
+            source,
+        })?;
+
+        // No orientation correction: the catalog's angles exist because those
+        // models were authored in several conventions, and a description read
+        // off a running robot is already in the convention its own TF tree
+        // uses. Turning it would put it at odds with every frame around it.
+        let entry = Entry {
+            id: String::new(),
+            name: name.to_string(),
+            brand: None,
+            urdf: String::new(),
+            orientation: [0., 0., 0.],
+        };
+        Ok(self.assemble(entry, robot))
+    }
+
+    /// Turns a parsed description and its meshes into something drawable.
+    fn assemble(&self, entry: Entry, robot: Robot) -> Loaded {
         let mut meshes: HashMap<String, Vec<Part>> = HashMap::new();
         let mut missing = Vec::new();
         for link in &robot.links {
@@ -203,12 +242,12 @@ impl Catalog {
             }
         }
 
-        Ok(Loaded {
+        Loaded {
             entry,
             robot,
             meshes,
             missing,
-        })
+        }
     }
 
     fn geometry(&self, entry: &Entry, geometry: &Geometry) -> Option<Mesh> {

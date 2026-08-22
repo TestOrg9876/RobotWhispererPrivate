@@ -362,6 +362,60 @@ fn struct_of<const N: usize>(fields: [(&str, CanonicalValue); N]) -> CanonicalVa
     )
 }
 
+/// The simulated robot's own URDF, as a running graph would latch it.
+///
+/// Primitives rather than meshes on purpose: a description published by a real
+/// robot names `package://` meshes that live on the robot and not here, so the
+/// part of this feature that always works is the part built from boxes and
+/// cylinders. This exercises exactly that path.
+///
+/// The link names are the frames [`tf`] and [`tf_static`] publish, so the body
+/// lands on `base_link` and the sensor lands where the scan comes from — a
+/// description whose links do not match the tree draws in the wrong place,
+/// which is the failure this is here to catch.
+pub const DESCRIPTION: &str = r#"<?xml version="1.0"?>
+<robot name="dummy_bot">
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0.12"/>
+      <geometry><box size="0.6 0.4 0.24"/></geometry>
+      <material name="body"><color rgba="0.30 0.34 0.42 1"/></material>
+    </visual>
+  </link>
+  <link name="mast">
+    <visual>
+      <origin xyz="0 0 0.085"/>
+      <geometry><cylinder radius="0.035" length="0.17"/></geometry>
+      <material name="mast"><color rgba="0.55 0.57 0.62 1"/></material>
+    </visual>
+  </link>
+  <link name="laser">
+    <visual>
+      <geometry><cylinder radius="0.05" length="0.06"/></geometry>
+      <material name="sensor"><color rgba="0.85 0.35 0.30 1"/></material>
+    </visual>
+  </link>
+  <joint name="mast_mount" type="fixed">
+    <parent link="base_link"/>
+    <child link="mast"/>
+    <origin xyz="0.25 0 0.24"/>
+  </joint>
+  <joint name="laser_mount" type="fixed">
+    <parent link="mast"/>
+    <child link="laser"/>
+    <origin xyz="0 0 0.11"/>
+  </joint>
+</robot>
+"#;
+
+/// The description message, shaped as `std_msgs/String`.
+pub fn description() -> CanonicalValue {
+    CanonicalValue::Struct(BTreeMap::from([(
+        "data".to_string(),
+        CanonicalValue::String(DESCRIPTION.to_string()),
+    )]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,5 +682,60 @@ mod tests {
             assert_eq!((x, y), (0., 0.));
             assert!((x * x + y * y + z * z + w * w - 1.).abs() < 1e-5);
         }
+    }
+}
+
+#[cfg(test)]
+mod description_tests {
+    use super::*;
+
+    #[test]
+    fn the_description_names_the_frames_the_transform_tree_publishes() {
+        // A description whose links do not match the tree draws in the wrong
+        // place, and nothing about the result looks wrong — which is the one
+        // failure mode the whole transform path exists to prevent.
+        let robot = rw_assets::urdf::parse(DESCRIPTION).expect("the dummy's URDF parses");
+        let links: Vec<&str> = robot.links.iter().map(|link| link.name.as_str()).collect();
+
+        assert!(links.contains(&"base_link"), "got {links:?}");
+        assert!(
+            links.contains(&"laser"),
+            "the sensor link must be the frame the scan arrives in, got {links:?}"
+        );
+        assert_eq!(
+            robot.root().map(|link| link.name.as_str()),
+            Some("base_link"),
+            "the root is the frame /tf moves"
+        );
+    }
+
+    #[test]
+    fn the_sensor_sits_where_the_static_transform_puts_it() {
+        // `base_link -> laser` is published at SENSOR, and the description
+        // reaches the same place through its mast. If these drift apart the
+        // robot's own sensor draws off its body.
+        let robot = rw_assets::urdf::parse(DESCRIPTION).expect("parses");
+        let placed =
+            rw_assets::kinematics::solve(&robot, &rw_assets::kinematics::Pose::rest(&robot));
+        let laser = placed.get("laser").expect("the laser link is placed");
+        let at = rw_assets::math::transform_point(*laser, [0., 0., 0.]);
+
+        for axis in 0..3 {
+            assert!(
+                (at[axis] - SENSOR[axis]).abs() < 1e-4,
+                "the description puts the laser at {at:?}, /tf_static puts it at {SENSOR:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_description_message_is_shaped_like_std_msgs_string() {
+        let CanonicalValue::Struct(fields) = description() else {
+            panic!("not a struct");
+        };
+        let Some(CanonicalValue::String(text)) = fields.get("data") else {
+            panic!("no `data` string, got {fields:?}");
+        };
+        assert!(text.contains("<robot"), "the payload is the URDF itself");
     }
 }

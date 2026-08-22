@@ -109,38 +109,6 @@ pub struct TargetDescriptor {
     pub schema_definition: Option<String>,
 }
 
-pub fn discovery_to_json(discovery: &Discovery) -> serde_json::Value {
-    let entry = |name: &str, schema_name: &str, schema_id: &Option<SchemaId>| {
-        serde_json::json!({
-            "name": name,
-            "schema": {
-                "name": schema_name,
-                "hash": schema_id
-                    .as_ref()
-                    .map(|id| id.as_str().to_string())
-                    .unwrap_or_default(),
-            },
-        })
-    };
-    serde_json::json!({
-        "topics": discovery
-            .topics
-            .iter()
-            .map(|topic| entry(&topic.name, &topic.schema_name, &topic.schema_id))
-            .collect::<Vec<_>>(),
-        "services": discovery
-            .services
-            .iter()
-            .map(|service| entry(&service.name, &service.schema_name, &service.schema_id))
-            .collect::<Vec<_>>(),
-        "actions": discovery
-            .actions
-            .iter()
-            .map(|action| entry(&action.name, &action.schema_name, &action.schema_id))
-            .collect::<Vec<_>>(),
-    })
-}
-
 #[derive(Debug)]
 pub struct Subscription {
     pub frames: mpsc::Receiver<Frame>,
@@ -175,35 +143,11 @@ pub fn default_target_hz_for_schema(schema_name: &str) -> Option<f32> {
 }
 
 impl SubscribeOptions {
-    pub fn with_target_hz(hz: f32) -> Self {
-        Self {
-            target_hz: Some(hz),
-            queue_length: None,
-        }
-    }
-
     pub fn with_default_for_schema(mut self, schema_name: &str) -> Self {
         if self.target_hz.is_none() {
             self.target_hz = default_target_hz_for_schema(schema_name);
         }
         self
-    }
-
-    pub fn coalesce(self, other: Self) -> Self {
-        let target_hz = match (self.target_hz, other.target_hz) {
-            (Some(a), Some(b)) => Some(a.max(b)),
-            (Some(a), None) | (None, Some(a)) => Some(a),
-            (None, None) => None,
-        };
-        let queue_length = match (self.queue_length, other.queue_length) {
-            (Some(a), Some(b)) => Some(a.max(b)),
-            (Some(a), None) | (None, Some(a)) => Some(a),
-            (None, None) => None,
-        };
-        Self {
-            target_hz,
-            queue_length,
-        }
     }
 
     pub fn rosbridge_throttle_ms(&self) -> Option<u32> {

@@ -7,7 +7,7 @@
 //! Pure, so the walking and the windowing are tested without a window or a
 //! robot.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use rw_canonical::CanonicalValue;
 
@@ -47,27 +47,44 @@ impl Limits {
 }
 
 /// One numeric field's recent history.
+///
+/// A `VecDeque` rather than a `Vec`, because this is a ring: every sample past
+/// the window drops one off the front, and `Vec::remove(0)` shifts the whole
+/// buffer to do it. At 600 samples and 200 Hz that was 120 000 element moves a
+/// second to add one number.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Series {
-    /// Oldest first, at most `Limits::window` long.
-    pub samples: Vec<f64>,
+    samples: VecDeque<f64>,
 }
 
 impl Series {
     fn push(&mut self, sample: f64, window: usize) {
         while self.samples.len() >= window.max(1) {
-            self.samples.remove(0);
+            self.samples.pop_front();
         }
-        self.samples.push(sample);
+        self.samples.push_back(sample);
+    }
+
+    /// Oldest first, at most `Limits::window` long.
+    pub fn samples(&self) -> impl ExactSizeIterator<Item = f64> + '_ {
+        self.samples.iter().copied()
+    }
+
+    pub fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty()
     }
 
     pub fn last(&self) -> Option<f64> {
-        self.samples.last().copied()
+        self.samples.back().copied()
     }
 
     /// The smallest and largest sample, for a caption.
     pub fn range(&self) -> Option<(f64, f64)> {
-        let first = *self.samples.first()?;
+        let first = *self.samples.front()?;
         Some(
             self.samples
                 .iter()
@@ -285,8 +302,11 @@ mod tests {
         let series: Vec<_> = history.iter().collect();
         assert_eq!(series.len(), 2);
         assert_eq!(series[0].0, "a");
-        assert_eq!(series[0].1.samples, [1.0, 2.0, 3.0]);
-        assert_eq!(series[1].1.samples, [-1.0, -2.0, -3.0]);
+        assert_eq!(series[0].1.samples().collect::<Vec<_>>(), [1.0, 2.0, 3.0]);
+        assert_eq!(
+            series[1].1.samples().collect::<Vec<_>>(),
+            [-1.0, -2.0, -3.0]
+        );
     }
 
     #[test]
@@ -297,10 +317,13 @@ mod tests {
         }
 
         let (_, series) = history.iter().next().expect("one series");
-        assert_eq!(series.samples.len(), WINDOW);
+        assert_eq!(series.len(), WINDOW);
         // The oldest samples fell off the front, not the newest off the back.
-        assert_eq!(series.samples.first(), Some(&50.0));
-        assert_eq!(series.samples.last(), Some(&((WINDOW + 49) as f64)));
+        assert_eq!(series.samples().next().as_ref(), Some(&50.0));
+        assert_eq!(
+            series.samples().last().as_ref(),
+            Some(&((WINDOW + 49) as f64))
+        );
     }
 
     #[test]
@@ -314,9 +337,9 @@ mod tests {
             history.observe(&CanonicalValue::F64(sample as f64), limits);
         }
         let (_, series) = history.iter().next().expect("a series");
-        assert_eq!(series.samples.len(), 10, "the setting bounds the window");
+        assert_eq!(series.len(), 10, "the setting bounds the window");
         assert_eq!(
-            series.samples.last(),
+            series.samples().last().as_ref(),
             Some(&49.),
             "and it is the newest that survive"
         );
@@ -365,7 +388,7 @@ mod tests {
 
         // `f00` was there from the start, so it has a sample from every message.
         let (_, first) = history.iter().next().expect("a series");
-        assert_eq!(first.samples.len(), MAX_FIELDS);
+        assert_eq!(first.len(), MAX_FIELDS);
     }
 
     #[test]

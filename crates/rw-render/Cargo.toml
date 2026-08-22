@@ -5,7 +5,6 @@ edition = "2024"
 
 [dependencies]
 bytemuck = { version = "1", features = ["derive"] }
-tracing = { workspace = true }
 # The same version gpui already resolves, so the process carries one wgpu and
 # one set of backend libraries rather than two.
 wgpu = "29.0.4"

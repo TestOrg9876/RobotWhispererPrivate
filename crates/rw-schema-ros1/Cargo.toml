@@ -10,4 +10,3 @@ path = "src/lib.rs"
 [dependencies]
 rw-canonical = { path = "../rw-canonical" }
 rw-schema-ros2 = { path = "../rw-schema-ros2" }
-thiserror = { workspace = true }

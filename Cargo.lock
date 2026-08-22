@@ -5928,7 +5928,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
- "tracing",
 ]
 
 [[package]]
@@ -5974,7 +5973,6 @@ name = "rw-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "bytes",
  "chrono",
  "getrandom 0.2.17",
  "idb",
@@ -6027,8 +6025,6 @@ dependencies = [
  "rw-transport-replay",
  "rw-transport-rosbridge",
  "rw-wire",
- "serde",
- "serde_json",
  "tokio",
  "tracing",
  "uuid",
@@ -6051,7 +6047,6 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "pollster 0.4.0",
- "tracing",
  "wgpu",
 ]
 
@@ -6070,7 +6065,6 @@ version = "0.1.0"
 dependencies = [
  "rw-canonical",
  "rw-schema-ros2",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -6089,8 +6083,6 @@ dependencies = [
  "rw-canonical",
  "rw-transport",
  "rw-transport-foxglove-ws",
- "serde",
- "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -6129,9 +6121,7 @@ dependencies = [
  "rw-canonical",
  "rw-tf",
  "rw-transport",
- "serde_json",
  "tokio",
- "tracing",
  "wasm-bindgen-futures",
 ]
 
@@ -6146,7 +6136,6 @@ dependencies = [
  "rw-codec-cdr",
  "rw-codec-rosmsg",
  "rw-schema-foxglove",
- "rw-schema-ros2",
  "rw-transport",
  "rw-ws",
  "serde",
@@ -6167,7 +6156,6 @@ dependencies = [
  "rw-schema-ros2",
  "rw-transport",
  "tokio",
- "tracing",
  "wasm-bindgen-futures",
 ]
 
@@ -6182,7 +6170,6 @@ dependencies = [
  "rw-ws",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
  "tokio",
  "tracing",
 ]
@@ -6211,7 +6198,6 @@ dependencies = [
  "rw-transport",
  "serde",
  "serde_json",
- "tokio",
  "tracing",
  "web-sys",
 ]
@@ -6220,18 +6206,11 @@ dependencies = [
 name = "rw-validation"
 version = "0.1.0"
 dependencies = [
- "ciborium",
  "rw-canonical",
- "rw-pipeline",
  "rw-transport",
  "rw-transport-foxglove-ws",
  "rw-transport-rosbridge",
- "rw-wire",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
  "tokio",
- "tracing",
 ]
 
 [[package]]

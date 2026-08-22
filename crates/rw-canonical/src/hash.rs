@@ -89,7 +89,12 @@ fn hex_digest(bytes: &[u8]) -> String {
     hex_encode(&hasher.finalize())
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
+/// Bytes as lowercase hex.
+///
+/// Public because `rw-core` hashes schemas too and had a byte-for-byte copy of
+/// this. There is no hex crate in the dependency list, and adding one for
+/// sixteen digits would be worse than either.
+pub fn hex_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {

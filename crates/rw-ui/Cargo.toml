@@ -41,7 +41,6 @@ rust-embed = { version = "8", features = ["include-exclude", "debug-embed"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros", "time"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 # GPUI's own timer stamps every timer with `Instant::now`, so waiting has to go
@@ -55,7 +54,6 @@ gloo-timers = { version = "0.3", features = ["futures"] }
 # text field's value is set from code.
 instant = { version = "0.1", features = ["wasm-bindgen"] }
 web-sys = { version = "0.3", features = ["Window", "Storage"] }
-tokio = { workspace = true, features = ["sync", "macros"] }
 
 [dev-dependencies]
 pollster = "0.4"

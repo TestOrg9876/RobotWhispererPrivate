@@ -89,15 +89,7 @@ where
     Ok(hex_encode(&hasher.finalize()))
 }
 
-pub fn hex_encode(bytes: &[u8]) -> String {
-    const DIGITS: &[u8] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(DIGITS[(*byte >> 4) as usize] as char);
-        out.push(DIGITS[(*byte & 0xF) as usize] as char);
-    }
-    out
-}
+pub use rw_canonical::hash::hex_encode;
 
 pub fn hash_isolated(kind: SchemaKind, source: &str) -> CoreResult<String> {
     let dep_map: BTreeMap<String, &str> = BTreeMap::new();

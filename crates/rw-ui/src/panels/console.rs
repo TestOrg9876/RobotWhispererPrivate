@@ -4,6 +4,8 @@
 //! far it got — a connection that dropped, a subscription that failed. Which is
 //! why it timestamps, filters and follows the tail.
 
+use std::collections::VecDeque;
+
 use chrono::{DateTime, Local};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -41,7 +43,10 @@ impl Line {
 
 pub struct ConsolePanel {
     focus_handle: FocusHandle,
-    lines: Vec<Line>,
+    /// A ring: every line past the kept depth drops one off the front, and
+    /// `Vec::remove(0)` shifts the whole buffer to do it. Two thousand lines of
+    /// `/rosout` at 100 Hz is not a workload worth memmoving through.
+    lines: VecDeque<Line>,
     filter: Entity<InputState>,
     /// The quietest severity shown.
     ///
@@ -80,7 +85,7 @@ impl ConsolePanel {
 
         Self {
             focus_handle: cx.focus_handle(),
-            lines: Vec::new(),
+            lines: VecDeque::new(),
             filter,
             floor: Severity::Info,
             scroll: ScrollHandle::new(),
@@ -100,9 +105,9 @@ impl ConsolePanel {
     fn push(&mut self, notice: Notice, cx: &App) {
         let cap = Settings::get(cx).console_lines.max(1);
         while self.lines.len() >= cap {
-            self.lines.remove(0);
+            self.lines.pop_front();
         }
-        self.lines.push(Line {
+        self.lines.push_back(Line {
             at: Local::now(),
             notice,
         });

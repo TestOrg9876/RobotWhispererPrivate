@@ -373,10 +373,9 @@ fn series_row(
     // x, which draws the series as a single vertical stroke. The axis itself is
     // off, so the numbers are never shown.
     let points: Vec<(SharedString, f64)> = series
-        .samples
-        .iter()
+        .samples()
         .enumerate()
-        .map(|(index, sample)| (SharedString::from(index.to_string()), *sample))
+        .map(|(index, sample)| (SharedString::from(index.to_string()), sample))
         .collect();
 
     // Shares the height with its siblings rather than taking a fixed slice: one

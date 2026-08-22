@@ -18,8 +18,6 @@ rw-record = { path = "../rw-record" }
 rw-transport-foxglove-ws = { path = "../rw-transport-foxglove-ws" }
 rw-transport-rosbridge = { path = "../rw-transport-rosbridge" }
 rw-wire = { path = "../rw-wire" }
-serde = { workspace = true }
-serde_json = { workspace = true }
 tracing = { workspace = true }
 uuid = { version = "1", features = ["v4", "serde"] }
 

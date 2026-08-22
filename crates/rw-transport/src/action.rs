@@ -3,41 +3,44 @@ use std::collections::BTreeMap;
 use rw_canonical::{CanonicalValue, FieldType, MessageDef};
 use uuid::Uuid;
 
+/// A goal's identity: the 16 bytes `unique_identifier_msgs/UUID` carries.
+///
+/// A newtype over [`Uuid`] rather than over `[u8; 16]`. It was the latter, with
+/// its own v4 generation, its own hex writer and its own hex reader — all three
+/// of which `uuid` was already in the dependency list to provide, and the hex
+/// writer allocated a `String` per byte.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ActionGoalId([u8; 16]);
+pub struct ActionGoalId(Uuid);
 
 impl ActionGoalId {
     pub fn new_v4() -> Self {
-        ActionGoalId(*Uuid::new_v4().as_bytes())
+        ActionGoalId(Uuid::new_v4())
     }
 
     pub fn from_bytes(bytes: [u8; 16]) -> Self {
-        ActionGoalId(bytes)
+        ActionGoalId(Uuid::from_bytes(bytes))
     }
 
     pub fn as_bytes(&self) -> &[u8; 16] {
-        &self.0
+        self.0.as_bytes()
     }
 
+    /// The 32 hex digits, no dashes — the form the action protocol puts on the
+    /// wire.
     pub fn to_hex(&self) -> String {
-        self.0.iter().map(|byte| format!("{byte:02x}")).collect()
+        self.0.simple().to_string()
     }
 
+    /// Reads that form back. Dashed UUIDs are accepted too: a bridge that
+    /// writes the canonical form is not wrong, and refusing it would be.
     pub fn from_hex(hex: &str) -> Option<Self> {
-        if hex.len() != 32 {
-            return None;
-        }
-        let mut bytes = [0u8; 16];
-        for (index, slot) in bytes.iter_mut().enumerate() {
-            *slot = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).ok()?;
-        }
-        Some(ActionGoalId(bytes))
+        Uuid::try_parse(hex).ok().map(ActionGoalId)
     }
 
     pub fn as_uuid_value(&self) -> CanonicalValue {
         CanonicalValue::Struct(BTreeMap::from([(
             "uuid".to_string(),
-            CanonicalValue::Bytes(self.0.to_vec()),
+            CanonicalValue::Bytes(self.0.as_bytes().to_vec()),
         )]))
     }
 }
@@ -165,6 +168,19 @@ mod tests {
         assert_eq!(ActionGoalId::from_hex(&hex), Some(goal_id));
         assert_eq!(ActionGoalId::from_hex("nothex"), None);
         assert_eq!(ActionGoalId::from_hex(""), None);
+        assert_eq!(hex.len(), 32, "no dashes on the wire, got {hex}");
+
+        // Dashed is read back too. A bridge writing the canonical form is not
+        // wrong, and the hand-rolled reader this replaced refused it on length.
+        let dashed = format!(
+            "{}-{}-{}-{}-{}",
+            &hex[0..8],
+            &hex[8..12],
+            &hex[12..16],
+            &hex[16..20],
+            &hex[20..32]
+        );
+        assert_eq!(ActionGoalId::from_hex(&dashed), Some(goal_id));
     }
 
     #[test]

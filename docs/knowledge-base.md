@@ -60,6 +60,9 @@ Verified on screen, not just compiled.
   delete, import/export, an unsaved-changes indicator, `ctrl+s`.
 - **Views of a response** — Pretty (the request form read back), Raw, Visualize,
   Plot, Diff (freeze and watch what moves), History.
+- **Message definitions** — click the Schema chip for the whole bundle as *this*
+  connection sent it, with its registry hash. `ros2 interface show`, but for the
+  robot in front of you rather than for whatever is installed locally.
 - **History** — service and action runs kept in storage; clicking one puts its
   arguments back in the form.
 - **Dashboards** — named, saved, their own split dock, panes pointed at topics,

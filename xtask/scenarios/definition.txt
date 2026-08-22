@@ -1,0 +1,48 @@
+# `ros2 interface show`, for the definition this system actually sent.
+#
+# The CLI answers with whatever is installed on the machine you run it on. The
+# app answers with what the robot in front of you said, which is the only
+# version that explains the bytes on the wire.
+
+wait 900
+click 105 888
+wait 900
+click 1403 81
+wait 700
+click 1384 158
+wait 500
+click 1269 211
+type Simulator
+wait 500
+click 1395 242
+wait 1500
+click 1327 16
+wait 600
+click 1272 102
+wait 900
+
+# A service, so the schema chip sits on the REQUEST card where it is easy to
+# aim at and where the definition has a request and a response in it.
+click 244 49
+wait 1400
+click 1273 96
+wait 700
+click 1317 153
+wait 900
+click 700 100
+wait 700
+type /dummy/add_two_ints
+wait 700
+key Return
+wait 900
+move 700 500
+wait 500
+shot 01-schema-chip
+
+# The whole bundle, nested sections and all, with the registry hash that tells
+# two robots' `std_msgs/Header` apart.
+click 1310 154
+wait 1000
+move 700 700
+wait 500
+shot 02-definition

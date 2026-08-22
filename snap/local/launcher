@@ -1,0 +1,40 @@
+#!/bin/bash
+# command-chain wrapper for the Robot Whisperer snap.
+#
+# WebKitGTK needs help in two situations that a confined snap runs into often.
+# Both are handled here rather than in Rust, so a deb or AppImage install is
+# unaffected, and both are overridable so a user can always take manual control.
+
+# 1. DMA-BUF renderer.
+#
+# WebKitGTK 2.36+ renders through DMA-BUF by default. That path needs a real
+# DRM device; without one it typically yields a blank or black window rather
+# than falling back. VMs, containers, headless sessions and some NVIDIA setups
+# all hit this, and it is a prime suspect for "it doesn't render on my machine".
+#
+# Disable it only when there is no render node to use. Where a GPU is present
+# we leave the fast path alone.
+if [ -z "${WEBKIT_DISABLE_DMABUF_RENDERER:-}" ]; then
+  if ! compgen -G "/dev/dri/renderD*" > /dev/null 2>&1; then
+    export WEBKIT_DISABLE_DMABUF_RENDERER=1
+  fi
+fi
+
+# 2. Accelerated compositing.
+#
+# Deliberately NOT disabled by default. Turning it off is the usual blanket
+# advice for Tauri-on-Linux blank windows, but it pushes compositing onto the
+# CPU and this app draws a live 3D robot view and streaming plots — exactly the
+# workload that would suffer. Opt in explicitly if a machine needs it:
+#
+#   snap set robot-whisperer disable-compositing=true
+#
+if [ "$(snapctl get disable-compositing 2>/dev/null)" = "true" ]; then
+  export WEBKIT_DISABLE_COMPOSITING_MODE=1
+fi
+
+# The gnome extension points GSettings at its own schemas; the app reads none
+# of its own, but GTK will complain loudly without a valid schema dir.
+export GSETTINGS_SCHEMA_DIR="${GSETTINGS_SCHEMA_DIR:-$SNAP/usr/share/glib-2.0/schemas}"
+
+exec "$@"

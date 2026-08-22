@@ -19,3 +19,6 @@ src/lib/wasm/generated/
 # python
 __pycache__/
 *.pyc
+
+# alternate cargo target dir used when building a second distro on one machine
+/src-tauri/target-noble

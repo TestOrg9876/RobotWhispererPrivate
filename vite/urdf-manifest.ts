@@ -14,12 +14,21 @@ export default function urdfManifest(): Plugin {
   function generateManifest(): void {
     if (!fs.existsSync(assetsDir)) return;
     const entries = [];
-    for (const dir of fs.readdirSync(assetsDir, { withFileTypes: true })) {
-      if (!dir.isDirectory()) continue;
+    // Sorted, because `readdirSync` returns directory order, which differs
+    // between filesystems and machines. Without this the committed
+    // manifest.json is rewritten on almost every checkout and shows up as a
+    // spurious diff in unrelated changes.
+    const directories = fs
+      .readdirSync(assetsDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+    for (const name of directories) {
       const urdf = fs
-        .readdirSync(path.join(assetsDir, dir.name))
+        .readdirSync(path.join(assetsDir, name))
+        .sort()
         .find((file) => file.endsWith(".urdf"));
-      if (urdf) entries.push({ name: humanize(dir.name), directory: dir.name, urdf });
+      if (urdf) entries.push({ name: humanize(name), directory: name, urdf });
     }
     const next = JSON.stringify(entries, null, 2) + "\n";
     if (fs.existsSync(manifestPath) && fs.readFileSync(manifestPath, "utf-8") === next) return;

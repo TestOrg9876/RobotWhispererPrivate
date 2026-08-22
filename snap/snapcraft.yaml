@@ -1,0 +1,116 @@
+name: robot-whisperer
+base: core22
+version: "0.1.0"
+summary: A Postman-style client for ROS
+description: |
+  Robot Whisperer gives you one interface to connect to a robot, browse its
+  topics, services and actions, send and inspect messages, and build live
+  dashboards from the data, without writing throwaway scripts or running
+  `ros2 topic echo` across a dozen terminals.
+
+  Connects to foxglove_bridge and rosbridge over WebSocket, for both ROS 1 and
+  ROS 2, and ships a Dummy transport so you can try it with no robot to hand.
+
+grade: stable
+confinement: strict
+
+# core22 is what makes Ubuntu 20.04 work.
+#
+# Tauri 2 requires webkit2gtk-4.1 (libsoup3), and Ubuntu 20.04 has no such
+# package in main OR universe — only the 4.0/libsoup2 flavour — so the deb is
+# literally uninstallable there. A snap does not use the host's userspace: the
+# app runs against the core22 (22.04) runtime that snapd provides, plus the
+# libraries staged below. The host supplies only the kernel. That is why one
+# core22 snap covers 20.04, 22.04 and 24.04 alike.
+#
+# core24 was considered and rejected: it carries WebKitGTK 2.52 against
+# core22's 2.50 (a point release), and the GPU userspace that actually governs
+# 3D performance comes from the host through the opengl plug and the
+# graphics-core22 provider, not from the base. It would render identically.
+
+# WebKitGTK spawns WebKitWebProcess and WebKitNetworkProcess by absolute path.
+# Without this bind they are not where it looks, it fails to start a web
+# process, and the window comes up blank with no obvious error.
+layout:
+  /usr/lib/$SNAPCRAFT_ARCH_TRIPLET/webkit2gtk-4.1:
+    bind: $SNAP/usr/lib/$SNAPCRAFT_ARCH_TRIPLET/webkit2gtk-4.1
+
+apps:
+  robot-whisperer:
+    command: usr/bin/robot-whisperer
+    command-chain:
+      - bin/launcher
+    desktop: usr/share/applications/robot-whisperer.desktop
+    # Brings in desktop, desktop-legacy, gsettings, opengl, wayland, x11,
+    # mount-observe and calendar-service, plus the GNOME 42 platform snap.
+    extensions: [gnome]
+    plugs:
+      # Outbound WebSocket to foxglove_bridge / rosbridge on the robot.
+      - network
+      # The app runs a loopback WebSocket to stream decoded frames into the
+      # webview's worker (src-tauri/src/ingest_ws.rs). Without this the bind is
+      # refused and no telemetry reaches the UI.
+      - network-bind
+      # Workspace JSON import/export through the file chooser.
+      - home
+      # Robots are commonly reached at <name>.local.
+      - avahi-observe
+
+parts:
+  launcher:
+    plugin: dump
+    source: snap/local
+    organize:
+      launcher: bin/launcher
+
+  build-app:
+    plugin: dump
+    source: .
+    after: [launcher]
+    build-snaps:
+      # A modern node: the Tauri CLI and vite shims are `#!/usr/bin/env node`,
+      # and core22's own node is far too old to parse them.
+      - node/20/stable
+      - rustup/latest/stable
+    build-packages:
+      - libwebkit2gtk-4.1-dev
+      - build-essential
+      - curl
+      - wget
+      - file
+      - libxdo-dev
+      - libssl-dev
+      - libayatana-appindicator3-dev
+      - librsvg2-dev
+      - dpkg
+    stage-packages:
+      # The engine itself, staged into the snap. core22's jammy-updates gives
+      # WebKitGTK 2.50.4.
+      - libwebkit2gtk-4.1-0
+      - libayatana-appindicator3-1
+    override-build: |
+      set -eux
+
+      # bun is the project's package manager and is not in the Ubuntu archives.
+      export BUN_INSTALL="$SNAPCRAFT_PART_BUILD/.bun"
+      curl -fsSL https://bun.sh/install | bash
+      export PATH="$BUN_INSTALL/bin:$PATH"
+
+      rustup default stable
+
+      bun install --frozen-lockfile
+
+      # Builds the SvelteKit frontend (which Draco-compresses the robot meshes:
+      # 114 MB of source .dae/.obj becomes ~12 MB of .glb) and then the Rust
+      # binary, and emits a deb.
+      bun run tauri build -- --bundles deb
+
+      # Unpack the deb Tauri just produced into the snap's install tree. This
+      # reuses Tauri's own .desktop file and icon set rather than duplicating
+      # them by hand.
+      dpkg -x src-tauri/target/release/bundle/deb/*.deb "$SNAPCRAFT_PART_INSTALL/"
+
+      # The generated .desktop has a bare `Icon=robot-whisperer`, which resolves
+      # to nothing inside the snap's namespace.
+      sed -i -e 's|^Icon=robot-whisperer$|Icon=${SNAP}/usr/share/icons/hicolor/512x512/apps/robot-whisperer.png|' \
+        "$SNAPCRAFT_PART_INSTALL/usr/share/applications/robot-whisperer.desktop"

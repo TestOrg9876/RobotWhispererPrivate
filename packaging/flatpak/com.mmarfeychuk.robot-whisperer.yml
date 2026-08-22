@@ -1,0 +1,60 @@
+# Flatpak manifest for Robot Whisperer.
+#
+# Like the snap, this solves Ubuntu 20.04 by bringing its own runtime rather
+# than borrowing the host's: org.gnome.Platform carries WebKitGTK 4.1, which
+# 20.04 does not package at all.
+#
+# NOTE: unlike the snap, this manifest has NOT been built or launched — flathub
+# is unreachable from the environment it was written in, so flatpak-builder
+# could not resolve org.gnome.Platform. Treat it as a starting point that still
+# needs one real `flatpak-builder` run. The snap is the verified path.
+#
+# Build (needs flathub configured):
+#   flatpak install -y flathub org.gnome.Platform//46 org.gnome.Sdk//46
+#   flatpak-builder --force-clean --repo=repo build-dir \
+#     packaging/flatpak/com.mmarfeychuk.robot-whisperer.yml
+#   flatpak build-bundle repo robot-whisperer.flatpak com.mmarfeychuk.robot-whisperer
+
+app-id: com.mmarfeychuk.robot-whisperer
+runtime: org.gnome.Platform
+runtime-version: "46"
+sdk: org.gnome.Sdk
+command: robot-whisperer
+
+finish-args:
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  # GPU access for the three.js robot view and point-cloud panes.
+  - --device=dri
+  # Outbound to foxglove_bridge / rosbridge, and the loopback ingest socket the
+  # app runs for its own decoder worker.
+  - --share=network
+  # Workspace JSON import/export.
+  - --filesystem=xdg-documents
+  - --filesystem=xdg-download
+
+modules:
+  - name: robot-whisperer
+    buildsystem: simple
+    build-commands:
+      # Unpack the deb Tauri produced rather than rebuilding: keeps the
+      # flatpak, the deb and the snap byte-identical in what they ship.
+      - ar x robot-whisperer.deb
+      - tar -xf data.tar.gz
+      - install -Dm755 usr/bin/robot-whisperer /app/bin/robot-whisperer
+      - install -Dm644 usr/share/applications/robot-whisperer.desktop
+        /app/share/applications/com.mmarfeychuk.robot-whisperer.desktop
+      - desktop-file-edit --set-key=Icon --set-value=com.mmarfeychuk.robot-whisperer
+        /app/share/applications/com.mmarfeychuk.robot-whisperer.desktop
+      - |
+        for size in 32 128 256 512; do
+          src="usr/share/icons/hicolor/${size}x${size}/apps/robot-whisperer.png"
+          [ -f "$src" ] && install -Dm644 "$src" \
+            "/app/share/icons/hicolor/${size}x${size}/apps/com.mmarfeychuk.robot-whisperer.png"
+        done
+        true
+    sources:
+      - type: file
+        path: ../../src-tauri/target/release/bundle/deb/robot-whisperer_0.1.0_amd64.deb
+        dest-filename: robot-whisperer.deb

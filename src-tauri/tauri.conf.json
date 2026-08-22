@@ -28,8 +28,20 @@
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
+      "icons/icon.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "A Postman-style client for ROS",
+    "longDescription": "Robot Whisperer gives you one interface to connect to a robot, browse its topics, services and actions, send and inspect messages, and build live dashboards from the data.",
+    "publisher": "Mykhaylo Marfeychuk",
+    "homepage": "https://github.com/Mika412/RobotWhisperer",
+    "licenseFile": "../LICENSE",
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libayatana-appindicator3-1", "librsvg2-2"]
+      }
+    }
   }
 }

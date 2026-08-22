@@ -246,13 +246,17 @@ fn stamp_channel_send(packed: &mut [u8]) {
 #[tauri::command]
 pub async fn ingest_ws_port(hub: State<'_, IngestHub>) -> Result<u16, PipelineCommandError> {
     for _ in 0..200 {
-        if let Some(port) = hub.port() {
-            return Ok(port);
+        // A recorded failure is final: report it straight away rather than
+        // spending two seconds waiting for a listener that will never bind.
+        match hub.bind_outcome() {
+            Some(Ok(port)) => return Ok(port),
+            Some(Err(reason)) => return Err(PipelineCommandError::Transport(reason)),
+            None => {}
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     Err(PipelineCommandError::Transport(
-        "ingest ws server not ready".into(),
+        "the loopback ingest socket did not come up within 2s".into(),
     ))
 }
 

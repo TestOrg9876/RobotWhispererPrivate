@@ -86,6 +86,25 @@ bun run tauri build
 
 Platform-specific bundles are also available via `bun run tauri:build:linux` (AppImage) and `bun run tauri:build:macos:arm` / `:macos:intel` (`.app` and `.dmg`). Artifacts are written under `src-tauri/target/`.
 
+#### Linux: which package for which Ubuntu
+
+| Format                              | 20.04 | 22.04 | 24.04 |
+| ----------------------------------- | ----- | ----- | ----- |
+| **snap** (`snapcraft`, base core22) | ✅    | ✅    | ✅    |
+| deb                                 | ✗     | ✅    | ✅    |
+| AppImage (build on 22.04)           | ✗     | ✅    | ✅    |
+
+Ubuntu 20.04 ships no `libwebkit2gtk-4.1` in any component, and Tauri 2 requires
+it, so the deb is uninstallable there and an AppImage would carry too new a
+glibc. The snap solves it by running against its own core22 runtime.
+
+```shell
+snapcraft        # builds the snap; needs snapd
+```
+
+See [docs/linux-distribution.md](./docs/linux-distribution.md) for the full
+story, including how each artifact was verified to actually launch and render.
+
 ## Development
 
 ```shell

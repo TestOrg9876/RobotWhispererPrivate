@@ -5,24 +5,35 @@ use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio_tungstenite::tungstenite::Message;
 
+/// Outcome of binding the loopback ingest listener.
+///
+/// A plain `Option<u16>` could not tell "still starting up" apart from "the
+/// bind failed and never will succeed". That distinction matters under snap
+/// confinement: without the `network-bind` plug the bind is refused outright,
+/// and the old code reported only a generic timeout two seconds later. Keeping
+/// the error lets the UI say what actually went wrong.
+pub type BindOutcome = Result<u16, String>;
+
 #[derive(Clone)]
 pub struct IngestHub {
     sender: broadcast::Sender<Arc<Vec<u8>>>,
-    port: Arc<std::sync::OnceLock<u16>>,
+    bind: Arc<std::sync::OnceLock<BindOutcome>>,
 }
 
 impl std::fmt::Debug for IngestHub {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IngestHub")
-            .field("port", &self.port.get())
+            .field("bind", &self.bind.get())
             .field("receivers", &self.sender.receiver_count())
             .finish()
     }
 }
 
 impl IngestHub {
-    pub fn port(&self) -> Option<u16> {
-        self.port.get().copied()
+    /// `None` while the listener is still coming up; `Some(Ok(port))` once it
+    /// is accepting; `Some(Err(reason))` if it failed and never will.
+    pub fn bind_outcome(&self) -> Option<BindOutcome> {
+        self.bind.get().cloned()
     }
 
     pub fn send(&self, frame: Vec<u8>) {
@@ -32,10 +43,10 @@ impl IngestHub {
 
 pub fn start() -> IngestHub {
     let (sender, _rx) = broadcast::channel::<Arc<Vec<u8>>>(2048);
-    let port = Arc::new(std::sync::OnceLock::new());
+    let bind = Arc::new(std::sync::OnceLock::new());
     let hub = IngestHub {
         sender: sender.clone(),
-        port: port.clone(),
+        bind: bind.clone(),
     };
 
     tauri::async_runtime::spawn(async move {
@@ -43,16 +54,24 @@ pub fn start() -> IngestHub {
             Ok(l) => l,
             Err(err) => {
                 tracing::error!(?err, "ingest_ws: failed to bind loopback listener");
+                let _ = bind.set(Err(format!(
+                    "could not bind the loopback ingest socket: {err}. \
+                     If this is the snap build, the `network-bind` interface is missing \
+                     (`snap connect robot-whisperer:network-bind`)."
+                )));
                 return;
             }
         };
         match listener.local_addr() {
             Ok(addr) => {
-                let _ = port.set(addr.port());
+                let _ = bind.set(Ok(addr.port()));
                 tracing::info!(port = addr.port(), "ingest_ws: listening on loopback");
             }
             Err(err) => {
                 tracing::error!(?err, "ingest_ws: local_addr failed");
+                let _ = bind.set(Err(format!(
+                    "ingest socket bound but has no address: {err}"
+                )));
                 return;
             }
         }

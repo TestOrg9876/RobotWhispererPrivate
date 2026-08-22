@@ -11,6 +11,53 @@ mod pipeline;
 
 use commands::*;
 
+/// Ensure the process has a locale WebKitGTK can turn into a valid BCP-47 tag.
+///
+/// Under the POSIX ("C") locale WebKitGTK reports `navigator.language === "C"`,
+/// which is not a valid language tag. Chromium quietly normalises that;
+/// JavaScriptCore does not, so `new Intl.NumberFormat(navigator.language)`
+/// throws a RangeError. uPlot does exactly that at module scope, so the throw
+/// happens while the frontend bundle is still evaluating and takes the whole UI
+/// down — the window comes up showing only SvelteKit's error page.
+///
+/// This is not hypothetical or specific to odd setups: a login shell with no
+/// locale configured, a container, a CI runner and a strictly-confined snap all
+/// commonly land on "C" or "C.UTF-8".
+///
+/// A user's real locale is never overridden — this only fills in a usable
+/// default when there is effectively none.
+#[cfg(target_os = "linux")]
+fn ensure_usable_locale() {
+    // Order matters: LC_ALL overrides LC_MESSAGES, which overrides LANG.
+    let effective = ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .iter()
+        .find_map(|key| std::env::var(key).ok().filter(|v| !v.is_empty()));
+
+    let is_posix = match effective.as_deref() {
+        None => true,
+        Some(value) => {
+            let base = value.split('.').next().unwrap_or(value);
+            base.eq_ignore_ascii_case("C") || base.eq_ignore_ascii_case("POSIX")
+        }
+    };
+    if !is_posix {
+        return;
+    }
+
+    // en_US.UTF-8 need not be generated on the system for this to work: GLib
+    // reads these variables directly to derive the language list, so WebKit
+    // gets "en-US" either way. Where it is not generated, GTK prints a
+    // "Locale not supported by C library" warning and falls back to C for
+    // number and date formatting — cosmetic, and strictly better than the
+    // frontend refusing to start.
+    tracing::info!(
+        current = ?effective,
+        "no usable locale set; defaulting to en_US.UTF-8 so Intl works"
+    );
+    std::env::set_var("LC_ALL", "en_US.UTF-8");
+    std::env::set_var("LANG", "en_US.UTF-8");
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
@@ -30,6 +77,11 @@ pub fn run() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
+
+    // After the subscriber is installed so the decision is visible in the log,
+    // and before `tauri::Builder` so it lands before WebKit reads the locale.
+    #[cfg(target_os = "linux")]
+    ensure_usable_locale();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())

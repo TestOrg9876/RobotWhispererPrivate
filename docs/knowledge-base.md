@@ -261,7 +261,7 @@ there.
 ```
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace          # 802 passing, 1 ignored
+cargo test --workspace          # 824 passing, 1 ignored
 ```
 
 The ignored test is `rw-transport-rosbridge/tests/live_action.rs`; it needs a
@@ -272,7 +272,7 @@ Then on screen:
 ```
 cargo xtask list-scenarios
 cargo xtask screenshot-native <name> --out target/shots
-cargo xtask screenshot-native --out target/shots        # all 21, 91 shots
+cargo xtask screenshot-native --out target/shots        # all 24, 102 shots
 ```
 
 **Open the PNGs.** Then compare against the previous run's directory — a shot

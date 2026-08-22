@@ -25,16 +25,16 @@ wait 900
 # aim at and where the definition has a request and a response in it.
 click 244 49
 wait 1400
-click 1273 96
-wait 700
-click 1317 153
+click 331 92
+wait 800
+click 351 149
+wait 800
+# The offers list already has the one dummy service in it, so Return takes it
+# rather than typing a name that has to match exactly.
+click 700 92
 wait 900
-click 700 100
-wait 700
-type /dummy/add_two_ints
-wait 700
 key Return
-wait 900
+wait 1200
 move 700 500
 wait 500
 shot 01-schema-chip

@@ -187,7 +187,7 @@ impl Quat {
 
     /// The rotation as a column-major 4×4, which is the same concrete type as
     /// `rw_assets::math::Mat4` and `rw_render::Mat4`.
-    pub fn to_mat4(self) -> [[f32; 4]; 4] {
+    pub fn to_mat4(self) -> crate::Mat4 {
         let Self { x, y, z, w } = self;
         let (xx, yy, zz) = (x * x, y * y, z * z);
         let (xy, xz, yz) = (x * y, x * z, y * z);

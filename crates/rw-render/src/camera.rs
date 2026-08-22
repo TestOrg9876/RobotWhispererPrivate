@@ -4,16 +4,10 @@
 //! this is the part that is wrong in ways a screenshot cannot show, so it is
 //! the part with tests.
 
-/// A 4×4 matrix in column-major order, which is what WGSL expects.
-pub type Mat4 = [[f32; 4]; 4];
-
-/// The transform that changes nothing, for a solid that needs no placing.
-pub const IDENTITY: Mat4 = [
-    [1., 0., 0., 0.],
-    [0., 1., 0., 0.],
-    [0., 0., 1., 0.],
-    [0., 0., 0., 1.],
-];
+/// The 4×4 matrix, column-major, which is what WGSL expects — and the two
+/// operations on it, from `rw-tf`. This module had its own identical copy, as
+/// did `rw-assets::math`, and `rw-ui` called whichever came to hand.
+pub use rw_tf::{IDENTITY, Mat4, multiply, transform_point};
 
 /// A camera that looks at a point and orbits around it.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -134,27 +128,6 @@ pub fn perspective(fov: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
 }
 
 /// Applies a transform to a point.
-pub fn transform_point(matrix: Mat4, point: [f32; 3]) -> [f32; 3] {
-    let mut out = [0.; 3];
-    for (row, slot) in out.iter_mut().enumerate() {
-        *slot = matrix[0][row] * point[0]
-            + matrix[1][row] * point[1]
-            + matrix[2][row] * point[2]
-            + matrix[3][row];
-    }
-    out
-}
-
-pub fn multiply(a: Mat4, b: Mat4) -> Mat4 {
-    let mut out = [[0.; 4]; 4];
-    for (column, source) in b.iter().enumerate() {
-        for row in 0..4 {
-            out[column][row] = (0..4).map(|k| a[k][row] * source[k]).sum();
-        }
-    }
-    out
-}
-
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }

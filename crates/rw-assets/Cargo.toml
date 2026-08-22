@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# For `Mat4` and the two operations on it — see the note in `rw-render`.
+rw-tf = { path = "../rw-tf" }
 roxmltree = "0.21"
 serde = { workspace = true }
 serde_json = { workspace = true }

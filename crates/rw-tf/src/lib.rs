@@ -10,7 +10,9 @@
 //! async, no clock of its own. Times arrive as nanoseconds from the caller.
 
 pub mod buffer;
+pub mod mat4;
 pub mod quat;
 
 pub use buffer::{Buffer, DEFAULT_WINDOW_NS, LATEST, MAX_SAMPLES, Node, Side, TfError, Transform};
+pub use mat4::{IDENTITY, Mat4, multiply, transform_point};
 pub use quat::Quat;

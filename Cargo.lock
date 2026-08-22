@@ -5925,6 +5925,7 @@ name = "rw-assets"
 version = "0.1.0"
 dependencies = [
  "roxmltree 0.21.1",
+ "rw-tf",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -6047,6 +6048,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "pollster 0.4.0",
+ "rw-tf",
  "wgpu",
 ]
 

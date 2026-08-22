@@ -4,36 +4,10 @@
 //! computed here can be handed to the renderer without conversion.
 
 /// A column-major 4×4 matrix: `m[column][row]`.
-pub type Mat4 = [[f32; 4]; 4];
-
-pub const IDENTITY: Mat4 = [
-    [1., 0., 0., 0.],
-    [0., 1., 0., 0.],
-    [0., 0., 1., 0.],
-    [0., 0., 0., 1.],
-];
-
-pub fn multiply(a: Mat4, b: Mat4) -> Mat4 {
-    let mut out = [[0.; 4]; 4];
-    for (column, source) in b.iter().enumerate() {
-        for row in 0..4 {
-            out[column][row] = (0..4).map(|k| a[k][row] * source[k]).sum();
-        }
-    }
-    out
-}
-
-/// Applies a transform to a point.
-pub fn transform_point(matrix: Mat4, point: [f32; 3]) -> [f32; 3] {
-    let mut out = [0.; 3];
-    for (row, slot) in out.iter_mut().enumerate() {
-        *slot = matrix[0][row] * point[0]
-            + matrix[1][row] * point[1]
-            + matrix[2][row] * point[2]
-            + matrix[3][row];
-    }
-    out
-}
+/// The 4×4 matrix and the two operations on it, from `rw-tf`. This module had
+/// its own identical copy, as did `rw-render::camera`, and `rw-ui` called
+/// whichever came to hand. The rest of this file is URDF-specific and stays.
+pub use rw_tf::{IDENTITY, Mat4, multiply, transform_point};
 
 /// Applies the rotation part only, which is what a normal needs.
 ///

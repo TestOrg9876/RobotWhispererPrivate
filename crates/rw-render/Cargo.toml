@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# For `Mat4` and the two operations on it. This crate and `rw-assets` each had
+# an identical copy; `rw-tf` has no dependencies of its own, so both can reach
+# it without either reaching the other.
+rw-tf = { path = "../rw-tf" }
 bytemuck = { version = "1", features = ["derive"] }
 # The same version gpui already resolves, so the process carries one wgpu and
 # one set of backend libraries rather than two.

@@ -221,25 +221,22 @@ Ranked by what it costs you.
    ⋯` sits on the grey with the card starting beneath it. Asked for, not
    delivered — blocked on `Panel::title_style` or a decision about `Tiles`.
    See §4.
-2. **No occupancy grid.** `nav_msgs/OccupancyGrid` ships a schema but has no
-   `VisualizationRole` and no decoder, so a map renders as a field table. Needs
-   a texture pipeline in `rw-render`, which does not exist yet.
-3. **Parameter history is recorded nowhere visible** — so it is not recorded at
+2. **Parameter history is recorded nowhere visible** — so it is not recorded at
    all. Parameters have runs, but the parameter form is its own response and
    there is no response card to hang a History tab on. Needs somewhere on the
    PARAMETERS card first.
-4. **The drop target is a full-pane solid wash.** Heavy; a border or light tint
+3. **The drop target is a full-pane solid wash.** Heavy; a border or light tint
    would read better.
-5. **The world pane's layer rail** is 240px of full-height card for two rows.
-6. **Marker types 9 (text) and 10 (mesh resource) are not decoded.** Text needs
+4. **The world pane's layer rail** is 240px of full-height card for two rows.
+5. **Marker types 9 (text) and 10 (mesh resource) are not decoded.** Text needs
     glyph rendering, which `rw-render` does not have.
-7. **`/dummy/points` and `/dummy/image` build no payload form** — the schema
+6. **`/dummy/points` and `/dummy/image` build no payload form** — the schema
     does not reach `message_for` from the registry. Harmless now that topics do
     not publish, but the same gap would bite a service with those types.
-8. **Settings live only in a dialog.** The owner asked for "dialog now, panel
+7. **Settings live only in a dialog.** The owner asked for "dialog now, panel
     later"; the panel is not built. The content is a plain `v_flex` of rows, so
     moving it into a dock panel is a wrapper change, not a rewrite.
-9. **Three settings sections are thin.** Requests holds one row, Console holds
+8. **Three settings sections are thin.** Requests holds one row, Console holds
     one. `marker::LIST_BUDGET`, `tree::MAX_CHILDREN`, the console's default
     level filter and a request's default view are all still constants.
 
@@ -252,6 +249,10 @@ Decided, not forgotten.
 - **MCAP.** Deferred.
 - **Request descriptions.** Ruled out.
 - **Environment variables** (`{{ns}}/scan`). Considered, not chosen.
+- **The occupancy grid.** Dropped by the owner. `nav_msgs/OccupancyGrid` ships a
+  schema and has no `VisualizationRole` and no decoder, so a `/map` renders as a
+  field table; it stays that way. It would have needed a texture pipeline in
+  `rw-render` that does not exist, and that pipeline is not being built for it.
 
 ## 8. Verification
 
@@ -314,13 +315,9 @@ screenshots the regression test for the whole feature.
 
 1. **The pane header** (§6.1) — asked for, still floating outside its card, and
    the oldest thing on this list.
-2. **An occupancy grid** (§6.2). Every navigation user's first layer, and today
-   a `/map` renders as a field table. Needs a texture pipeline in `rw-render`,
-   which does not exist yet — the largest item here and the one that unlocks
-   the most.
-3. **The drop-target wash and the layer rail** (§6.4, §6.5) — both are visual
+2. **The drop-target wash and the layer rail** (§6.3, §6.4) — both are visual
    debt already written down and both are an afternoon.
-4. **The settings panel** (§6.8), once there is enough in it to be worth
+3. **The settings panel** (§6.7), once there is enough in it to be worth
    docking.
 
 **Delivered since the settings pass:**

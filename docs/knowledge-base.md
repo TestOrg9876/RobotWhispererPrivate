@@ -65,11 +65,14 @@ Verified on screen, not just compiled.
 - **Dashboards** — named, saved, their own split dock, panes pointed at topics,
   drag a topic in from the sidebar.
 - **3D world** — TF-resolved layers: point clouds, laser scans, markers, paths,
-  poses, the TF tree itself, and URDF robots from the catalog. A fixed-frame
-  selector. A layer that will not resolve is dimmed and says why.
+  poses, the TF tree itself, URDF robots from the catalog, **and the robot the
+  system itself describes on `/robot_description`**. A fixed-frame selector. A
+  layer that will not resolve is dimmed and says why.
 - **Record and replay** — record live topics, save, reopen, replay as a
   connection, and a transport bar to play, pause, scrub, re-speed and loop it.
 - **Console** — the app's own notices and the robot's `/rosout`, one ordering.
+- **Transforms** — the frame tree per system, with each edge's age, as a tab
+  beside the console. `view_frames` and `tf_monitor` without leaving the app.
 - **Toasts** — connection drops and failures only.
 - **Settings** — a dialog with a rail of six sections; every value reaches
   something that reads it, live.
@@ -128,6 +131,10 @@ Paths are inside `~/.cargo/git/checkouts/gpui-component-*/7acfc18/`.
 - **Prefer keybindings to buttons whose position moves.** The save check sits
   left of the run button, so its x depends on the connection name's width;
   `dragdrop` uses `ctrl+s` instead.
+- **Never run two scenarios at once.** They share one Xvfb display, so a second
+  run's clicks land in the first run's window. A whole suite came back with
+  most scenarios silently failing at the connection form because a single
+  scenario was started beside it. Both runs exit 0.
 - **Every shot in the run shares one output directory, so two scenarios naming
   a shot the same thing means one silently overwrites the other.** `param` was
   eating `dragdrop`'s `04-dropped` this way. Before adding a shot:
@@ -211,31 +218,25 @@ Ranked by what it costs you.
    ⋯` sits on the grey with the card starting beneath it. Asked for, not
    delivered — blocked on `Panel::title_style` or a decision about `Tiles`.
    See §4.
-2. **`robot_description` is never read.** The world pane loads URDFs from a
-   shipped catalog of 7, so pointing this at a real robot shows its scan and its
-   path and no machine. RViz's most basic behaviour.
-3. **No occupancy grid.** `nav_msgs/OccupancyGrid` ships a schema but has no
+2. **No occupancy grid.** `nav_msgs/OccupancyGrid` ships a schema but has no
    `VisualizationRole` and no decoder, so a map renders as a field table. Needs
    a texture pipeline in `rw-render`, which does not exist yet.
-4. **No TF tree view.** `Buffer::tree()` returns exactly the shape a view wants
-   (`frame`, `parent`, `depth`, `is_static`, `samples`, `newest_ns`) and its only
-   caller picks the root out and throws the rest away.
-5. **Parameter history is recorded nowhere visible** — so it is not recorded at
+3. **Parameter history is recorded nowhere visible** — so it is not recorded at
    all. Parameters have runs, but the parameter form is its own response and
    there is no response card to hang a History tab on. Needs somewhere on the
    PARAMETERS card first.
-6. **The drop target is a full-pane solid wash.** Heavy; a border or light tint
+4. **The drop target is a full-pane solid wash.** Heavy; a border or light tint
    would read better.
-7. **The world pane's layer rail** is 240px of full-height card for two rows.
-8. **Marker types 9 (text) and 10 (mesh resource) are not decoded.** Text needs
+5. **The world pane's layer rail** is 240px of full-height card for two rows.
+6. **Marker types 9 (text) and 10 (mesh resource) are not decoded.** Text needs
     glyph rendering, which `rw-render` does not have.
-9. **`/dummy/points` and `/dummy/image` build no payload form** — the schema
+7. **`/dummy/points` and `/dummy/image` build no payload form** — the schema
     does not reach `message_for` from the registry. Harmless now that topics do
     not publish, but the same gap would bite a service with those types.
-10. **Settings live only in a dialog.** The owner asked for "dialog now, panel
+8. **Settings live only in a dialog.** The owner asked for "dialog now, panel
     later"; the panel is not built. The content is a plain `v_flex` of rows, so
     moving it into a dock panel is a wrapper change, not a rewrite.
-11. **Three settings sections are thin.** Requests holds one row, Console holds
+9. **Three settings sections are thin.** Requests holds one row, Console holds
     one. `marker::LIST_BUDGET`, `tree::MAX_CHILDREN`, the console's default
     level filter and a request's default view are all still constants.
 
@@ -308,15 +309,23 @@ screenshots the regression test for the whole feature.
 
 **Next, in rough order of value:**
 
-1. **`robot_description`** (§6.2) — RViz's most basic behaviour, and today the
-   world pane can only draw one of 7 catalog robots.
-2. **A TF tree view** (§6.4) — `view_frames` without leaving the app.
-   `Buffer::tree()` already returns exactly the shape a view wants and its only
-   caller picks the root out and throws the rest away.
-3. **The pane header** (§6.1) — asked for, still floating outside its card.
-4. **The settings panel** (§6.10), once there is enough in it to be worth
+1. **The pane header** (§6.1) — asked for, still floating outside its card, and
+   the oldest thing on this list.
+2. **An occupancy grid** (§6.2). Every navigation user's first layer, and today
+   a `/map` renders as a field table. Needs a texture pipeline in `rw-render`,
+   which does not exist yet — the largest item here and the one that unlocks
+   the most.
+3. **The drop-target wash and the layer rail** (§6.4, §6.5) — both are visual
+   debt already written down and both are an afternoon.
+4. **The settings panel** (§6.8), once there is enough in it to be worth
    docking.
 
-**Delivered since:** the transport bar (play, pause, scrub, speed, loop) and
-the rate fix — `stats.rs` was dividing by `n` where `ros2 topic hz` divides by
-`n−1`, reading a quarter high at 1 Hz.
+**Delivered since the settings pass:**
+
+- The transport bar — play, pause, scrub, speed, loop on a recording.
+- The rate fix — `stats.rs` divided by `n` where `ros2 topic hz` divides by
+  `n−1`, reading a quarter high at 1 Hz. Bandwidth had the same off-by-one and
+  now equals rate times mean message size.
+- `/robot_description` — the world pane draws the robot the system says it is,
+  not only the seven that ship here.
+- The transform tree, as a tab beside the console.

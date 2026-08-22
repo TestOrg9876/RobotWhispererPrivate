@@ -105,14 +105,67 @@ Paths are inside `~/.cargo/git/checkouts/gpui-component-*/7acfc18/`.
   container has no border and no radius (`tab_panel.rs:1494`) and the resize
   handle is 1px. The one layout that draws each pane as a bordered rounded card
   with its strip inside is `Tiles` (`tiles.rs:1033-1042`), via
-  `DockItem::tiles` — a trade against the split dock that has not been made.
-- **`Panel::title_style`** (`panel.rs:74`) sets the strip's colours but only on
-  the single-panel path (`tab_panel.rs:766`) — which is every dashboard pane.
-  Untried, and the obvious next thing for the header-in-the-card problem.
+  `DockItem::tiles`. **That trade is now made** for dashboards; request tabs
+  stay a bare `DockItem::tabs`.
+- **`Tiles` alone does not put the header in the card.** It draws the border,
+  the radius and the shadow, but the `TabPanel` inside it paints
+  `tokens.background` (`tab_panel.rs:1494`) — the *window* colour — and its
+  title bar is a sibling above your content. On its own that gives the same
+  floating header, inside a box. Three things have to meet:
+  1. `Panel::title_style` (`panel.rs:74`) paints the strip the card's colour.
+     It only applies on the single-panel path (`tab_panel.rs:766`), which is
+     every dashboard pane.
+  2. The panel's own render drops its frame and its inner card and *is* the
+     card, so strip and body are one fill.
+  3. `Theme::tile_radius` and `Theme::tile_shadow` are set from the app.
+     They are **not theme-schema keys** — the library defaults are `px(0.)` and
+     flat — so `theme::apply_named` sets them after every `apply_config`.
+- **`DockItem::tiles` takes a `TileMeta` per pane** (bounds + z-index), and a
+  pane added later through `DockArea::add_panel(.., Center, bounds, ..)` lands
+  at `TileMeta::default().bounds` — the same ten pixels — unless you pass
+  bounds. `dashboard::tile_bounds` lays them out two to a row.
+- **A saved layout string carries no version.** The version lives on the
+  `DockAreaState` built around it at load time, so it always reads as current.
+  Bumping `LAYOUT_VERSION` does not reject an old layout; `DashboardPanel`
+  checks `PanelState::info` is `PanelInfo::Tiles` and drops it if not.
+- **`window.dispatch_action` travels up from whatever is focused.** A panel
+  that has never been clicked into is not on that path, and the action arrives
+  nowhere — silently. Under the split dock every dashboard pane shared one
+  `TabPanel`, so the visible pane was always the focused one and this never
+  showed; with tiles the second pane's topic picker did nothing at all. Focus
+  the panel first (`window.focus(&self.focus_handle, cx)`), or dispatch from a
+  menu entry, which carries its own path.
 - **Reading the `TabPanel` from inside `Panel::title` is a double lease** and
   panics. Use `Panel::set_active`, which the dock dispatches outside its update.
 - Notifications: the layer is rendered by `Root::render_notification_layer`;
   raise one with `window.push_notification(note, cx)` (`WindowExt`).
+
+### Other gpui-component seams
+
+- **`Button` derives its accessible name from its visible label only**
+  (`button.rs:597`). An icon-only button has none, tooltip or not, and the app
+  cannot add one: gpui's `aria_label` lives on `StatefulInteractiveElement` and
+  `Interactivity::aria` is `pub(crate)`, so an extension trait cannot reach it.
+  A wrapper `div().id(..).aria_label(..)` is the only app-side option.
+- **`Alert` has one trailing slot and it is `on_close`.** There is no way to
+  put an action button in it — `message` is `Text`, which is a string or a
+  markdown view, not an element. The request's error banner offers "Connect",
+  so it stays hand-rolled.
+- **`ButtonVariant::Custom(ButtonCustomVariant)`** takes rest/hover/active/
+  foreground as colours and keeps everything else about a `Button`. It is the
+  seam for a control that must not be themed against the window — the scene
+  overlay's chips sit on a viewport that is dark under every theme.
+- **gpui-component's `List` requires uniform row heights** (`delegate.rs:41`).
+  For variable heights the primitive is gpui's own `list(ListState, ..)`, whose
+  `ListAlignment::Bottom` suits a log — at the cost of `reset()` dropping
+  scroll events whenever the item count changes, which for a console streaming
+  at 100 Hz means the user cannot scroll. The console truncates to one line per
+  row and uses `uniform_list` instead.
+- **Filled semantic buttons must declare their own hover and press.** The
+  library derives them for the *tinted* button it expects —
+  `success.mix_oklab(transparent, 0.3)` — so a solid button fades toward the
+  surface behind it when pointed at. `generate.py` emits all three states for
+  danger, success, warning and info.
 
 ### The screenshot harness
 
@@ -200,7 +253,25 @@ From review. These are not preferences and should not be re-litigated.
   a topic request.
 - **Pretty is the default view.** "Tabs" means the request tabs across the top,
   not the view strip inside a response.
-- Every pane uses `tokens::card` and its content fills the pane.
+- Every pane uses `tokens::card` and its content fills the pane — except a
+  dashboard pane, which *is* the card: `Tiles` draws its border and rounding,
+  `title_style` paints its header strip the card colour, and the panel adds no
+  frame of its own. A card inside a card is the nested look that was rejected.
+
+- **A length that styles an element is a rem; a length that is persisted
+  geometry or a device affordance is a pixel.** The theme's `font.size` is one
+  rem (`Root` hands it to `set_rem_size`), so everything written as
+  `tokens::designed(36.)` grows when the base size does — which is what makes
+  Settings → Appearance → Base size scale the whole interface and not only its
+  text. The exceptions are deliberate and few: dock sizes and tile bounds are
+  dragged by the user and written to disk in pixels, a hairline is one physical
+  pixel, and the initial window size is not text.
+- **Constants are written as the pixels they were designed at**,
+  `designed(36.0)` rather than `rems(2.571)`, and not snapped to the nearest
+  quarter-rem step. The guide prefers the scale helpers; this design has been
+  looked at too many times to reflow it onto a 3.5px grid for tidiness. What
+  the guide is actually asking for — an interface that scales — is delivered
+  either way.
 
 - **A setting nothing reads is worse than no setting.** Every value in the
   dialog is wired to its consumer, and the two that cannot be re-read per frame
@@ -238,10 +309,10 @@ Ranked by what it costs you.
    looking. With no connection and no subscription the welcome screen should
    cost nothing; something is repainting. Cheap to chase and it is the one
    runtime number the Tauri app wins on its merits.
-3. **The pane header floats outside its card.** `/dummy/counter · 165 · 9.44 Hz ·
-   ⋯` sits on the grey with the card starting beneath it. Asked for, not
-   delivered — blocked on `Panel::title_style` or a decision about `Tiles`.
-   See §4.
+3. **The drop highlight stops at the header.** A dashboard pane's `drag_over`
+   tint is on the body below the title strip, so dragging a topic over a card
+   lights up everything except its header. Cosmetic, and one level up from
+   where it is now.
 4. **Parameter history is recorded nowhere visible** — so it is not recorded at
    all. Parameters have runs, but the parameter form is its own response and
    there is no response card to hang a History tab on. Needs somewhere on the
@@ -347,7 +418,7 @@ Then on screen:
 ```
 cargo xtask list-scenarios
 cargo xtask screenshot-native <name> --out target/shots
-cargo xtask screenshot-native --out target/shots        # all 24, 102 shots
+cargo xtask screenshot-native --out target/shots        # all 25, 106 shots
 ```
 
 **Open the PNGs.** Then compare against the previous run's directory — a shot
@@ -393,14 +464,12 @@ screenshots the regression test for the whole feature.
 
 1. **The 0.7% idle CPU** (§6.1). Found by benchmarking. Small, and it is the
    one runtime number the old app beats us on fairly.
-2. **The pane header** (§6.2) — asked for, still floating outside its card, and
-   the oldest thing on this list.
-3. **The under-load benchmark** — the comparison that is still missing, and the
+2. **The under-load benchmark** — the comparison that is still missing, and the
    one that would say the most. Needs a window manager or Tauri's WebDriver
    harness; see `docs/benchmarks.md`.
-4. **Joint articulation** (§6a) — the one feature the Tauri app has and this
+3. **Joint articulation** (§6a) — the one feature the Tauri app has and this
    does not.
-5. **The drop-target wash and the layer rail** (§6.4, §6.5) — both are visual
+4. **The drop-target wash and the layer rail** (§6.4, §6.5) — both are visual
    debt already written down and both are an afternoon.
 
 **Delivered since the settings pass:**
@@ -412,3 +481,41 @@ screenshots the regression test for the whole feature.
 - `/robot_description` — the world pane draws the robot the system says it is,
   not only the seven that ship here.
 - The transform tree, as a tab beside the console.
+
+**The design-guide pass** — audited against
+<https://longbridge.github.io/gpui-component/docs/design-guides> and worked
+through in five commits. What it changed, and what it found:
+
+- Four plain defects: the diff view's path column was 240 where every other
+  form column is 220; `base.yellow` was read by `kind_color` and emitted by no
+  theme, so the Param kind fell back to the library's gold in all seven;
+  `INDENT` was declared twice with different values; `kind_tag` was dead.
+- **The guard test meant to catch the second one had no teeth.**
+  `ThemeConfigColors` serialises every field, so an undeclared slot is present
+  as `null` and `contains_key` says yes to it — the assertion passed for
+  colours no theme had ever declared. It checks for a string value now, and
+  that was confirmed by watching it fail on `base.cyan` before that line came
+  out.
+- Visible state: the scene chips, the world layer toggle and the request target
+  answer the pointer; a call in flight spins instead of showing a disabled red
+  Stop; every filled semantic button got real hover and press values.
+- Performance: the console was doing four allocations per line per frame across
+  a 2000-line buffer to draw the ten rows that fit, and the palette re-ran its
+  search three times per keystroke. Both are virtualised and both now compute
+  once.
+- Dashboards are tiles, so a pane is one card with its header inside it (§4,
+  §5).
+- Sizes are rems, and the base size is a setting (§5).
+- **Accessibility was explicitly dropped** by the owner for now: no
+  `aria_label`, no keyboard routes for mouse-only controls, no contrast
+  assertions, no text or glyph beside a colour-only status. The audit findings
+  are still true; they are just not being worked.
+- Two swaps the guide asks for and this app should not make: the error banner
+  cannot become an `Alert` (no action slot) and the target offer list should
+  not become a `ComboBox` (its mouse-down-out dismissal exists because blur
+  never arrives without a window manager). See §4.
+- Three scenarios were photographing things that were not happening —
+  `03-palette-filtered` was byte-identical to the unfiltered shot with nothing
+  typed, and `record.txt` and `replay.txt` both clicked a palette row by its
+  old y and opened a 3D world instead of a replay. Only a full run catches
+  that; a scenario that clicks the wrong thing does not fail, it just lies.

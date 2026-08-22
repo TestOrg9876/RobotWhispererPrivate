@@ -68,7 +68,7 @@ Verified on screen, not just compiled.
   poses, the TF tree itself, and URDF robots from the catalog. A fixed-frame
   selector. A layer that will not resolve is dimmed and says why.
 - **Record and replay** — record live topics, save, reopen, replay as a
-  connection.
+  connection, and a transport bar to play, pause, scrub, re-speed and loop it.
 - **Console** — the app's own notices and the robot's `/rosout`, one ordering.
 - **Toasts** — connection drops and failures only.
 - **Settings** — a dialog with a rail of six sections; every value reaches
@@ -214,33 +214,28 @@ Ranked by what it costs you.
 2. **`robot_description` is never read.** The world pane loads URDFs from a
    shipped catalog of 7, so pointing this at a real robot shows its scan and its
    path and no machine. RViz's most basic behaviour.
-3. **Replay has no transport controls.** `ReplayTransport` has `set_playing`,
-   `set_speed`, `set_looping`, `seek` and a `progress()` channel, all tested,
-   with **zero UI callers**. Best effort-to-value ratio in the repo.
-4. **No occupancy grid.** `nav_msgs/OccupancyGrid` ships a schema but has no
+3. **No occupancy grid.** `nav_msgs/OccupancyGrid` ships a schema but has no
    `VisualizationRole` and no decoder, so a map renders as a field table. Needs
    a texture pipeline in `rw-render`, which does not exist yet.
-5. **No TF tree view.** `Buffer::tree()` returns exactly the shape a view wants
+4. **No TF tree view.** `Buffer::tree()` returns exactly the shape a view wants
    (`frame`, `parent`, `depth`, `is_static`, `samples`, `newest_ns`) and its only
    caller picks the root out and throws the rest away.
-6. **Parameter history is recorded nowhere visible** — so it is not recorded at
+5. **Parameter history is recorded nowhere visible** — so it is not recorded at
    all. Parameters have runs, but the parameter form is its own response and
    there is no response card to hang a History tab on. Needs somewhere on the
    PARAMETERS card first.
-7. **The drop target is a full-pane solid wash.** Heavy; a border or light tint
+6. **The drop target is a full-pane solid wash.** Heavy; a border or light tint
    would read better.
-8. **Hz is biased high.** `stats.rs` divides by `live.len()`; `ros2 topic hz`
-   divides by `n−1`. 0.2% at 100 Hz, ~10–25% at 1 Hz.
-9. **The world pane's layer rail** is 240px of full-height card for two rows.
-10. **Marker types 9 (text) and 10 (mesh resource) are not decoded.** Text needs
+7. **The world pane's layer rail** is 240px of full-height card for two rows.
+8. **Marker types 9 (text) and 10 (mesh resource) are not decoded.** Text needs
     glyph rendering, which `rw-render` does not have.
-11. **`/dummy/points` and `/dummy/image` build no payload form** — the schema
+9. **`/dummy/points` and `/dummy/image` build no payload form** — the schema
     does not reach `message_for` from the registry. Harmless now that topics do
     not publish, but the same gap would bite a service with those types.
-12. **Settings live only in a dialog.** The owner asked for "dialog now, panel
+10. **Settings live only in a dialog.** The owner asked for "dialog now, panel
     later"; the panel is not built. The content is a plain `v_flex` of rows, so
     moving it into a dock panel is a wrapper change, not a rewrite.
-13. **Three settings sections are thin.** Requests holds one row, Console holds
+11. **Three settings sections are thin.** Requests holds one row, Console holds
     one. `marker::LIST_BUDGET`, `tree::MAX_CHILDREN`, the console's default
     level filter and a request's default view are all still constants.
 
@@ -313,11 +308,15 @@ screenshots the regression test for the whole feature.
 
 **Next, in rough order of value:**
 
-1. **Replay transport controls** (§6.3). `ReplayTransport` has `set_playing`,
-   `set_speed`, `set_looping`, `seek` and `progress()`, all tested, with zero UI
-   callers. Best effort-to-value ratio in the repo.
-2. **`robot_description`** (§6.2) — RViz's most basic behaviour, and today the
+1. **`robot_description`** (§6.2) — RViz's most basic behaviour, and today the
    world pane can only draw one of 7 catalog robots.
+2. **A TF tree view** (§6.4) — `view_frames` without leaving the app.
+   `Buffer::tree()` already returns exactly the shape a view wants and its only
+   caller picks the root out and throws the rest away.
 3. **The pane header** (§6.1) — asked for, still floating outside its card.
-4. **The settings panel** (§6.12), once there is enough in it to be worth
+4. **The settings panel** (§6.10), once there is enough in it to be worth
    docking.
+
+**Delivered since:** the transport bar (play, pause, scrub, speed, loop) and
+the rate fix — `stats.rs` was dividing by `n` where `ros2 topic hz` divides by
+`n−1`, reading a quarter high at 1 Hz.

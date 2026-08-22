@@ -253,6 +253,40 @@ Ranked by what it costs you.
     one. `marker::LIST_BUDGET`, `tree::MAX_CHILDREN`, the console's default
     level filter and a request's default view are all still constants.
 
+## 6a. Parity with the Tauri app
+
+The thing this replaces is on `main`: SvelteKit + Tauri 2, with three.js,
+uplot and urdf-loader in the browser. **The Rust core is the same code** —
+`rw-core`, `rw-canonical`, `rw-transport*`, `rw-pipeline`, the codecs and the
+schema crates were lifted across unchanged. What differs is everything above
+the pipeline: a webview and three.js there, GPUI and wgpu here.
+
+**Reached, feature for feature:** requests of all four kinds with schema-driven
+forms and autocomplete; connections; dashboards with splits, groups and
+per-pane settings; image, plot, point-cloud and raw panes; the live field
+tree; settings; sidebar, tabs, status bar and footer.
+
+**Only here:** the 3D world with TF-resolved layers, the transform tree panel,
+record and replay with a transport bar, request history, the diff view, the
+message-definition viewer, the command palette, connection toasts, and
+`/robot_description`.
+
+**Only there — the one real gap:**
+
+- **Joint articulation.** `robotkit/jointDriver.ts` exposes
+  `setJoint`/`applyNamedPositions`, wired to a `JointControlsOverlay` of
+  sliders and to `sensor_msgs/JointState`. Here `world.rs` solves the
+  description once at `Pose::rest` and lets `/tf` place every link. For a
+  robot running `robot_state_publisher` that is the better answer — the tree
+  is the truth and the rest pose is only the fallback — but a robot that
+  publishes `/joint_states` and no `/tf` stands still here and moves there,
+  and there is no way to pose a description by hand at all.
+- `PointInspector`, the worked example of a third-party pane. There is no
+  extension point for one here.
+
+So: at parity except for joint articulation. Anything that claims otherwise
+should be checked against `src/lib/robotkit/` on `main` before it is believed.
+
 ## 7. Frozen / out of scope
 
 Decided, not forgotten.

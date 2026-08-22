@@ -34,7 +34,9 @@ use gpui_component::menu::DropdownMenu as _;
 use gpui_component::{
     ActiveTheme as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
+    h_flex,
+    switch::Switch,
+    v_flex,
 };
 use rw_assets::catalog::{Catalog, Loaded};
 use rw_assets::kinematics::{self, Pose};
@@ -901,12 +903,15 @@ impl WorldPanel {
         let Some(layer) = self.layers.get(index) else {
             return div().into_any_element();
         };
-        let dot = if layer.problem.is_some() {
+        // A switch rather than a dot. Showing and hiding is the one thing this
+        // row does, and six pixels of colour neither says which way it is
+        // pointing nor answers a pointer at all. All three states survive: the
+        // track carries shown against hidden, and a layer that cannot be placed
+        // turns it red — with the reason still spelled out underneath.
+        let track = if layer.problem.is_some() {
             cx.theme().danger
-        } else if layer.shown {
-            cx.theme().primary
         } else {
-            cx.theme().muted_foreground
+            cx.theme().primary
         };
         // A layer that cannot be placed is dimmed rather than drawn: the reason
         // sits under its name, and the picture does not lie about where it is.
@@ -922,13 +927,13 @@ impl WorldPanel {
                     .items_center()
                     .gap_1p5()
                     .child(
-                        div()
-                            .id(("toggle", index))
-                            .cursor_pointer()
-                            .child(tokens::status_dot(dot))
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                this.toggle(index, cx)
-                            })),
+                        Switch::new(("toggle", index))
+                            .small()
+                            .checked(layer.shown)
+                            .color(track)
+                            .on_click(
+                                cx.listener(move |this, _: &bool, _, cx| this.toggle(index, cx)),
+                            ),
                     )
                     .child(
                         div()

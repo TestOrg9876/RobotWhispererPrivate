@@ -9,13 +9,13 @@
 
 use std::sync::Arc;
 
-use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, AppContext as _, Bounds, Context, Corners, Entity, InteractiveElement as _, IntoElement,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render,
-    RenderImage, ScrollWheelEvent, Styled as _, Window, canvas, div,
+    App, AppContext as _, Bounds, ClickEvent, Context, Corners, Entity, InteractiveElement as _,
+    IntoElement, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point,
+    Render, RenderImage, ScrollWheelEvent, Styled as _, Window, canvas, div,
 };
-use gpui_component::{ActiveTheme as _, IconName, h_flex, v_flex};
+use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
+use gpui_component::{ActiveTheme as _, IconName, Selectable as _, Sizable as _, h_flex, v_flex};
 use image_crate::{Frame, RgbaImage};
 use rw_render::{Camera, Coloring, Content, Grid, Layer, Scene};
 
@@ -38,6 +38,23 @@ const OVERLAY_BACKDROP: gpui::Hsla = gpui::Hsla {
     s: 0.,
     l: 0.,
     a: 0.35,
+};
+/// What a chip does when it is pointed at and when it is pressed.
+///
+/// White at low alpha for the same reason the text is fixed: the theme's own
+/// hover surface is a near-black on the dark palettes and a near-white on the
+/// light ones, and neither of them says anything on top of a viewport.
+const OVERLAY_HOVER: gpui::Hsla = gpui::Hsla {
+    h: 0.,
+    s: 0.,
+    l: 1.,
+    a: 0.16,
+};
+const OVERLAY_PRESSED: gpui::Hsla = gpui::Hsla {
+    h: 0.,
+    s: 0.,
+    l: 1.,
+    a: 0.28,
 };
 
 /// How far the camera turns per pixel dragged. A full window's width is a bit
@@ -266,22 +283,37 @@ impl SceneView {
         } else {
             Vec::new()
         };
-        // Styled for the scene's own dark ground rather than the theme's, since
-        // a viewport is dark under every theme and muted grey on it is
-        // unreadable.
+        // Real buttons, so they answer the pointer the way every other control
+        // does — but on a custom palette rather than a variant, because a
+        // viewport is dark under every theme and the themed variants are all
+        // mixed against the window behind them, which is not what is behind
+        // these. `ButtonCustomVariant` is the library's own seam for exactly
+        // this: it takes the four states as colours and keeps the rest of the
+        // button — sizing, focus ring, press animation — intact.
         let chip = |label: &'static str, on: bool, cx: &App| {
-            div()
-                .id(label)
-                .px_1p5()
-                .rounded(cx.theme().radius)
-                .text_xs()
-                .cursor_pointer()
-                .when(on, |this| {
-                    this.bg(cx.theme().accent)
-                        .text_color(cx.theme().accent_foreground)
-                })
-                .when(!on, |this| this.text_color(OVERLAY_TEXT))
-                .child(label)
+            let colours = if on {
+                // The brand accent rather than the theme's hover surface. That
+                // surface is one step off the window on both palettes, which is
+                // fine on a panel and says nothing at all on a viewport — on the
+                // dark themes a chosen chip was a near-black pill on a near-black
+                // picture.
+                ButtonCustomVariant::new(cx)
+                    .color(cx.theme().primary)
+                    .foreground(cx.theme().primary_foreground)
+                    .hover(cx.theme().primary_hover)
+                    .active(cx.theme().primary_active)
+            } else {
+                ButtonCustomVariant::new(cx)
+                    .color(cx.theme().transparent)
+                    .foreground(OVERLAY_TEXT)
+                    .hover(OVERLAY_HOVER)
+                    .active(OVERLAY_PRESSED)
+            };
+            Button::new(label)
+                .custom(colours)
+                .xsmall()
+                .selected(on)
+                .label(label)
         };
 
         h_flex()
@@ -295,17 +327,16 @@ impl SceneView {
                 choices
                     .into_iter()
                     .map(|coloring| {
-                        chip(coloring.label(), coloring == active, cx).on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(move |view, _, _, cx| view.set_coloring(coloring, cx)),
-                        )
+                        chip(coloring.label(), coloring == active, cx).on_click(cx.listener(
+                            move |view, _: &ClickEvent, _, cx| view.set_coloring(coloring, cx),
+                        ))
                     })
                     .collect::<Vec<_>>(),
             )
-            .child(chip("Reset", false, cx).on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|view, _, _, cx| view.reset(cx)),
-            ))
+            .child(
+                chip("Reset", false, cx)
+                    .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.reset(cx))),
+            )
     }
 
     /// Draws the scene into the atlas and paints it, if anything has changed.

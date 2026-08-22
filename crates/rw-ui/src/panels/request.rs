@@ -1469,6 +1469,7 @@ impl RequestPanel {
         let offers = self.offers(cx);
         let kind = self.draft.kind;
         let running = self.running();
+        let calling = matches!(self.activity, Activity::Calling);
         let kind_colour = tokens::kind_color(kind, cx);
 
         let connection = self
@@ -1541,6 +1542,13 @@ impl RequestPanel {
                     .id("target")
                     .flex_1()
                     .min_w_0()
+                    .px_1()
+                    .rounded(cx.theme().radius)
+                    // The field is a button as much as it is an input — it is
+                    // what opens the list of what the robot advertises — and
+                    // until now it was the only one in the bar that did not
+                    // admit to being pointed at.
+                    .hover(|zone| zone.bg(cx.theme().muted))
                     // Clicking the field shows what the robot advertises, which
                     // is the whole replacement for browsing a connections tree.
                     // Focus alone is not enough to hang this on: GPUI only
@@ -1609,12 +1617,25 @@ impl RequestPanel {
             )
             .child(
                 Button::new("send")
-                    .when(running, |button| {
+                    // A call in flight is not a stoppable thing: there is
+                    // nothing to cancel between the request going out and the
+                    // answer coming back. So it stays the primary button it
+                    // was and spins, rather than turning into a greyed-out red
+                    // Stop that says the one thing you cannot do. `loading` is
+                    // as inert as `disabled` and keeps its colours, which is
+                    // the whole difference.
+                    .when(calling, |button| {
+                        button
+                            .primary()
+                            .icon(IconName::Play)
+                            .label(self.activity.stop_label())
+                            .loading(true)
+                    })
+                    .when(running && !calling, |button| {
                         button
                             .danger()
                             .icon(IconName::Pause)
                             .label(self.activity.stop_label())
-                            .disabled(matches!(self.activity, Activity::Calling))
                     })
                     .when(!running, |button| {
                         button.primary().icon(IconName::Play).label(match kind {

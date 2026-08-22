@@ -88,6 +88,18 @@ def toward(hex_colour, target, amount):
     b = [int(target[i:i + 2], 16) for i in (1, 3, 5)]
     return "#" + "".join(f"{round(x + (y - x) * amount):02x}" for x, y in zip(a, b))
 
+# How far a solid button moves when it is pointed at and when it is pressed.
+# The accent already works this way by hand — #3b82f6 hovers to #60a5fa and
+# presses to #2563eb — so the semantic buttons follow the same rule rather than
+# inventing a second one.
+HOVER, ACTIVE = 0.15, 0.15
+
+def hover(hex_colour):
+    return toward(hex_colour, "#ffffff", HOVER)
+
+def pressed(hex_colour):
+    return toward(hex_colour, "#000000", ACTIVE)
+
 def theme(seed):
     s = seed
     colours = collections.OrderedDict([
@@ -141,15 +153,28 @@ def theme(seed):
         ("button.secondary.hover.background", s.subtle),
         ("button.secondary.active.background", s.border_strong),
         ("button.secondary.foreground", s.fg),
+        # Every semantic button is filled here rather than tinted, so every one
+        # of them has to declare its own hover and press. Left out, the library
+        # derives them for the *tinted* button it expects — `success.mix_oklab(
+        # transparent, 0.3)` — and a solid button fades toward the surface
+        # behind it when you point at it. Danger was worse: it named `danger`
+        # for both states, so the one destructive control in the app answered a
+        # press with nothing at all.
         ("button.danger.background", s.danger),
-        ("button.danger.hover.background", s.danger),
-        ("button.danger.active.background", s.danger),
+        ("button.danger.hover.background", hover(s.danger)),
+        ("button.danger.active.background", pressed(s.danger)),
         ("button.danger.foreground", s.on_accent),
         ("button.success.background", s.success),
+        ("button.success.hover.background", hover(s.success)),
+        ("button.success.active.background", pressed(s.success)),
         ("button.success.foreground", s.on_accent),
         ("button.warning.background", s.warning),
+        ("button.warning.hover.background", hover(s.warning)),
+        ("button.warning.active.background", pressed(s.warning)),
         ("button.warning.foreground", s.window if s.mode == "dark" else "#ffffff"),
         ("button.info.background", s.accent),
+        ("button.info.hover.background", hover(s.accent)),
+        ("button.info.active.background", pressed(s.accent)),
         ("button.info.foreground", s.on_accent),
 
         # Sidebar -------------------------------------------------------------

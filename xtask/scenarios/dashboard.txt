@@ -28,7 +28,7 @@ shot 01-empty-dashboard
 # strip the dock already draws. Topic goes straight to the searchable picker,
 # which is the same palette the rest of the app searches with — a flat menu of
 # every topic does not survive a robot that publishes three hundred.
-click 884 470
+click 575 270
 wait 900
 shot 02-topic-picker
 # Chosen by clicking the row. Typing to narrow the list works in the app and
@@ -38,32 +38,37 @@ click 600 184
 wait 1800
 shot 02-first-pane
 
-# A second pane, added from the tab strip.
+# A second pane, added from the tab strip. Panes are tiles, so it lands beside
+# the first rather than sharing a tab strip with it.
 click 1383 50
 wait 1500
-click 884 470
+click 1107 270
 wait 900
-click 600 243
+# The rows are 36px apart and contiguous now that the list is virtualised, so
+# this is the third of them: /dummy/wave.
+click 600 260
 wait 1800
 shot 03-two-panes
 
-# Drag a pane's tab to an edge and the view splits.
-dragover 453 79 -> 1350 500
+# Dragged by its header, anywhere. This is what tiles buy over a split: a
+# dashboard is an arrangement rather than a subdivision, so a pane goes where
+# it is put instead of where the tree allows.
+dragover 1000 91 -> 700 430
 wait 800
 release
 wait 2000
-shot 04-split
+shot 04-moved
 
-# Each pane's settings are on the menu the dock already draws beside its tab:
-# flat, and one entry per thing it can be told. The topic is one searchable
-# entry saying how many there are rather than all of them, and the message
-# count in the tab suffix has the rate beside it.
-click 843 78
-wait 700
+# Each pane's settings are on the menu inside its own header: flat, and one
+# entry per thing it can be told. The topic is one searchable entry saying how
+# many there are rather than all of them, and the message count beside the
+# title has the rate with it.
+click 795 91
+wait 900
 shot 05-pane-menu
 
 # Plot, from that menu. Two live panes, two views, one dashboard.
-click 741 161
+click 741 174
 wait 2500
-move 700 500
+move 700 700
 shot 06-dashboard

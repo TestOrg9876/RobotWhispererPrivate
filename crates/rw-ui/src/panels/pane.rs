@@ -14,7 +14,7 @@ use gpui::{
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Task, Window, div,
 };
-use gpui_component::dock::{Panel, PanelEvent, PanelState, TabPanel};
+use gpui_component::dock::{Panel, PanelEvent, PanelState, TabPanel, TitleStyle};
 use gpui_component::menu::DropdownMenu as _;
 use gpui_component::{
     ActiveTheme as _, Sizable as _,
@@ -437,7 +437,15 @@ impl VizPanel {
                     // case this has to survive. With nothing connected there is
                     // nothing to search, so it offers the one thing that would
                     // help instead.
-                    .on_click(cx.listener(move |_, _, window, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        // Focused first, and not for the caret. `dispatch_action`
+                        // travels up from whatever is focused, and a pane that
+                        // has never been clicked into is not on that path — so
+                        // the action left the button and arrived nowhere. It
+                        // only ever worked for the pane that happened to hold
+                        // focus, which for a dashboard of one was every pane
+                        // there was.
+                        window.focus(&this.focus_handle, cx);
                         if topic_count == 0 {
                             window.dispatch_action(Box::new(crate::actions::ManageConnections), cx);
                         } else {
@@ -469,6 +477,21 @@ impl Panel for VizPanel {
         } else {
             SharedString::from(self.topic.clone())
         }
+    }
+
+    /// The header strip is painted the card's own colour.
+    ///
+    /// This is what puts the topic, the counters and the pane menu *inside* the
+    /// card rather than on a strip floating above it. `Tiles` draws the border
+    /// and the rounding around the whole panel, the title bar is the top of
+    /// that panel, and the body below it is the same fill — so the three read
+    /// as one surface instead of a label and a card that happen to be near
+    /// each other.
+    fn title_style(&self, cx: &App) -> Option<TitleStyle> {
+        Some(TitleStyle {
+            background: cx.theme().group_box,
+            foreground: cx.theme().foreground,
+        })
     }
 
     fn dump(&self, _cx: &App) -> PanelState {
@@ -650,21 +673,23 @@ impl Render for VizPanel {
         // sizes a dashboard pane comes in, anything smaller is a game.
         let workspace = self.workspace.clone();
 
+        // No card inside the pane, and no frame around it. The pane *is* the
+        // card now: `Tiles` draws its border, its rounding and its shadow, the
+        // title bar above this is painted the same fill by `title_style`, and
+        // this is the rest of that one surface. The old shape — an eight-pixel
+        // frame, then a card, then a header strip outside the card — is what
+        // made a dashboard look like a pane with something else sitting in it.
         v_flex()
             .id("pane")
             .size_full()
             .min_h_0()
-            .p_2()
             .track_focus(&self.focus_handle)
-            .bg(cx.theme().background)
+            .bg(cx.theme().group_box)
             .child(
-                tokens::card(cx)
+                v_flex()
                     .id("pane-drop")
                     .flex_1()
                     .min_h_0()
-                    // The card rather than the pane around it: the card is what
-                    // fills the pane, so tinting anything else lights up an
-                    // eight-pixel frame and calls it an affordance.
                     .drag_over::<Dragged>(move |style, dragged: &Dragged, _, cx| {
                         match drop::target_of_drag(dragged, workspace.read(cx)) {
                             Some(_) => style.bg(cx.theme().drop_target),

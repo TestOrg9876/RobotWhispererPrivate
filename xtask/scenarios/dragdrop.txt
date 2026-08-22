@@ -48,7 +48,10 @@ shot 02-empty-pane
 # taken — a pane cannot subscribe to a service or a node's parameters, so those
 # rows do not light it — and taking it points the pane at that topic on that
 # request's environment.
-dragover 140 106 -> 860 470
+# Aimed inside the tile: a dashboard pane is a placed card 520 by 360 now, not
+# a half of the window, so the middle of the dashboard is no longer the middle
+# of a pane.
+dragover 140 106 -> 550 260
 wait 900
 shot 03-drag-over
 release

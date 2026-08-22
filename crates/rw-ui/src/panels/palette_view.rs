@@ -4,7 +4,8 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    ScrollStrategy, StatefulInteractiveElement as _, Styled as _, Subscription,
+    UniformListScrollHandle, Window, div, px, uniform_list,
 };
 use gpui_component::{
     ActiveTheme as _, h_flex,
@@ -14,6 +15,13 @@ use gpui_component::{
 
 use crate::palette::{Choice, Entry, search};
 use crate::tokens;
+
+/// How tall the results get before they scroll.
+///
+/// The list is virtualised, so this is also what decides how many rows are ever
+/// built: ten of them, whether the robot advertises twelve topics or twelve
+/// hundred.
+const LIST_HEIGHT: f32 = 360.;
 
 /// What the palette decided.
 #[derive(Debug, Clone)]
@@ -26,7 +34,15 @@ pub struct PaletteView {
     focus_handle: FocusHandle,
     query: Entity<InputState>,
     entries: Vec<Entry>,
+    /// What `search` last returned, kept rather than recomputed.
+    ///
+    /// This used to be a method, and each of its three callers — the render,
+    /// the arrow keys, Enter — re-ran the whole search and cloned every hit. On
+    /// a robot advertising three hundred topics that was three searches and
+    /// three hundred clones per keystroke, to draw the nine rows that fit.
+    matches: Vec<Entry>,
     highlighted: usize,
+    scroll: UniformListScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -41,24 +57,30 @@ impl PaletteView {
     ) -> Self {
         let query = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
 
-        let subscriptions = vec![cx.subscribe(&query, |this, _, event: &InputEvent, cx| {
-            match event {
-                InputEvent::Change => {
-                    // The list changes under the highlight, so it goes back to
-                    // the best match rather than to whatever row is now there.
-                    this.highlighted = 0;
-                    cx.notify();
-                }
-                InputEvent::PressEnter { .. } => this.choose(cx),
-                _ => {}
-            }
-        })];
+        let subscriptions =
+            vec![
+                cx.subscribe(&query, |this, _, event: &InputEvent, cx| match event {
+                    InputEvent::Change => {
+                        this.refilter(cx);
+                        cx.notify();
+                    }
+                    InputEvent::PressEnter { .. } => this.choose(cx),
+                    _ => {}
+                }),
+            ];
+
+        // The field starts empty, so this is the whole list — but it goes
+        // through `search` all the same, because the order it puts things in is
+        // part of what the palette is.
+        let matches = search(&entries, &query.read(cx).value());
 
         Self {
             focus_handle: cx.focus_handle(),
             query,
             entries,
+            matches,
             highlighted: 0,
+            scroll: UniformListScrollHandle::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -84,29 +106,48 @@ impl PaletteView {
         self.query.update(cx, |state, cx| state.focus(window, cx));
     }
 
-    fn matches(&self, cx: &App) -> Vec<Entry> {
-        search(&self.entries, &self.query.read(cx).value())
+    /// Re-runs the search and puts the highlight back on the best match.
+    ///
+    /// The list changes under the highlight, so it goes back to the top rather
+    /// than to whatever row happens to be where the old one was.
+    fn refilter(&mut self, cx: &App) {
+        self.matches = search(&self.entries, &self.query.read(cx).value());
+        self.highlighted = 0;
+        self.scroll.scroll_to_item(0, ScrollStrategy::Top);
     }
 
     fn choose(&mut self, cx: &mut Context<Self>) {
-        let matches = self.matches(cx);
-        let Some(entry) = matches.get(self.highlighted.min(matches.len().saturating_sub(1))) else {
+        let Some(entry) = self
+            .matches
+            .get(self.highlighted.min(self.matches.len().saturating_sub(1)))
+        else {
             return;
         };
         cx.emit(PaletteEvent::Chose(entry.choice.clone()));
     }
 
     fn move_highlight(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let count = self.matches(cx).len() as isize;
+        let count = self.matches.len() as isize;
         if count == 0 {
             return;
         }
         self.highlighted = (self.highlighted as isize + delta).rem_euclid(count) as usize;
+        // The highlight can now be well outside the nine rows on screen, since
+        // the list only builds what it can see.
+        self.scroll
+            .scroll_to_item(self.highlighted, ScrollStrategy::Nearest);
         cx.notify();
     }
 
-    fn row(&self, index: usize, entry: &Entry, cx: &mut Context<Self>) -> AnyElement {
-        let highlighted = index == self.highlighted;
+    fn row(
+        &self,
+        index: usize,
+        highlighted_index: usize,
+        entry: &Entry,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let highlighted = index == highlighted_index;
         let choice = entry.choice.clone();
 
         h_flex()
@@ -162,13 +203,18 @@ impl Focusable for PaletteView {
 
 impl Render for PaletteView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let matches = self.matches(cx);
-        self.highlighted = self.highlighted.min(matches.len().saturating_sub(1));
-        let rows: Vec<_> = matches
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| self.row(index, entry, cx))
-            .collect();
+        self.highlighted = self.highlighted.min(self.matches.len().saturating_sub(1));
+        let empty = self.matches.is_empty();
+        // Cloned into the list's closure, which runs after this returns and so
+        // cannot borrow the view. It is the same `Vec<Entry>` the search
+        // produced — one allocation, not one per row.
+        let matches = self.matches.clone();
+        let highlighted = self.highlighted;
+        let scroll = self.scroll.clone();
+        let rows = cx.entity();
+        // Shrunk to what there is, capped at what fits: a palette with three
+        // hits should not leave a third of a page of nothing under them.
+        let height = (self.matches.len() as f32 * tokens::CONTROL_HEIGHT).min(LIST_HEIGHT);
 
         v_flex()
             .id("palette")
@@ -187,13 +233,32 @@ impl Render for PaletteView {
             .child(tokens::hairline(cx))
             .child(
                 v_flex()
-                    .id("palette-list")
-                    .max_h(px(360.))
-                    .overflow_y_scroll()
                     .pt_2()
-                    .gap_0p5()
-                    .children(rows)
-                    .when(matches.is_empty(), |list| {
+                    .when(!empty, |list| {
+                        list.child(
+                            uniform_list("palette-list", matches.len(), {
+                                move |range, window, cx| {
+                                    range
+                                        .clone()
+                                        .map(|index| {
+                                            rows.update(cx, |view, cx| {
+                                                view.row(
+                                                    index,
+                                                    highlighted,
+                                                    &matches[index],
+                                                    window,
+                                                    cx,
+                                                )
+                                            })
+                                        })
+                                        .collect::<Vec<_>>()
+                                }
+                            })
+                            .track_scroll(&scroll)
+                            .h(px(height)),
+                        )
+                    })
+                    .when(empty, |list| {
                         list.child(
                             div()
                                 .p_4()

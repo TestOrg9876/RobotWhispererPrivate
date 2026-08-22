@@ -6,14 +6,15 @@
 
 use std::collections::VecDeque;
 
-use chrono::{DateTime, Local};
+use chrono::Local;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollStrategy, SharedString,
+    Styled as _, Subscription, UniformListScrollHandle, Window, div, px, uniform_list,
 };
 use gpui_component::dock::{Panel, PanelEvent};
+use gpui_component::menu::DropdownMenu as _;
 use gpui_component::{
     ActiveTheme as _, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
@@ -26,20 +27,47 @@ use crate::prefs::Settings;
 use crate::session::{Notice, RobotWhisperer, SessionEvent, Severity};
 use crate::tokens;
 
+/// One line, with everything it needs to be drawn worked out on arrival.
+///
+/// The console re-renders on every notice, so anything computed in `render` is
+/// computed for the whole buffer at the rate the robot talks. Formatting two
+/// thousand timestamps and lowercasing two thousand messages per frame is the
+/// difference between a log pane and a stutter.
+/// Show every line at this severity or louder. Carries the discriminant so one
+/// action serves the whole menu, the way the request kind menu does.
+#[derive(gpui::Action, Clone, PartialEq, Eq, serde::Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
+pub struct SetConsoleFloor(pub u8);
+
+fn floor_from_discriminant(value: u8) -> Severity {
+    match value {
+        1 => Severity::Warn,
+        2 => Severity::Error,
+        _ => Severity::Info,
+    }
+}
+
+fn discriminant_of(floor: Severity) -> u8 {
+    match floor {
+        Severity::Info => 0,
+        Severity::Warn => 1,
+        Severity::Error => 2,
+    }
+}
+
 struct Line {
-    at: DateTime<Local>,
-    notice: Notice,
+    at: SharedString,
+    text: SharedString,
+    /// The message lowercased, kept beside it so a keystroke in the filter
+    /// scans the buffer instead of allocating a copy of it.
+    lower: String,
+    severity: Severity,
 }
 
-impl Line {
-    fn text(&self) -> String {
-        self.notice.text()
-    }
-
-    fn severity(&self) -> Severity {
-        self.notice.severity()
-    }
-}
+/// One row of the log. Fixed, because the list only virtualises when every row
+/// is the same height — which is also why a long line truncates rather than
+/// wrapping.
+const ROW_HEIGHT: f32 = 20.;
 
 pub struct ConsolePanel {
     focus_handle: FocusHandle,
@@ -50,16 +78,17 @@ pub struct ConsolePanel {
     filter: Entity<InputState>,
     /// The quietest severity shown.
     ///
-    /// One control that cycles rather than three that are mutually exclusive:
-    /// a segmented bar for a three-way choice nobody makes twice a session is
-    /// a row of chrome, and the button's own label already says where it is.
+    /// A menu rather than a segmented bar, for the reason the original comment
+    /// here gave: three mutually exclusive buttons for a choice nobody makes
+    /// twice a session is a row of chrome. It used to *cycle* instead, which
+    /// spends the same pixel and hides both the options and the way back.
     floor: Severity,
-    scroll: ScrollHandle,
+    scroll: UniformListScrollHandle,
     /// Whether to keep the newest line in view.
     ///
     /// Following is what you want while watching something happen and exactly
     /// what you do not want while reading back through what already did, so it
-    /// switches off the moment the log is scrolled away from the bottom.
+    /// is a button rather than something the pane decides.
     follow: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -88,7 +117,7 @@ impl ConsolePanel {
             lines: VecDeque::new(),
             filter,
             floor: Severity::Info,
-            scroll: ScrollHandle::new(),
+            scroll: UniformListScrollHandle::new(),
             follow: true,
             _subscriptions: subscriptions,
         }
@@ -107,9 +136,12 @@ impl ConsolePanel {
         while self.lines.len() >= cap {
             self.lines.pop_front();
         }
+        let text = notice.text();
         self.lines.push_back(Line {
-            at: Local::now(),
-            notice,
+            at: SharedString::from(Local::now().format("%H:%M:%S%.3f").to_string()),
+            lower: text.to_lowercase(),
+            text: SharedString::from(text),
+            severity: notice.severity(),
         });
     }
 
@@ -118,32 +150,24 @@ impl ConsolePanel {
         let needle = self.filter.read(cx).value().trim().to_lowercase();
         self.lines
             .iter()
-            .filter(|line| line.severity() >= self.floor)
-            .filter(|line| needle.is_empty() || line.text().to_lowercase().contains(&needle))
+            .filter(|line| line.severity >= self.floor)
+            .filter(|line| needle.is_empty() || line.lower.contains(&needle))
             .collect()
     }
 
     fn errors(&self) -> usize {
         self.lines
             .iter()
-            .filter(|line| line.severity() == Severity::Error)
+            .filter(|line| line.severity == Severity::Error)
             .count()
     }
 
-    /// What the level button says, and where it goes next.
-    fn floor_label(&self) -> &'static str {
-        match self.floor {
+    /// What the level menu says, for the button and for each of its entries.
+    fn floor_label(floor: Severity) -> &'static str {
+        match floor {
             Severity::Info => "All",
             Severity::Warn => "Warnings",
             Severity::Error => "Errors",
-        }
-    }
-
-    fn next_floor(&self) -> Severity {
-        match self.floor {
-            Severity::Info => Severity::Warn,
-            Severity::Warn => Severity::Error,
-            Severity::Error => Severity::Info,
         }
     }
 }
@@ -188,49 +212,35 @@ impl Render for ConsolePanel {
         let total = self.lines.len();
         let shown = visible.len();
         let floor = self.floor;
-        let floor_label = self.floor_label();
-        let next_floor = self.next_floor();
+        let floor_label = Self::floor_label(floor);
 
-        let rows: Vec<_> = visible
+        // Only what a row needs to draw itself, so the list can build the ten
+        // rows on screen and leave the other two thousand alone.
+        let rows: Vec<(SharedString, SharedString, Hsla)> = visible
             .iter()
             .map(|line| {
-                let colour = match line.severity() {
+                let colour = match line.severity {
                     Severity::Error => cx.theme().danger,
                     Severity::Warn => cx.theme().warning,
                     Severity::Info => cx.theme().muted_foreground,
                 };
-                h_flex()
-                    .w_full()
-                    .gap_3()
-                    .items_baseline()
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .opacity(0.6)
-                            .child(SharedString::from(
-                                line.at.format("%H:%M:%S%.3f").to_string(),
-                            )),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_xs()
-                            .text_color(colour)
-                            .child(SharedString::from(line.text())),
-                    )
+                (line.at.clone(), line.text.clone(), colour)
             })
             .collect();
+        let timestamp = cx.theme().muted_foreground;
 
-        if self.follow {
-            self.scroll.scroll_to_bottom();
+        if self.follow && shown > 0 {
+            self.scroll
+                .scroll_to_item(shown - 1, ScrollStrategy::Bottom);
         }
 
         v_flex()
             .size_full()
             .bg(cx.theme().background)
+            .on_action(cx.listener(|this, action: &SetConsoleFloor, _, cx| {
+                this.floor = floor_from_discriminant(action.0);
+                cx.notify();
+            }))
             .child(
                 h_flex()
                     .flex_shrink_0()
@@ -244,12 +254,19 @@ impl Render for ConsolePanel {
                             .ghost()
                             .xsmall()
                             .label(floor_label)
+                            .icon(IconName::ChevronDown)
                             .tooltip("The quietest level shown")
                             .selected(floor != Severity::Info)
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                this.floor = next_floor;
-                                cx.notify();
-                            })),
+                            .dropdown_menu(move |mut menu, _window, _cx| {
+                                for option in [Severity::Info, Severity::Warn, Severity::Error] {
+                                    menu = menu.menu_with_check(
+                                        Self::floor_label(option),
+                                        option == floor,
+                                        Box::new(SetConsoleFloor(discriminant_of(option))),
+                                    );
+                                }
+                                menu
+                            }),
                     )
                     .child(div().flex_1())
                     .child(tokens::meta(
@@ -287,16 +304,46 @@ impl Render for ConsolePanel {
             )
             .child(
                 v_flex()
-                    .id("console")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
                     .px_2()
                     .pb_2()
-                    .gap_0p5()
                     .font_family(cx.theme().mono_font_family.clone())
-                    .children(rows)
+                    .when(shown > 0, |pane| {
+                        pane.child(
+                            uniform_list("console", rows.len(), move |range, _window, _cx| {
+                                range
+                                    .clone()
+                                    .map(|index| {
+                                        let (at, text, colour) = rows[index].clone();
+                                        h_flex()
+                                            .h(px(ROW_HEIGHT))
+                                            .w_full()
+                                            .gap_3()
+                                            .items_center()
+                                            .child(
+                                                div()
+                                                    .flex_shrink_0()
+                                                    .text_xs()
+                                                    .text_color(timestamp)
+                                                    .child(at),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .text_xs()
+                                                    .truncate()
+                                                    .text_color(colour)
+                                                    .child(text),
+                                            )
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .track_scroll(&self.scroll)
+                            .size_full(),
+                        )
+                    })
                     .when(shown == 0, |list| {
                         list.child(
                             div()

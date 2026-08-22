@@ -18,6 +18,7 @@ use rw_canonical::{
     ParsedSchema, SchemaKind,
 };
 use rw_record::{Cursor, Recording};
+use rw_transport::task::{spawn_task, SpawnedTask};
 use rw_transport::{
     ActionCancelToken, ActionGoalStream, ConnectionStatus, Discovery, Frame, ReplayCommand,
     Subscription, TopicDescriptor, Transport, TransportError, TransportResult,
@@ -27,27 +28,6 @@ use tokio::sync::{mpsc, watch, Mutex};
 /// How often the clock is stepped. Fine enough that a 60 Hz recording plays
 /// back evenly, coarse enough not to spin a core doing nothing.
 const TICK_MS: u64 = 10;
-
-#[cfg(not(target_family = "wasm"))]
-type SpawnedTask = tokio::task::JoinHandle<()>;
-#[cfg(target_family = "wasm")]
-type SpawnedTask = ();
-
-#[cfg(not(target_family = "wasm"))]
-fn spawn_task<F>(future: F) -> SpawnedTask
-where
-    F: std::future::Future<Output = ()> + Send + 'static,
-{
-    tokio::spawn(future)
-}
-
-#[cfg(target_family = "wasm")]
-fn spawn_task<F>(future: F) -> SpawnedTask
-where
-    F: std::future::Future<Output = ()> + 'static,
-{
-    wasm_bindgen_futures::spawn_local(future);
-}
 
 async fn sleep_ms(ms: u64) {
     #[cfg(not(target_family = "wasm"))]
@@ -257,13 +237,12 @@ impl Transport for ReplayTransport {
 
     async fn disconnect(&self) -> TransportResult<()> {
         let mut player = self.inner.player.lock().await;
-        #[cfg(not(target_family = "wasm"))]
+        // One path for both targets. The local `spawn_task` this replaced
+        // returned `()` on wasm, so there was nothing to abort there and the
+        // loop outlived every disconnect; `rw_transport::task` carries a
+        // cancel channel and stops on drop.
         if let Some(handle) = player.take() {
-            handle.abort();
-        }
-        #[cfg(target_family = "wasm")]
-        {
-            *player = None;
+            rw_transport::task::cancel(handle);
         }
         self.inner.subscribers.lock().await.clear();
         let _ = self.inner.status_tx.send(ConnectionStatus::Disconnected);

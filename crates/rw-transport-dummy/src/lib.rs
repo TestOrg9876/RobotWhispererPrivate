@@ -12,6 +12,7 @@ use rw_canonical::{
     canonical_schema_id, ArrayLength, CanonicalSchema, CanonicalValue, Dialect, FieldDef,
     FieldType, MessageDef, ParsedSchema, PrimitiveType, SchemaKind, VisualizationRole,
 };
+use rw_transport::task::{spawn_task, SpawnedTask};
 use rw_transport::{
     ActionCancelToken, ActionGoalStream, ConnectionStatus, Discovery, Frame, Subscription,
     TargetDescriptor, TopicDescriptor, Transport, TransportError, TransportResult,
@@ -49,30 +50,8 @@ const FIBONACCI_SCHEMA: &str = "example_interfaces/Fibonacci";
 const FIBONACCI_DEF: &str = "int32 order\n---\nint32[] sequence\n---\nint32[] sequence\n";
 
 #[cfg(not(target_family = "wasm"))]
-use tokio::task::JoinHandle;
 #[cfg(target_family = "wasm")]
 use wasm_bindgen_futures as _;
-
-#[cfg(not(target_family = "wasm"))]
-type SpawnedTask = JoinHandle<()>;
-#[cfg(target_family = "wasm")]
-type SpawnedTask = ();
-
-#[cfg(not(target_family = "wasm"))]
-fn spawn_task<F>(future: F) -> SpawnedTask
-where
-    F: std::future::Future<Output = ()> + Send + 'static,
-{
-    tokio::spawn(future)
-}
-
-#[cfg(target_family = "wasm")]
-fn spawn_task<F>(future: F) -> SpawnedTask
-where
-    F: std::future::Future<Output = ()> + 'static,
-{
-    wasm_bindgen_futures::spawn_local(future);
-}
 
 async fn sleep_ms(ms: u64) {
     #[cfg(not(target_family = "wasm"))]
@@ -565,13 +544,12 @@ impl Transport for DummyTransport {
 
     async fn disconnect(&self) -> TransportResult<()> {
         let mut publisher = self.inner.publisher.lock().await;
-        #[cfg(not(target_family = "wasm"))]
+        // One path for both targets. The local `spawn_task` this replaced
+        // returned `()` on wasm, so there was nothing to abort there and the
+        // loop outlived every disconnect; `rw_transport::task` carries a
+        // cancel channel and stops on drop.
         if let Some(handle) = publisher.take() {
-            handle.abort();
-        }
-        #[cfg(target_family = "wasm")]
-        {
-            *publisher = None;
+            rw_transport::task::cancel(handle);
         }
         self.inner.subscribers.lock().await.clear();
         let _ = self.inner.status_tx.send(ConnectionStatus::Disconnected);

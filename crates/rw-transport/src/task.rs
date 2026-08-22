@@ -1,7 +1,7 @@
 #[cfg(not(target_family = "wasm"))]
-pub use native::{spawn_detached, spawn_task, SpawnedTask};
+pub use native::{cancel, spawn_detached, spawn_task, SpawnedTask};
 #[cfg(target_family = "wasm")]
-pub use wasm::{spawn_detached, spawn_task, SpawnedTask};
+pub use wasm::{cancel, spawn_detached, spawn_task, SpawnedTask};
 
 #[cfg(not(target_family = "wasm"))]
 mod native {
@@ -21,6 +21,16 @@ mod native {
         F: std::future::Future<Output = ()> + Send + 'static,
     {
         tokio::spawn(future);
+    }
+
+    /// Stops a task, taking it by value.
+    ///
+    /// By value because the two targets disagree about the receiver —
+    /// `JoinHandle::abort` takes `&self` and the wasm handle needs `&mut` — and
+    /// a caller holding an `Option<SpawnedTask>` should not have to know which
+    /// it is compiling for.
+    pub fn cancel(task: SpawnedTask) {
+        task.abort();
     }
 }
 
@@ -66,5 +76,10 @@ mod wasm {
         F: std::future::Future<Output = ()> + 'static,
     {
         wasm_bindgen_futures::spawn_local(future);
+    }
+
+    /// Stops a task, taking it by value. Dropping it is what cancels it here.
+    pub fn cancel(task: SpawnedTask) {
+        drop(task);
     }
 }

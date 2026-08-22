@@ -13,7 +13,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, px,
+    StatefulInteractiveElement as _, Styled as _, Window, div,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::list::ListItem;
@@ -151,6 +151,11 @@ impl SettingsView {
                 1,
             ),
             (settings.console_lines, |s, v| s.console_lines = v, 100),
+            (
+                settings.base_font_size,
+                |s, v| s.base_font_size = v.clamp(theme::MIN_BASE_SIZE, theme::MAX_BASE_SIZE),
+                theme::MIN_BASE_SIZE,
+            ),
         ]
     }
 
@@ -190,7 +195,7 @@ impl SettingsView {
 
     fn rail(&self, cx: &mut Context<Self>) -> AnyElement {
         v_flex()
-            .w(px(140.))
+            .w(tokens::designed(140.))
             .flex_shrink_0()
             .gap_0p5()
             .children(Section::ALL.map(|section| {
@@ -253,7 +258,12 @@ impl SettingsView {
                             .child(detail),
                     ),
             )
-            .child(div().w(px(120.)).flex_shrink_0().child(control))
+            .child(
+                div()
+                    .w(tokens::designed(120.))
+                    .flex_shrink_0()
+                    .child(control),
+            )
             .into_any_element()
     }
 
@@ -266,7 +276,25 @@ impl SettingsView {
 
     fn body(&self, cx: &mut Context<Self>) -> AnyElement {
         let rows: Vec<AnyElement> = match self.section {
-            Section::Appearance => return self.themes(cx),
+            Section::Appearance => {
+                // The same `flex_1().min_w_0()` every other section's body
+                // gets: without it the row's control column is measured
+                // against its content rather than the dialog, and the input
+                // ends up past the right edge.
+                return v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_4()
+                    .child(self.row(
+                        "Base size",
+                        "One rem, in pixels. Every length in the interface is a multiple of it, so this scales the whole app and not only its text.",
+                        self.number(7),
+                        cx,
+                    ))
+                    .child(tokens::hairline(cx))
+                    .child(self.themes(cx))
+                    .into_any_element();
+            }
             Section::Requests => vec![self.row(
                 "History depth",
                 "How many past runs of one request are kept.",
@@ -355,7 +383,7 @@ impl SettingsView {
         let swatch = |preference: Preference, label: String, cx: &mut Context<Self>| {
             let chosen = self.preference == preference;
             ListItem::new(SharedString::from(format!("theme:{label}")))
-                .h(px(tokens::CONTROL_HEIGHT))
+                .h(tokens::CONTROL_HEIGHT)
                 .px_3()
                 .selected(chosen)
                 .confirmed(chosen)
@@ -384,7 +412,7 @@ impl SettingsView {
             .id("theme-list")
             .flex_1()
             .min_w_0()
-            .max_h(px(320.))
+            .max_h(tokens::designed(320.))
             .overflow_y_scroll()
             .gap_0p5()
             .child(system)
@@ -411,7 +439,7 @@ impl Render for SettingsView {
             .child(
                 h_flex()
                     .w_full()
-                    .min_h(px(340.))
+                    .min_h(tokens::designed(340.))
                     .gap_4()
                     .items_start()
                     .child(rail)

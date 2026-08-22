@@ -8,7 +8,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
 };
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::{
@@ -527,7 +527,7 @@ impl Render for ConnectionsPanel {
                                  things out without a robot.",
                                 cx,
                             )
-                            .py(px(32.)),
+                            .py(tokens::designed(32.)),
                         )
                     }),
             )

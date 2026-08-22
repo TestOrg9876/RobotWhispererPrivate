@@ -652,6 +652,11 @@ impl WorkspaceView {
                         .pipeline()
                         .set_rate_window_ns(settings.rate_window_ns());
                     tf.update(cx, |store, cx| store.resettle(&sessions, cx));
+                    // One rem comes off the theme, so a base size typed here
+                    // only reaches the screen if the theme is applied again.
+                    let preference = this.prefs.theme();
+                    theme::apply(&preference, cx);
+                    cx.refresh_windows();
                     cx.notify();
                 }
             },
@@ -661,8 +666,11 @@ impl WorkspaceView {
         // Wider than the theme list needed: there is a rail of sections beside
         // the pane now, and a row's explanation is the half that makes its
         // number mean anything.
-        window.open_dialog(cx, move |dialog, _window, _cx| {
-            dialog.title("Settings").w(px(620.)).child(settings.clone())
+        window.open_dialog(cx, move |dialog, window, _cx| {
+            dialog
+                .title("Settings")
+                .w(tokens::designed_px(620., window))
+                .child(settings.clone())
         });
         cx.notify();
     }
@@ -701,8 +709,11 @@ impl WorkspaceView {
         )
         .detach();
 
-        window.open_dialog(cx, move |dialog, _window, _cx| {
-            dialog.title(title).w(px(620.)).child(palette.clone())
+        window.open_dialog(cx, move |dialog, window, _cx| {
+            dialog
+                .title(title)
+                .w(tokens::designed_px(620., window))
+                .child(palette.clone())
         });
         cx.notify();
     }
@@ -1449,7 +1460,7 @@ impl WorkspaceView {
                     h_flex()
                         .gap_1p5()
                         .items_center()
-                        .max_w(px(520.))
+                        .max_w(tokens::designed(520.))
                         .child(tokens::status_dot(cx.theme().danger))
                         .child(
                             div()

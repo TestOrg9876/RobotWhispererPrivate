@@ -14,7 +14,7 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, AppContext as _, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div, px,
+    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
 };
 use gpui_component::menu::DropdownMenu as _;
 use gpui_component::slider::{Slider, SliderEvent, SliderState};
@@ -24,6 +24,7 @@ use rw_transport::{ReplayCommand, ReplayProgress};
 
 use crate::actions::SetReplaySpeed;
 use crate::session::{RobotWhisperer, Sessions};
+use crate::tokens;
 
 /// The speeds offered. Powers of two around 1, which is what every other
 /// player offers, because they are the ones you can reason about: "half" and
@@ -231,7 +232,7 @@ impl Render for TransportBar {
                     h_flex()
                         .id(("replay", connection as usize))
                         .w_full()
-                        .h(px(34.))
+                        .h(tokens::designed(34.))
                         .px_3()
                         .gap_3()
                         .items_center()
@@ -268,7 +269,7 @@ impl Render for TransportBar {
                         // toggle it is a button you misclick.
                         .child(
                             div()
-                                .min_w(px(86.))
+                                .min_w(tokens::designed(86.))
                                 .text_xs()
                                 .text_right()
                                 .font_family("monospace")
@@ -280,7 +281,7 @@ impl Render for TransportBar {
                                 )),
                         )
                         .child(
-                            div().w(px(46.)).child(
+                            div().w(tokens::designed(46.)).child(
                                 Button::new(("speed", connection as usize))
                                     .ghost()
                                     .xsmall()
@@ -302,7 +303,7 @@ impl Render for TransportBar {
                             ),
                         )
                         .child(
-                            div().w(px(78.)).child(
+                            div().w(tokens::designed(78.)).child(
                                 Button::new(("loop", connection as usize))
                                     .ghost()
                                     .xsmall()
@@ -340,7 +341,7 @@ impl Render for TransportBar {
                                 h_flex()
                                     .gap_1p5()
                                     .items_center()
-                                    .max_w(px(160.))
+                                    .max_w(tokens::designed(160.))
                                     .child(
                                         Icon::new(IconName::Inbox)
                                             .xsmall()

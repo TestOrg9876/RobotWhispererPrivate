@@ -6,15 +6,44 @@
 //! thing rather than two similar-looking accidents.
 
 use gpui::prelude::FluentBuilder as _;
-use gpui::{Div, Hsla, ParentElement as _, SharedString, Styled as _, div, px};
+use gpui::{Div, Hsla, ParentElement as _, Rems, SharedString, Styled as _, div, px, rems};
 use gpui_component::{ActiveTheme as _, Icon, IconName, StyledExt as _, h_flex, v_flex};
 use rw_core::domain::RequestKind;
 
+/// The base font size the design was drawn against.
+///
+/// The theme sets `font.size` to this, and the library hands it to
+/// `Window::set_rem_size`, so one rem *is* this number. Everything below is
+/// written as the pixels it was designed at and divided by it, which keeps the
+/// intent readable at the call site and still makes the whole interface — not
+/// only its text — grow when someone raises the base size.
+const DESIGNED_BASE: f32 = 14.0;
+
+/// A length, given the pixels it was designed at.
+pub const fn designed(pixels: f32) -> Rems {
+    rems(pixels / DESIGNED_BASE)
+}
+
+/// A designed length already resolved to pixels.
+///
+/// For the handful of APIs that take `Pixels` rather than a length — a dialog's
+/// width is one — so those still follow the base size instead of being the one
+/// thing on screen that does not.
+pub fn designed_px(pixels: f32, window: &gpui::Window) -> gpui::Pixels {
+    designed(pixels).to_pixels(window.rem_size())
+}
+
+/// Scales a designed length by a whole number of steps — an indent by its
+/// depth, a list by its rows.
+pub fn scaled(length: Rems, times: f32) -> Rems {
+    Rems(length.0 * times)
+}
+
 /// Height of a standard control, and of the request bar. Comfortable density.
-pub const CONTROL_HEIGHT: f32 = 36.0;
-pub const REQUEST_BAR_HEIGHT: f32 = 44.0;
+pub const CONTROL_HEIGHT: Rems = designed(36.0);
+pub const REQUEST_BAR_HEIGHT: Rems = designed(44.0);
 /// Height of the strip along a card's top edge.
-pub const CARD_HEADER_HEIGHT: f32 = 38.0;
+pub const CARD_HEADER_HEIGHT: Rems = designed(38.0);
 
 /// An elevated card: the surface that carries one titled section of content.
 ///
@@ -41,7 +70,7 @@ pub fn card(cx: &gpui::App) -> Div {
 /// separates chrome from content without spending a second border on it.
 pub fn card_header(cx: &gpui::App) -> Div {
     h_flex()
-        .h(px(CARD_HEADER_HEIGHT))
+        .h(CARD_HEADER_HEIGHT)
         .flex_shrink_0()
         .w_full()
         .items_center()
@@ -82,12 +111,12 @@ pub fn field_row(
 ) -> Div {
     h_flex().w_full().gap_3().items_start().child(
         v_flex()
-            .w(px(FIELD_LABEL_WIDTH))
+            .w(FIELD_LABEL_WIDTH)
             .flex_shrink_0()
             .gap_0p5()
             // Aligned with the first editor rather than the middle of a
             // list that may be six rows tall.
-            .h(px(CONTROL_HEIGHT))
+            .h(CONTROL_HEIGHT)
             .justify_center()
             .child(
                 mono(cx)
@@ -107,7 +136,7 @@ pub fn field_row(
 }
 
 /// How wide the name-and-type column of a form row is.
-pub const FIELD_LABEL_WIDTH: f32 = 220.;
+pub const FIELD_LABEL_WIDTH: Rems = designed(220.);
 
 /// Short label for a request kind, as shown in the tag and the kind selector.
 pub fn kind_label(kind: RequestKind) -> &'static str {
@@ -135,16 +164,16 @@ pub fn kind_short(kind: RequestKind) -> &'static str {
 }
 
 /// How wide the kind column is: four monospaced characters and a little air.
-pub const KIND_WIDTH: f32 = 30.;
+pub const KIND_WIDTH: Rems = designed(30.);
 
 /// The gutter left of the kind code, where a collection row draws its
 /// disclosure arrow. Reserved on every row so the codes line up whether or not
 /// the row can be opened.
-pub const KIND_GUTTER: f32 = 12.;
+pub const KIND_GUTTER: Rems = designed(12.);
 
 /// How big the kind code is set. Smaller than the smallest text step: it is a
 /// label on a column, not something anyone reads a sentence of.
-pub const KIND_TEXT: f32 = 9.;
+pub const KIND_TEXT: Rems = designed(9.);
 
 /// Colour standing for a request kind, taken from the palette's `base.*` slots so
 /// it moves with the theme instead of being hard-coded here.
@@ -159,7 +188,7 @@ pub fn kind_color(kind: RequestKind, cx: &gpui::App) -> Hsla {
 
 /// A status dot — 6px, semantic colour, used instead of tinting a whole row.
 pub fn status_dot(color: Hsla) -> Div {
-    div().size(px(6.)).rounded_full().bg(color)
+    div().size(designed(6.)).rounded_full().bg(color)
 }
 
 /// One entry in a metadata strip: dim label, normal value.
@@ -264,7 +293,7 @@ pub fn series_colors(cx: &gpui::App) -> Vec<gpui::Hsla> {
 /// Deliberately wider than [`crate::tree::FIELD_INDENT`]: a collection tree has
 /// nothing but nesting to say where a row sits, where a message field carries
 /// its own dotted path.
-pub const SIDEBAR_INDENT: f32 = 14.;
+pub const SIDEBAR_INDENT: Rems = designed(14.);
 
 #[cfg(test)]
 mod tests {
@@ -287,8 +316,20 @@ mod tests {
 
     #[test]
     fn density_constants_match_the_agreed_scale() {
-        // "Comfortable": 36px controls, 44px request bar.
-        assert_eq!(CONTROL_HEIGHT, 36.0);
-        assert_eq!(REQUEST_BAR_HEIGHT, 44.0);
+        // "Comfortable": 36px controls, 44px request bar — at the base size the
+        // design was drawn against, which is what these resolve to when the
+        // theme's `font.size` is left alone.
+        assert_eq!(CONTROL_HEIGHT.0 * DESIGNED_BASE, 36.0);
+        assert_eq!(REQUEST_BAR_HEIGHT.0 * DESIGNED_BASE, 44.0);
+    }
+
+    /// The whole point of the rem migration: raise the base and everything
+    /// raises with it, in proportion.
+    #[test]
+    fn every_designed_length_scales_with_the_base() {
+        let doubled = DESIGNED_BASE * 2.0;
+        assert_eq!(CONTROL_HEIGHT.0 * doubled, 72.0);
+        assert_eq!(FIELD_LABEL_WIDTH.0 * doubled, 440.0);
+        assert_eq!(SIDEBAR_INDENT.0 * doubled, 28.0);
     }
 }

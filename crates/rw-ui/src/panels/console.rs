@@ -10,8 +10,8 @@ use chrono::Local;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollStrategy, SharedString,
-    Styled as _, Subscription, UniformListScrollHandle, Window, div, px, uniform_list,
+    InteractiveElement as _, IntoElement, ParentElement as _, Rems, Render, ScrollStrategy,
+    SharedString, Styled as _, Subscription, UniformListScrollHandle, Window, div, uniform_list,
 };
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::menu::DropdownMenu as _;
@@ -67,7 +67,7 @@ struct Line {
 /// One row of the log. Fixed, because the list only virtualises when every row
 /// is the same height — which is also why a long line truncates rather than
 /// wrapping.
-const ROW_HEIGHT: f32 = 20.;
+const ROW_HEIGHT: Rems = tokens::designed(20.);
 
 pub struct ConsolePanel {
     focus_handle: FocusHandle,
@@ -248,7 +248,11 @@ impl Render for ConsolePanel {
                     .py_1p5()
                     .gap_2()
                     .items_center()
-                    .child(div().w(px(200.)).child(Input::new(&self.filter).xsmall()))
+                    .child(
+                        div()
+                            .w(tokens::designed(200.))
+                            .child(Input::new(&self.filter).xsmall()),
+                    )
                     .child(
                         Button::new("level")
                             .ghost()
@@ -320,7 +324,7 @@ impl Render for ConsolePanel {
                                     .map(|index| {
                                         let (at, text, colour) = rows[index].clone();
                                         h_flex()
-                                            .h(px(ROW_HEIGHT))
+                                            .h(ROW_HEIGHT)
                                             .w_full()
                                             .gap_3()
                                             .items_center()

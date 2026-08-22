@@ -17,7 +17,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
 };
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::{ActiveTheme as _, IconName, h_flex, v_flex};
@@ -165,14 +165,14 @@ impl Render for TransformsPanel {
                         // frame it belongs to, and a column you have to track
                         // across the screen is a column you misread.
                         .w_full()
-                        .max_w(px(520.))
+                        .max_w(tokens::designed(520.))
                         .py_0p5()
                         .gap_2()
                         .items_baseline()
                         // Indentation is the tree. A line-drawing gutter would
                         // be prettier and would cost a column on every row to
                         // say what the offset already says.
-                        .pl(px(row.depth as f32 * 16.))
+                        .pl(tokens::scaled(tokens::designed(16.), row.depth as f32))
                         .child(
                             div()
                                 .flex_1()
@@ -209,7 +209,7 @@ impl Render for TransformsPanel {
                         .when_some(row.age_ns, |line, age| {
                             line.child(
                                 div()
-                                    .min_w(px(76.))
+                                    .min_w(tokens::designed(76.))
                                     .text_xs()
                                     .text_right()
                                     .font_family("monospace")

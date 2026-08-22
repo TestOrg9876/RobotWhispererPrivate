@@ -31,3 +31,22 @@ wait 700
 move 700 600
 wait 400
 shot 03-settings-transforms
+
+# Back to Appearance, and the one setting this branch added: the base size.
+# It is one rem, and every length in the interface is a multiple of it, so
+# raising it grows the chrome with the text rather than leaving fourteen-pixel
+# rows holding twenty-pixel words.
+click 462 142
+wait 700
+click 953 138
+wait 500
+key ctrl+a
+wait 300
+type 20
+wait 1500
+# Two nudges: GPUI composites on demand and one leaves the previous frame up.
+move 700 600
+wait 400
+move 700 650
+wait 400
+shot 04-larger-base

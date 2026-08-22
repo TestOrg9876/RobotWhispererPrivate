@@ -1494,7 +1494,7 @@ impl RequestPanel {
 
         h_flex()
             .relative()
-            .h(px(tokens::REQUEST_BAR_HEIGHT))
+            .h(tokens::REQUEST_BAR_HEIGHT)
             .w_full()
             .items_center()
             .gap_2()
@@ -1687,7 +1687,7 @@ impl RequestPanel {
             let name = offer.name.clone();
             h_flex()
                 .id(("offer", index))
-                .h(px(tokens::CONTROL_HEIGHT))
+                .h(tokens::CONTROL_HEIGHT)
                 .w_full()
                 .px_3()
                 .gap_3()
@@ -1790,7 +1790,7 @@ impl RequestPanel {
                 // message form shares the pane with the response, so it is
                 // capped and the response gets the rest.
                 .when(is_param, |form| form.flex_1().min_h_0())
-                .when(!is_param, |form| form.max_h(px(280.)))
+                .when(!is_param, |form| form.max_h(tokens::designed(280.)))
                 .overflow_y_scroll()
                 .p_3()
                 .gap_2()
@@ -1876,7 +1876,7 @@ impl RequestPanel {
                 .items_center()
                 .child(
                     div()
-                        .w(px(24.))
+                        .w(tokens::designed(24.))
                         .flex_shrink_0()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
@@ -1903,7 +1903,7 @@ impl RequestPanel {
             .child(
                 // Indented to the editors rather than centred under them: the
                 // index column is 24px and the gap 8.
-                h_flex().w_full().pl(px(32.)).child(
+                h_flex().w_full().pl(tokens::designed(32.)).child(
                     Button::new(("add", field))
                         .ghost()
                         .xsmall()
@@ -2407,7 +2407,7 @@ impl Panel for RequestPanel {
     ) -> Option<impl IntoElement> {
         self.dirty().then(|| {
             div()
-                .size(px(5.))
+                .size(tokens::designed(5.))
                 .rounded_full()
                 .bg(cx.theme().warning)
                 .into_any_element()
@@ -2512,29 +2512,32 @@ fn show_definition(
     // tell two robots' `std_msgs/Header` apart when both are connected. Short
     // enough to read out, long enough to be unique across one workspace.
     let short: String = hash.chars().take(12).collect();
-    window.open_dialog(cx, move |dialog, _window, cx| {
-        dialog.title(name.clone()).w(px(640.)).child(
-            v_flex()
-                .gap_2()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(format!("as this system described it · {short}")),
-                )
-                .child(
-                    div()
-                        .id("definition")
-                        .max_h(px(460.))
-                        .overflow_y_scroll()
-                        .p_3()
-                        .rounded(cx.theme().radius)
-                        .bg(cx.theme().muted)
-                        .text_xs()
-                        .font_family(cx.theme().mono_font_family.clone())
-                        .child(text.clone()),
-                ),
-        )
+    window.open_dialog(cx, move |dialog, window, cx| {
+        dialog
+            .title(name.clone())
+            .w(tokens::designed_px(640., window))
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("as this system described it · {short}")),
+                    )
+                    .child(
+                        div()
+                            .id("definition")
+                            .max_h(tokens::designed(460.))
+                            .overflow_y_scroll()
+                            .p_3()
+                            .rounded(cx.theme().radius)
+                            .bg(cx.theme().muted)
+                            .text_xs()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .child(text.clone()),
+                    ),
+            )
     });
 }
 

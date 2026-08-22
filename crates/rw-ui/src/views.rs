@@ -11,7 +11,7 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
-    SharedString, Styled as _, div, px,
+    SharedString, Styled as _, div,
 };
 use gpui_component::chart::LineChart;
 use gpui_component::{ActiveTheme as _, IconName, h_flex, v_flex};
@@ -297,7 +297,7 @@ fn change_row(change: diff::Change, cx: &App) -> AnyElement {
             tokens::mono(cx)
                 // The same column the request form and the pretty view use, so
                 // switching tabs on one card does not move the paths sideways.
-                .w(px(tokens::FIELD_LABEL_WIDTH))
+                .w(tokens::FIELD_LABEL_WIDTH)
                 .flex_shrink_0()
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
@@ -386,7 +386,7 @@ fn series_row(
     // past that point.
     v_flex()
         .flex_1()
-        .min_h(px(120.))
+        .min_h(tokens::designed(120.))
         .gap_1()
         .child(
             h_flex()

@@ -11,7 +11,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
 };
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::{
@@ -547,7 +547,7 @@ fn render_row(
     rename_field: &Entity<InputState>,
     cx: &App,
 ) -> ListItem {
-    let indent = px(tokens::SIDEBAR_INDENT * depth as f32);
+    let indent = tokens::scaled(tokens::SIDEBAR_INDENT, depth as f32);
 
     if data.renaming {
         return ListItem::new(index).child(
@@ -582,16 +582,14 @@ fn render_row(
         // A request: a space where the arrow would be, so names line up whether
         // or not the row above can be opened, then the kind.
         Some(kind) => {
-            row = row
-                .child(div().w(px(tokens::KIND_GUTTER)).flex_none())
-                .child(
-                    tokens::mono(cx)
-                        .flex_none()
-                        .w(px(tokens::KIND_WIDTH))
-                        .text_size(px(tokens::KIND_TEXT))
-                        .text_color(tokens::kind_color(kind, cx))
-                        .child(tokens::kind_short(kind)),
-                );
+            row = row.child(div().w(tokens::KIND_GUTTER).flex_none()).child(
+                tokens::mono(cx)
+                    .flex_none()
+                    .w(tokens::KIND_WIDTH)
+                    .text_size(tokens::KIND_TEXT)
+                    .text_color(tokens::kind_color(kind, cx))
+                    .child(tokens::kind_short(kind)),
+            );
         }
     }
 
@@ -641,7 +639,7 @@ fn state_dot(state: &RunState, cx: &App) -> Option<gpui::AnyElement> {
         div()
             .flex_none()
             .mr_1()
-            .size(px(6.))
+            .size(tokens::designed(6.))
             .rounded_full()
             .bg(colour)
             .into_any_element(),
@@ -712,7 +710,7 @@ impl CollectionsPanel {
 
         v_flex()
             .flex_shrink_0()
-            .max_h(px(220.))
+            .max_h(tokens::designed(220.))
             .border_t_1()
             .border_color(cx.theme().sidebar_border)
             .child(
@@ -765,12 +763,12 @@ impl CollectionsPanel {
                                             .w_full()
                                             .gap_1p5()
                                             .items_center()
-                                            .child(div().w(px(tokens::KIND_GUTTER)).flex_none())
+                                            .child(div().w(tokens::KIND_GUTTER).flex_none())
                                             .child(
                                                 tokens::mono(cx)
                                                     .flex_none()
-                                                    .w(px(tokens::KIND_WIDTH))
-                                                    .text_size(px(tokens::KIND_TEXT))
+                                                    .w(tokens::KIND_WIDTH)
+                                                    .text_size(tokens::KIND_TEXT)
                                                     .text_color(cx.theme().muted_foreground)
                                                     .child("DASH"),
                                             )

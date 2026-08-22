@@ -5,7 +5,7 @@ use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render,
     ScrollStrategy, StatefulInteractiveElement as _, Styled as _, Subscription,
-    UniformListScrollHandle, Window, div, px, uniform_list,
+    UniformListScrollHandle, Window, div, uniform_list,
 };
 use gpui_component::{
     ActiveTheme as _, h_flex,
@@ -16,12 +16,14 @@ use gpui_component::{
 use crate::palette::{Choice, Entry, search};
 use crate::tokens;
 
-/// How tall the results get before they scroll.
+/// How many results are visible before they scroll.
 ///
 /// The list is virtualised, so this is also what decides how many rows are ever
 /// built: ten of them, whether the robot advertises twelve topics or twelve
-/// hundred.
-const LIST_HEIGHT: f32 = 360.;
+/// hundred. Counted in rows rather than pixels now that a row is a rem-based
+/// height — ten rows is the thing that was meant, and it stays ten rows at any
+/// base font size.
+const VISIBLE_ROWS: f32 = 10.;
 
 /// What the palette decided.
 #[derive(Debug, Clone)]
@@ -152,7 +154,7 @@ impl PaletteView {
 
         h_flex()
             .id(("palette", index))
-            .h(px(tokens::CONTROL_HEIGHT))
+            .h(tokens::CONTROL_HEIGHT)
             .w_full()
             .px_3()
             .gap_3()
@@ -164,7 +166,7 @@ impl PaletteView {
             })
             .child(
                 div()
-                    .w(px(84.))
+                    .w(tokens::designed(84.))
                     .flex_shrink_0()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
@@ -214,7 +216,10 @@ impl Render for PaletteView {
         let rows = cx.entity();
         // Shrunk to what there is, capped at what fits: a palette with three
         // hits should not leave a third of a page of nothing under them.
-        let height = (self.matches.len() as f32 * tokens::CONTROL_HEIGHT).min(LIST_HEIGHT);
+        let height = tokens::scaled(
+            tokens::CONTROL_HEIGHT,
+            (self.matches.len() as f32).min(VISIBLE_ROWS),
+        );
 
         v_flex()
             .id("palette")
@@ -255,7 +260,7 @@ impl Render for PaletteView {
                                 }
                             })
                             .track_scroll(&scroll)
-                            .h(px(height)),
+                            .h(height),
                         )
                     })
                     .when(empty, |list| {

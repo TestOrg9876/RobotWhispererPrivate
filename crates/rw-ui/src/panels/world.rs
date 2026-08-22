@@ -26,8 +26,8 @@ use crate::panels::drop;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Task, Window, div, px,
+    InteractiveElement as _, IntoElement, ParentElement as _, Rems, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Task, Window, div,
 };
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::menu::DropdownMenu as _;
@@ -56,7 +56,7 @@ use crate::{tokens, viz};
 ///
 /// The same 240 the robot pane spent on its joint list: enough for a topic name
 /// and the frame it came in, and no more — the picture is what the pane is for.
-const RAIL: f32 = 240.;
+const RAIL: Rems = tokens::designed(240.);
 
 /// Where a running ROS graph puts its own URDF.
 ///
@@ -844,7 +844,7 @@ impl WorldPanel {
         tokens::card(cx)
             .id("layers")
             .flex_shrink_0()
-            .w(px(RAIL))
+            .w(RAIL)
             .min_h_0()
             .p_3()
             .gap_2()

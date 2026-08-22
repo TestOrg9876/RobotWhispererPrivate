@@ -22,8 +22,8 @@ use std::collections::HashMap;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Entity, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, UniformListScrollHandle, Window, div, px, uniform_list,
+    IntoElement, ParentElement as _, Rems, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, UniformListScrollHandle, Window, div, uniform_list,
 };
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, h_flex,
@@ -337,11 +337,15 @@ impl TreeView {
 
 /// How tall one row is. Fixed, because the list only virtualises when every row
 /// is the same height — and one form row is exactly that.
-const ROW_HEIGHT: f32 = 44.;
+const ROW_HEIGHT: Rems = tokens::designed(44.);
+/// The gutter the fold arrow sits in, so every row's name starts at the same x
+/// whether or not its row can be opened.
+const ARROW_GUTTER: Rems = tokens::designed(16.);
+
 /// How far one level indents. Smaller than [`crate::tokens::SIDEBAR_INDENT`] on
 /// purpose: the path already says where a field sits, so this is a hint at the
 /// shape rather than the thing that carries it.
-pub const FIELD_INDENT: f32 = 10.;
+pub const FIELD_INDENT: Rems = tokens::designed(10.);
 
 /// Draws the rows, with `on_toggle` called with the path of a branch clicked.
 ///
@@ -402,10 +406,10 @@ fn line(
 
     h_flex()
         .id(SharedString::from(row.path.clone()))
-        .h(px(ROW_HEIGHT))
+        .h(ROW_HEIGHT)
         .w_full()
         .items_center()
-        .pl(px(row.depth as f32 * FIELD_INDENT))
+        .pl(tokens::scaled(FIELD_INDENT, row.depth as f32))
         .when(row.branch, |line| {
             line.cursor_pointer()
                 .hover(|line| line.bg(cx.theme().muted))
@@ -413,13 +417,18 @@ fn line(
         })
         // The fold arrow sits in the gutter the label column would otherwise
         // start at, so every row's name lines up whatever its depth.
-        .child(div().w(px(16.)).flex_shrink_0().when(row.branch, |slot| {
-            slot.child(
-                Icon::new(arrow)
-                    .xsmall()
-                    .text_color(cx.theme().muted_foreground),
-            )
-        }))
+        .child(
+            div()
+                .w(ARROW_GUTTER)
+                .flex_shrink_0()
+                .when(row.branch, |slot| {
+                    slot.child(
+                        Icon::new(arrow)
+                            .xsmall()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                }),
+        )
         .child(
             tokens::field_row(row.path.clone(), row.type_name.clone(), cx)
                 .when_some(editor, |line, editor| {

@@ -5,6 +5,7 @@
 //! all seven share one elevation ramp and one set of semantics. They are
 //! embedded rather than read from disk so the web build needs no asset origin.
 
+use crate::prefs::Settings;
 use anyhow::{Context as _, Result};
 use gpui::{App, WindowAppearance};
 use gpui_component::{ActiveTheme as _, Theme, ThemeMode, ThemeRegistry};
@@ -101,7 +102,28 @@ fn apply_named(name: &str, cx: &mut App) {
     let mode = config.mode;
     Theme::global_mut(cx).apply_config(&config);
     Theme::change(mode, None, cx);
+    apply_base_size(cx);
     apply_tile_style(cx);
+}
+
+/// The smallest and largest base font size worth offering.
+///
+/// Below ten the chrome stops being clickable before the text stops being
+/// readable; above twenty-eight a 1440-wide window holds about four fields.
+pub const MIN_BASE_SIZE: usize = 10;
+pub const MAX_BASE_SIZE: usize = 28;
+
+/// Sets one rem from the user's chosen base size.
+///
+/// The library hands `Theme::font_size` to `Window::set_rem_size`, and every
+/// length in `tokens` is a multiple of a rem — so this is the one knob that
+/// scales the whole interface rather than only its text. Re-applied with the
+/// theme because `apply_config` puts the JSON's `font.size` back.
+fn apply_base_size(cx: &mut App) {
+    let size = Settings::get(cx)
+        .base_font_size
+        .clamp(MIN_BASE_SIZE, MAX_BASE_SIZE) as f32;
+    Theme::global_mut(cx).font_size = gpui::px(size);
 }
 
 /// The two tile knobs, which the theme schema has no keys for.

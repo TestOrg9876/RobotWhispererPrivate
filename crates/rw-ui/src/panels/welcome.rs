@@ -7,7 +7,7 @@
 use gpui::{
     App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    StatefulInteractiveElement as _, Styled as _, Window, div, px,
+    StatefulInteractiveElement as _, Styled as _, Window, div,
 };
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::{
@@ -19,6 +19,7 @@ use gpui_component::{
 };
 
 use crate::actions::CommandPalette;
+use crate::tokens;
 
 /// What the welcome screen asks the shell to do.
 #[derive(Debug, Clone, Copy)]
@@ -172,6 +173,6 @@ impl Render for WelcomePanel {
                         cx.emit(WelcomeEvent::CommandPalette)
                     })),
             )
-            .child(div().h(px(24.)))
+            .child(div().h(tokens::designed(24.)))
     }
 }

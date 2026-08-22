@@ -73,6 +73,12 @@ pub struct Settings {
     /// How many runs of one request are kept.
     #[serde(default = "default_history_depth")]
     pub history_depth: usize,
+    /// The base font size, in pixels.
+    ///
+    /// One rem, which is what every length in `tokens` is a multiple of — so
+    /// this is the size of the whole interface and not only of its text.
+    #[serde(default = "default_base_font_size")]
+    pub base_font_size: usize,
 }
 
 /// The live settings, readable from any view.
@@ -118,6 +124,10 @@ fn default_console_lines() -> usize {
 fn default_history_depth() -> usize {
     50
 }
+fn default_base_font_size() -> usize {
+    // The size the design was drawn at, and the one the theme JSON declares.
+    14
+}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -130,6 +140,7 @@ impl Default for Settings {
             follow_transforms: default_follow_transforms(),
             console_lines: default_console_lines(),
             history_depth: default_history_depth(),
+            base_font_size: default_base_font_size(),
         }
     }
 }

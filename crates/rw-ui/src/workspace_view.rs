@@ -30,8 +30,8 @@ use crate::actions::{
     AddWorldLayer, AddWorldRobot, CommandPalette, Connect, Disconnect, ExportWorkspace,
     ImportWorkspace, ManageConnections, NewDashboard, NewRequest, OpenRecording, OpenSettings,
     PickPaneTopic, PickWorldTopic, RemoveWorldLayer, ReplayRecording, ResetWorldView,
-    SaveRecording, SetWorldAnchor, SetWorldFrame, ShowWorld, ToggleConsole, ToggleRecording,
-    ToggleSidebar,
+    SaveRecording, SetReplaySpeed, SetWorldAnchor, SetWorldFrame, ShowWorld, ToggleConsole,
+    ToggleRecording, ToggleSidebar,
 };
 use crate::docking::{self, Restored};
 use crate::layout;
@@ -81,6 +81,8 @@ pub struct WorkspaceView {
     /// Dashboards currently open, by id.
     dashboards: HashMap<i64, Entity<DashboardPanel>>,
     prefs: Prefs,
+    /// The play bar, shown only while a recording is open.
+    transport: Entity<crate::transport_bar::TransportBar>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -136,6 +138,7 @@ impl WorkspaceView {
 
         let collections = CollectionsPanel::view(workspace.clone(), window, cx);
         let console = ConsolePanel::view(window, cx);
+        let transport = crate::transport_bar::TransportBar::view(cx);
 
         let dock = cx.new(|cx| DockArea::new("workspace", Some(LAYOUT_VERSION), window, cx));
         let weak = dock.downgrade();
@@ -199,6 +202,7 @@ impl WorkspaceView {
             world: None,
             dashboards: HashMap::new(),
             prefs,
+            transport,
             _welcome: Some(cx.subscribe_in(&welcome, window, Self::on_welcome_event)),
             _subscriptions: subscriptions,
         }
@@ -1466,6 +1470,9 @@ impl Render for WorkspaceView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let menu = self.app_menu();
         let status_bar = self.status_bar(cx);
+        // Absent, not empty, when nothing is being replayed: a bar with no
+        // height still draws its border.
+        let replay_bar = (!self.transport.read(cx).is_empty()).then(|| self.transport.clone());
         // Dialogs and notifications live on `Root` but are placed by the view:
         // `Root::render` draws neither, so a dialog opened without these is
         // stored and never seen.
@@ -1547,6 +1554,12 @@ impl Render for WorkspaceView {
                 );
                 this.open_picker("Add to the world", "Search topics", entries, window, cx);
             }))
+            .on_action(cx.listener(|this, action: &SetReplaySpeed, _, cx| {
+                let (connection, hundredths) = (action.connection, action.hundredths);
+                this.transport.update(cx, |bar, cx| {
+                    bar.set_speed(connection, hundredths, cx);
+                });
+            }))
             .on_action(cx.listener(Self::on_toggle_recording))
             .on_action(cx.listener(Self::on_replay_recording))
             .on_action(cx.listener(Self::on_save_recording))
@@ -1557,6 +1570,7 @@ impl Render for WorkspaceView {
                     .child(h_flex().gap_1().items_center().child(menu)),
             )
             .child(div().flex_1().min_h_0().child(self.dock.clone()))
+            .children(replay_bar)
             .child(status_bar)
             .children(dialog_layer)
             .children(notification_layer)

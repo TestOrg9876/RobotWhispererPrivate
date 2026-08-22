@@ -1,0 +1,81 @@
+# The transport bar: a recording you can pause, scrub and slow down.
+#
+# `ReplayTransport` had all of this and no UI caller — opening a bag started it
+# playing and that was the whole of the control anyone had.
+
+wait 900
+click 105 888
+wait 900
+click 1403 81
+wait 700
+click 1384 158
+wait 500
+click 1269 211
+type Simulator
+wait 500
+click 1395 242
+wait 1500
+click 1327 16
+wait 600
+click 1272 102
+wait 900
+
+# Watch the counter so there is something to record.
+click 244 49
+wait 1400
+click 700 100
+wait 700
+type /dummy/counter
+wait 700
+key Return
+wait 600
+click 1364 96
+wait 1500
+
+# Record a few seconds, then stop.
+click 1408 888
+wait 4000
+click 1408 888
+wait 900
+
+# Replay it. The bar appears the moment the recording becomes a connection.
+#
+# A click into the pane first: without a window manager the keystroke reaches
+# whatever last took focus, and the record button in the status bar swallows it
+# often enough to make the scenario lie.
+click 700 500
+wait 500
+key ctrl+k
+wait 1200
+click 595 391
+wait 2500
+move 700 500
+wait 500
+shot 01-bar-playing
+
+# Pause. The icon becomes play, and the clock stops where it was.
+click 18 858
+wait 1200
+move 700 500
+wait 600
+shot 02-paused
+
+# Slow it down to a quarter. The menu is the speeds you can reason about.
+click 1318 858
+wait 800
+shot 03-speed-menu
+click 1362 738
+wait 800
+move 700 500
+wait 500
+shot 04-quarter-speed
+
+# Back to playing, and stop looping: a bag that restarts behind your back is
+# a bag you cannot read the end of.
+click 18 858
+wait 600
+click 1386 858
+wait 900
+move 700 500
+wait 500
+shot 05-not-looping

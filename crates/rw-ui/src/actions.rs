@@ -192,3 +192,13 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("shift-escape", ToggleZoom, None),
     ]);
 }
+
+/// Set the playback speed of a recording, as a multiplier of the rate it was
+/// captured at, scaled by 100 so the action stays comparable by value.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
+pub struct SetReplaySpeed {
+    pub connection: i64,
+    /// Hundredths: 100 is the captured rate, 25 is a quarter of it.
+    pub hundredths: u32,
+}

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use gpui::{Context, Entity, EventEmitter, Task};
 use rw_core::domain::{Connection, TransportConfig};
 use rw_pipeline::CanonicalPipeline;
-use rw_transport::{ConnectionId, ConnectionStatus, Discovery};
+use rw_transport::{ConnectionId, ConnectionStatus, Discovery, ReplayCommand, ReplayProgress};
 
 /// Where a connection currently is in its lifecycle.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -70,6 +70,11 @@ pub struct Live {
     /// The connection's name, kept here so events can say which system they are
     /// about without the session store having to reach into the workspace.
     pub name: String,
+    /// Where playback has reached, for a connection that is a recording.
+    ///
+    /// `None` on a live system — there is nothing to scrub — which is also how
+    /// the transport bar knows whether to appear at all.
+    pub replay: Option<ReplayProgress>,
 }
 
 /// Something worth putting in the console.
@@ -194,6 +199,24 @@ impl Sessions {
             .values()
             .filter(|live| live.status.is_connected())
             .count()
+    }
+
+    /// Changes how a recording is being played.
+    ///
+    /// Fire-and-forget: the transport publishes the new state on its progress
+    /// channel, which is already being mirrored, so the bar redraws from what
+    /// actually happened rather than from what was asked for.
+    pub fn replay_control(
+        &self,
+        connection: i64,
+        command: ReplayCommand,
+        cx: &mut Context<Self>,
+    ) -> Option<Task<()>> {
+        let session = self.session(connection)?;
+        let pipeline = self.pipeline();
+        Some(cx.spawn(async move |_, _| {
+            pipeline.replay_control(session, command).await;
+        }))
     }
 
     /// Puts a line in the console.
@@ -359,7 +382,37 @@ impl Sessions {
                 }
             };
 
-            futures_util::future::join(statuses, discoveries).await;
+            // A third loop only when this transport is a recording. Seeded the
+            // same way: playback starts on connect, so the first `changed()`
+            // may already be behind.
+            let playback = {
+                let sessions = sessions.clone();
+                let mut cx = cx.clone();
+                let progress = transport.replay();
+                async move {
+                    let Some(mut progress_rx) = progress else {
+                        return;
+                    };
+                    loop {
+                        let progress = *progress_rx.borrow();
+                        let alive = sessions
+                            .update(&mut cx, |sessions, cx| {
+                                let Some(live) = sessions.live.get_mut(&id) else {
+                                    return false;
+                                };
+                                live.replay = Some(progress);
+                                cx.notify();
+                                true
+                            })
+                            .unwrap_or(false);
+                        if !alive || progress_rx.changed().await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            };
+
+            futures_util::future::join3(statuses, discoveries, playback).await;
         })
     }
 

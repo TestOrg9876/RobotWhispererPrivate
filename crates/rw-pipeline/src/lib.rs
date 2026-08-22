@@ -9,8 +9,8 @@ use rw_canonical::CanonicalValue;
 use rw_core::schema::{SchemaKind, SchemaRegistry};
 use rw_session::{SubscriptionHandle, SubscriptionManager};
 use rw_transport::{
-    ActionCancelToken, ActionGoalStream, ConnectionId, Discovery, SubscribeOptions, Transport,
-    TransportError, TransportResult,
+    ActionCancelToken, ActionGoalStream, ConnectionId, Discovery, ReplayCommand, SubscribeOptions,
+    Transport, TransportError, TransportResult,
 };
 use rw_transport_dummy::DummyTransport;
 use rw_transport_foxglove_ws::{FoxgloveConfig, FoxgloveTransport};
@@ -275,6 +275,24 @@ impl CanonicalPipeline {
             .get(&connection_id)
             .cloned()
             .ok_or_else(|| TransportError::Other(format!("unknown connection {connection_id}")))
+    }
+
+    /// Changes how a recording is being played.
+    ///
+    /// Silently does nothing for a live system, which is what the trait's
+    /// default does — a connection that is not a recording has no playback to
+    /// change, and that is not an error worth reporting.
+    pub async fn replay_control(&self, connection_id: ConnectionId, command: ReplayCommand) {
+        let transport = self
+            .inner
+            .connections
+            .lock()
+            .await
+            .get(&connection_id)
+            .map(Arc::clone);
+        if let Some(transport) = transport {
+            transport.replay_control(command).await;
+        }
     }
 
     pub async fn close(&self, connection_id: ConnectionId) -> TransportResult<()> {

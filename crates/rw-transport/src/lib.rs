@@ -238,6 +238,48 @@ pub struct ActionCancelToken {
     pub goal_id: String,
 }
 
+/// Where playback of a recording has reached.
+///
+/// A recording is a transport like any other, which is what lets requests,
+/// panes and the canonical fan-out work on it unchanged — but it is the one
+/// kind of transport that can be paused, sped up and seeked, because the data
+/// already exists. This is that difference, and it is `None` on every live
+/// transport: a robot has no duration and cannot be rewound.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReplayProgress {
+    pub at_ns: u64,
+    pub duration_ns: u64,
+    pub playing: bool,
+    /// 1.0 is the rate it was captured at.
+    pub speed: f32,
+    /// Whether it starts again at the end.
+    pub looping: bool,
+}
+
+impl ReplayProgress {
+    /// How far through, as 0..1. Zero for a recording with no duration.
+    pub fn fraction(&self) -> f32 {
+        if self.duration_ns == 0 {
+            return 0.;
+        }
+        (self.at_ns as f64 / self.duration_ns as f64).clamp(0., 1.) as f32
+    }
+}
+
+/// One change to how a recording is being played.
+///
+/// A single command rather than four methods, so that a transport which is not
+/// a recording says so once.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ReplayCommand {
+    Playing(bool),
+    /// Multiplier on the captured rate.
+    Speed(f32),
+    Looping(bool),
+    /// Jump to a point, as 0..1 of the whole.
+    Seek(f32),
+}
+
 #[cfg(not(target_family = "wasm"))]
 #[async_trait]
 pub trait Transport: Send + Sync + fmt::Debug {
@@ -274,6 +316,16 @@ pub trait Transport: Send + Sync + fmt::Debug {
     ) -> TransportResult<ActionGoalStream>;
 
     async fn cancel_action_goal(&self, token: &ActionCancelToken) -> TransportResult<()>;
+
+    /// Playback state, if this transport is a recording.
+    ///
+    /// `None` — the default — means a live system: there is nothing to scrub.
+    fn replay(&self) -> Option<watch::Receiver<ReplayProgress>> {
+        None
+    }
+
+    /// Changes how the recording is being played. Ignored by a live transport.
+    async fn replay_control(&self, _command: ReplayCommand) {}
 }
 
 #[cfg(target_family = "wasm")]
@@ -303,6 +355,16 @@ pub trait Transport: fmt::Debug {
         goal: CanonicalValue,
     ) -> TransportResult<ActionGoalStream>;
     async fn cancel_action_goal(&self, token: &ActionCancelToken) -> TransportResult<()>;
+
+    /// Playback state, if this transport is a recording.
+    ///
+    /// `None` — the default — means a live system: there is nothing to scrub.
+    fn replay(&self) -> Option<watch::Receiver<ReplayProgress>> {
+        None
+    }
+
+    /// Changes how the recording is being played. Ignored by a live transport.
+    async fn replay_control(&self, _command: ReplayCommand) {}
 }
 
 #[cfg(test)]

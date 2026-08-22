@@ -19,8 +19,8 @@ use rw_canonical::{
 };
 use rw_record::{Cursor, Recording};
 use rw_transport::{
-    ActionCancelToken, ActionGoalStream, ConnectionStatus, Discovery, Frame, Subscription,
-    TopicDescriptor, Transport, TransportError, TransportResult,
+    ActionCancelToken, ActionGoalStream, ConnectionStatus, Discovery, Frame, ReplayCommand,
+    Subscription, TopicDescriptor, Transport, TransportError, TransportResult,
 };
 use tokio::sync::{mpsc, watch, Mutex};
 
@@ -57,13 +57,10 @@ async fn sleep_ms(ms: u64) {
 }
 
 /// How playback is going, so a pane can draw a scrubber over it.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct Progress {
-    pub at_ns: u64,
-    pub duration_ns: u64,
-    pub playing: bool,
-    pub speed: f32,
-}
+///
+/// The transport trait's own type, so the UI can read it through
+/// `Arc<dyn Transport>` without knowing a recording from a robot.
+pub use rw_transport::ReplayProgress as Progress;
 
 #[derive(Debug)]
 pub struct ReplayTransport {
@@ -113,6 +110,7 @@ impl ReplayTransport {
             duration_ns: cursor.duration_ns(),
             playing: false,
             speed: cursor.speed,
+            looping: cursor.looping,
         };
 
         let (status_tx, status_rx) = watch::channel(ConnectionStatus::Disconnected);
@@ -156,6 +154,9 @@ impl ReplayTransport {
     pub async fn set_looping(&self, looping: bool) {
         let mut cursor = self.inner.cursor.lock().await;
         cursor.looping = looping;
+        // Published like the rest: a toggle that changes nothing anyone can
+        // see is a toggle that looks broken.
+        publish_progress(&self.inner, &cursor);
     }
 
     /// Jumps to a point, as 0..1 of the whole.
@@ -172,6 +173,7 @@ fn publish_progress(inner: &Arc<Inner>, cursor: &Cursor) {
         duration_ns: cursor.duration_ns(),
         playing: cursor.playing,
         speed: cursor.speed,
+        looping: cursor.looping,
     });
 }
 
@@ -200,6 +202,19 @@ fn schema_for(topic: &rw_record::Topic) -> CanonicalSchema {
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Transport for ReplayTransport {
+    fn replay(&self) -> Option<watch::Receiver<Progress>> {
+        Some(self.inner.progress_rx.clone())
+    }
+
+    async fn replay_control(&self, command: ReplayCommand) {
+        match command {
+            ReplayCommand::Playing(playing) => self.set_playing(playing).await,
+            ReplayCommand::Speed(speed) => self.set_speed(speed).await,
+            ReplayCommand::Looping(looping) => self.set_looping(looping).await,
+            ReplayCommand::Seek(fraction) => self.seek(fraction).await,
+        }
+    }
+
     async fn connect(&self) -> TransportResult<()> {
         let _ = self.inner.status_tx.send(ConnectionStatus::Connecting);
         let _ = self.inner.status_tx.send(ConnectionStatus::Connected);

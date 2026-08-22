@@ -78,6 +78,34 @@ We build slower and pull more Rust crates — gpui, wgpu and their graph are not
 cheap. Counting both ecosystems the totals are near enough identical (910 vs
 920); the difference is that one of them is a single toolchain.
 
+## Web
+
+| | GPUI (wasm) | Tauri app (web target) |
+| --- | ---: | ---: |
+| Rust core as wasm | 29.9 MB | 2.5 MB |
+| JavaScript / assets | 0.16 MB | 12 MB |
+| **Total** | **30 MB** | **14.5 MB** |
+
+Ours is roughly twice the download. The whole UI framework and renderer are in
+that wasm; theirs ships a 2.5 MB core and does its drawing with three.js and
+the browser's own layout engine, which are already there. Two caveats, both
+against us and neither large enough to close the gap: our release profile keeps
+line tables, and neither figure has been through `wasm-opt`, which their
+shipping pipeline runs and ours does not.
+
+**The browser build did not compile at all before this pass** — `Arc<dyn
+Transport>` is not `Send` on wasm, where the trait is `?Send`, and two
+`background_spawn` calls required it. Verified as pre-existing by checking out
+`3a2d2a6`, before any of this session's work: nine errors there, nine here. The
+fix is two lines — unsubscribing awaits a channel rather than doing work, so it
+belongs on `spawn`.
+
+It compiles now. **It does not boot in headless Chromium in this container**:
+the page loads and stops at "Loading Robot Whisperer...". GPUI's web backend
+needs WebGPU, which is not available here even with `--enable-unsafe-webgpu`
+and swiftshader, so whether the app or the environment is at fault is
+undetermined. It is not claimed as working.
+
 ## What could not be measured
 
 **Rendering under load** — a point cloud streaming into both — is the number

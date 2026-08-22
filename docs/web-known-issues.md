@@ -1,9 +1,20 @@
 # What does not work in the browser build
 
-The wasm target builds, starts, renders the whole shell and talks to a robot.
-Mouse-driven work is complete: connections, request tabs, the target field's
-discovery offers, the response views. What follows is what is broken and why,
-so nobody re-derives it.
+What follows is what is broken and why, so nobody re-derives it.
+
+## The build was broken, and this document said it was not
+
+For some time `cargo xtask web` did not compile: `Arc<dyn Transport>` is not
+`Send` on wasm, where the trait is `?Send`, and two `background_spawn` calls
+required it. Fixed — they are `spawn` now, since unsubscribing awaits a channel
+rather than doing work.
+
+**It still has not been seen running.** In this container the page loads and
+stops at "Loading Robot Whisperer..."; GPUI's web backend needs WebGPU and
+headless Chromium here does not provide it, even with `--enable-unsafe-webgpu`
+and swiftshader. So the claims below about what works in the browser are from
+an earlier session and have not been re-checked since. Treat them as unverified
+until someone opens it in a real browser.
 
 ## Keyboard actions panic inside GPUI's profiler
 

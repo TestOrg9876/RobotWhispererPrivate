@@ -172,7 +172,11 @@ impl VizPanel {
     fn resubscribe(&mut self, cx: &mut Context<Self>) {
         let pipeline = self.sessions.read(cx).pipeline();
         if let Some(handle) = self.subscription.take() {
-            cx.background_spawn(async move {
+            // `spawn`, not `background_spawn`: unsubscribing awaits a channel
+            // rather than doing work, and `background_spawn` requires the
+            // future to be `Send` — which `Arc<dyn Transport>` is not on wasm,
+            // where the trait is `?Send`. This is what broke the browser build.
+            cx.spawn(async move |_, _| {
                 pipeline.unsubscribe(&handle).await.ok();
             })
             .detach();

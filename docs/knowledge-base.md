@@ -230,30 +230,34 @@ From review. These are not preferences and should not be re-litigated.
 
 Ranked by what it costs you.
 
-1. **This app burns ~0.7% CPU drawing nothing.** Found by benchmarking, not by
+1. **The browser build has never been seen running.** It compiles again (it did
+   not, for some time — see `docs/web-known-issues.md`), but headless Chromium
+   here has no WebGPU, so it stops at the loading screen and nothing about it
+   is verified. The biggest unknown in the project.
+2. **This app burns ~0.7% CPU drawing nothing.** Found by benchmarking, not by
    looking. With no connection and no subscription the welcome screen should
    cost nothing; something is repainting. Cheap to chase and it is the one
    runtime number the Tauri app wins on its merits.
-2. **The pane header floats outside its card.** `/dummy/counter · 165 · 9.44 Hz ·
+3. **The pane header floats outside its card.** `/dummy/counter · 165 · 9.44 Hz ·
    ⋯` sits on the grey with the card starting beneath it. Asked for, not
    delivered — blocked on `Panel::title_style` or a decision about `Tiles`.
    See §4.
-3. **Parameter history is recorded nowhere visible** — so it is not recorded at
+4. **Parameter history is recorded nowhere visible** — so it is not recorded at
    all. Parameters have runs, but the parameter form is its own response and
    there is no response card to hang a History tab on. Needs somewhere on the
    PARAMETERS card first.
-4. **The drop target is a full-pane solid wash.** Heavy; a border or light tint
+5. **The drop target is a full-pane solid wash.** Heavy; a border or light tint
    would read better.
-5. **The world pane's layer rail** is 240px of full-height card for two rows.
-6. **Marker types 9 (text) and 10 (mesh resource) are not decoded.** Text needs
+6. **The world pane's layer rail** is 240px of full-height card for two rows.
+7. **Marker types 9 (text) and 10 (mesh resource) are not decoded.** Text needs
     glyph rendering, which `rw-render` does not have.
-7. **`/dummy/points` and `/dummy/image` build no payload form** — the schema
+8. **`/dummy/points` and `/dummy/image` build no payload form** — the schema
     does not reach `message_for` from the registry. Harmless now that topics do
     not publish, but the same gap would bite a service with those types.
-8. **Settings live only in a dialog.** The owner asked for "dialog now, panel
+9. **Settings live only in a dialog.** The owner asked for "dialog now, panel
     later"; the panel is not built. The content is a plain `v_flex` of rows, so
     moving it into a dock panel is a wrapper change, not a rewrite.
-9. **Three settings sections are thin.** Requests holds one row, Console holds
+10. **Three settings sections are thin.** Requests holds one row, Console holds
     one. `marker::LIST_BUDGET`, `tree::MAX_CHILDREN`, the console's default
     level filter and a request's default view are all still constants.
 
@@ -356,7 +360,11 @@ The wasm path is not covered by `--workspace`:
 ```
 cargo check -p rw-core --target wasm32-unknown-unknown \
       --no-default-features --features wasm-storage
+rustup run nightly cargo build -p rw-web --target wasm32-unknown-unknown
 ```
+
+The second is the one that matters and the one that was missing: `rw-core`
+alone compiled for wasm all the while `rw-web` did not.
 
 ## 9. Plan
 

@@ -11,34 +11,51 @@ use std::collections::BTreeMap;
 
 use rw_canonical::CanonicalValue;
 
-/// How many samples to keep per field.
-///
-/// At the 100 ms repaint the panel already uses, this is a couple of minutes of
-/// history for a 10 Hz topic and about six seconds for a 200 Hz one — enough to
-/// see the shape of what is happening, and bounded so a topic left running
-/// overnight does not become a memory leak.
-pub const WINDOW: usize = 600;
-
 /// How deep to walk into a message looking for numbers.
 const MAX_DEPTH: usize = 6;
 
-/// The most fields to track at once.
+/// How much of a topic a plot keeps.
 ///
-/// A `sensor_msgs/JointState` for a humanoid is hundreds of numbers, and a plot
-/// of hundreds of lines is not a plot. The first few are kept and the rest
-/// ignored, rather than the whole thing being refused.
-pub const MAX_FIELDS: usize = 12;
+/// `window` is how many samples each field keeps: at the 100 ms repaint the
+/// panel already uses, the default is a couple of minutes of history for a
+/// 10 Hz topic and about six seconds for a 200 Hz one — enough to see the shape
+/// of what is happening, and bounded so a topic left running overnight does not
+/// become a memory leak.
+///
+/// `fields` is the most fields tracked at once. A `sensor_msgs/JointState` for
+/// a humanoid is hundreds of numbers, and a plot of hundreds of lines is not a
+/// plot. The first few are kept and the rest ignored, rather than the whole
+/// thing being refused.
+///
+/// Carried rather than looked up because every sample arrives on a transport
+/// callback, which has the message and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    pub window: usize,
+    pub fields: usize,
+}
+
+impl Limits {
+    /// The limits in force, read where there is still a `cx` to read them with.
+    pub fn current(cx: &gpui::App) -> Self {
+        let settings = crate::prefs::Settings::get(cx);
+        Self {
+            window: settings.plot_window,
+            fields: settings.plot_fields,
+        }
+    }
+}
 
 /// One numeric field's recent history.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Series {
-    /// Oldest first, at most [`WINDOW`] long.
+    /// Oldest first, at most `Limits::window` long.
     pub samples: Vec<f64>,
 }
 
 impl Series {
-    fn push(&mut self, sample: f64) {
-        if self.samples.len() == WINDOW {
+    fn push(&mut self, sample: f64, window: usize) {
+        while self.samples.len() >= window.max(1) {
             self.samples.remove(0);
         }
         self.samples.push(sample);
@@ -70,7 +87,7 @@ pub struct History {
 
 impl History {
     /// Adds one message's numbers to the history.
-    pub fn observe(&mut self, value: &CanonicalValue) {
+    pub fn observe(&mut self, value: &CanonicalValue, limits: Limits) {
         let mut found = Vec::new();
         walk(value, &mut String::new(), 0, &mut found);
 
@@ -78,10 +95,13 @@ impl History {
             // A path already tracked keeps being tracked even once the cap is
             // reached; only new ones are turned away, so a series does not go
             // ragged because a later message had an extra field.
-            if !self.fields.contains_key(&path) && self.fields.len() >= MAX_FIELDS {
+            if !self.fields.contains_key(&path) && self.fields.len() >= limits.fields {
                 continue;
             }
-            self.fields.entry(path).or_default().push(sample);
+            self.fields
+                .entry(path)
+                .or_default()
+                .push(sample, limits.window);
         }
     }
 
@@ -156,6 +176,14 @@ fn walk(value: &CanonicalValue, path: &mut String, depth: usize, out: &mut Vec<(
 
 #[cfg(test)]
 mod tests {
+    /// The shipped defaults, so these tests describe what a fresh install does.
+    const WINDOW: usize = 600;
+    const MAX_FIELDS: usize = 12;
+    const LIMITS: Limits = Limits {
+        window: WINDOW,
+        fields: MAX_FIELDS,
+    };
+
     use super::*;
     use std::collections::BTreeMap;
 
@@ -245,10 +273,13 @@ mod tests {
     fn history_accumulates_per_field() {
         let mut history = History::default();
         for sample in [1.0, 2.0, 3.0] {
-            history.observe(&structure([
-                ("a", CanonicalValue::F64(sample)),
-                ("b", CanonicalValue::F64(-sample)),
-            ]));
+            history.observe(
+                &structure([
+                    ("a", CanonicalValue::F64(sample)),
+                    ("b", CanonicalValue::F64(-sample)),
+                ]),
+                LIMITS,
+            );
         }
 
         let series: Vec<_> = history.iter().collect();
@@ -262,7 +293,7 @@ mod tests {
     fn history_is_bounded() {
         let mut history = History::default();
         for sample in 0..WINDOW + 50 {
-            history.observe(&CanonicalValue::F64(sample as f64));
+            history.observe(&CanonicalValue::F64(sample as f64), LIMITS);
         }
 
         let (_, series) = history.iter().next().expect("one series");
@@ -273,12 +304,45 @@ mod tests {
     }
 
     #[test]
+    fn a_narrower_window_keeps_less_than_the_default_one() {
+        let mut history = History::default();
+        let limits = Limits {
+            window: 10,
+            fields: MAX_FIELDS,
+        };
+        for sample in 0..50 {
+            history.observe(&CanonicalValue::F64(sample as f64), limits);
+        }
+        let (_, series) = history.iter().next().expect("a series");
+        assert_eq!(series.samples.len(), 10, "the setting bounds the window");
+        assert_eq!(
+            series.samples.last(),
+            Some(&49.),
+            "and it is the newest that survive"
+        );
+    }
+
+    #[test]
+    fn a_lower_field_cap_turns_away_more_of_them() {
+        let mut history = History::default();
+        let limits = Limits {
+            window: WINDOW,
+            fields: 3,
+        };
+        let fields = (0..20)
+            .map(|index| (format!("f{index}"), CanonicalValue::F64(index as f64)))
+            .collect();
+        history.observe(&CanonicalValue::Struct(fields), limits);
+        assert_eq!(history.len(), 3);
+    }
+
+    #[test]
     fn a_huge_message_tracks_only_the_first_fields() {
         let mut history = History::default();
         let fields: BTreeMap<_, _> = (0..40)
             .map(|index| (format!("f{index:02}"), CanonicalValue::F64(index as f64)))
             .collect();
-        history.observe(&CanonicalValue::Struct(fields));
+        history.observe(&CanonicalValue::Struct(fields), LIMITS);
 
         assert_eq!(history.len(), MAX_FIELDS);
         // The first by path, so which ones are kept is at least predictable.
@@ -295,7 +359,7 @@ mod tests {
             let fields: BTreeMap<_, _> = (0..=index)
                 .map(|field| (format!("f{field:02}"), CanonicalValue::F64(1.0)))
                 .collect();
-            history.observe(&CanonicalValue::Struct(fields));
+            history.observe(&CanonicalValue::Struct(fields), LIMITS);
         }
         assert_eq!(history.len(), MAX_FIELDS);
 
@@ -308,7 +372,7 @@ mod tests {
     fn a_series_reports_its_range() {
         let mut series = Series::default();
         for sample in [3.0, -1.0, 7.0, 2.0] {
-            series.push(sample);
+            series.push(sample, WINDOW);
         }
         assert_eq!(series.range(), Some((-1.0, 7.0)));
         assert_eq!(series.last(), Some(2.0));

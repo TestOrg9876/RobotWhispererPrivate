@@ -609,18 +609,42 @@ impl WorkspaceView {
     }
 
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let settings = SettingsView::view(&self.prefs, cx);
+        let settings = SettingsView::view(&self.prefs, window, cx);
 
-        // The theme applies as it is chosen rather than on a Save button: it is
+        // Everything applies as it is chosen rather than on a Save button: it is
         // a preview you are looking at, and nobody wants to guess.
-        cx.subscribe(&settings, |this, _, event: &SettingsEvent, cx| {
-            let SettingsEvent::ThemeChosen(preference) = event;
-            this.apply_theme(preference.clone(), cx);
-        })
+        cx.subscribe(
+            &settings,
+            |this, _, event: &SettingsEvent, cx| match event {
+                SettingsEvent::ThemeChosen(preference) => {
+                    this.apply_theme(preference.clone(), cx);
+                }
+                SettingsEvent::Changed(settings) => {
+                    this.prefs.set_settings(*settings);
+                    // The global is what every consumer reads; the preferences
+                    // file is only where it comes back from next launch.
+                    cx.set_global(*settings);
+                    // The transform store is the one consumer that cannot read
+                    // the change on its next frame: its subscriptions were
+                    // opened once, so it has to be told.
+                    let whisperer = RobotWhisperer::global(cx);
+                    let (tf, sessions) = (whisperer.tf.clone(), whisperer.sessions.clone());
+                    sessions
+                        .read(cx)
+                        .pipeline()
+                        .set_rate_window_ns(settings.rate_window_ns());
+                    tf.update(cx, |store, cx| store.resettle(&sessions, cx));
+                    cx.notify();
+                }
+            },
+        )
         .detach();
 
+        // Wider than the theme list needed: there is a rail of sections beside
+        // the pane now, and a row's explanation is the half that makes its
+        // number mean anything.
         window.open_dialog(cx, move |dialog, _window, _cx| {
-            dialog.title("Settings").w(px(460.)).child(settings.clone())
+            dialog.title("Settings").w(px(620.)).child(settings.clone())
         });
         cx.notify();
     }

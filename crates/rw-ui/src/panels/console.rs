@@ -20,14 +20,9 @@ use gpui_component::{
     v_flex,
 };
 
+use crate::prefs::Settings;
 use crate::session::{Notice, RobotWhisperer, SessionEvent, Severity};
 use crate::tokens;
-
-/// How many lines to keep.
-///
-/// Old lines are dropped from the front, so a session left running for a week
-/// costs the same as one left running for a minute.
-const CAPACITY: usize = 2000;
 
 struct Line {
     at: DateTime<Local>,
@@ -73,7 +68,7 @@ impl ConsolePanel {
 
         let subscriptions = vec![
             cx.subscribe(&sessions, |this, _, event: &SessionEvent, cx| {
-                this.push(event.0.clone());
+                this.push(event.0.clone(), cx);
                 cx.notify();
             }),
             cx.subscribe(&filter, |_, _, event: &InputEvent, cx| {
@@ -98,8 +93,13 @@ impl ConsolePanel {
         cx.new(|cx| Self::new(window, cx))
     }
 
-    fn push(&mut self, notice: Notice) {
-        if self.lines.len() == CAPACITY {
+    /// Adds a line, dropping the oldest once the kept depth is reached.
+    ///
+    /// Old lines go from the front, so a session left running for a week costs
+    /// the same as one left running for a minute.
+    fn push(&mut self, notice: Notice, cx: &App) {
+        let cap = Settings::get(cx).console_lines.max(1);
+        while self.lines.len() >= cap {
             self.lines.remove(0);
         }
         self.lines.push(Line {

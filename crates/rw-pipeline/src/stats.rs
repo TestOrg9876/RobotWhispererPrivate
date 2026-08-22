@@ -13,11 +13,12 @@ use std::collections::VecDeque;
 
 use rw_transport::Frame;
 
-/// How much history a meter keeps, in nanoseconds.
+/// How much history a meter keeps by default, in nanoseconds.
 ///
 /// Five seconds: long enough that a 1 Hz topic gets a rate at all, short enough
 /// that a topic which has just stopped says so rather than reporting the
-/// average of the minute before it did.
+/// average of the minute before it did. Settable per meter, because what counts
+/// as "just stopped" is different for a 200 Hz IMU and a 0.2 Hz map update.
 pub const WINDOW_NS: u64 = 5_000_000_000;
 
 /// A hard ceiling on samples, whatever the window says — a 10 kHz topic would
@@ -101,15 +102,42 @@ struct Sample {
 }
 
 /// A rolling window of arrivals on one subscription.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Meter {
     samples: VecDeque<Sample>,
     count: u64,
+    window_ns: u64,
+}
+
+impl Default for Meter {
+    fn default() -> Self {
+        Self::with_window(WINDOW_NS)
+    }
 }
 
 impl Meter {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_window(window_ns: u64) -> Self {
+        Self {
+            samples: VecDeque::new(),
+            count: 0,
+            window_ns: window_ns.max(1),
+        }
+    }
+
+    /// Changes the window, dropping what no longer fits.
+    ///
+    /// Applied to the meters already running rather than only to the next
+    /// subscription: a rate is what you are looking at right now, and one that
+    /// waits for a resubscribe to honour the setting looks broken.
+    pub fn set_window(&mut self, window_ns: u64) {
+        self.window_ns = window_ns.max(1);
+        if let Some(newest) = self.samples.back().map(|sample| sample.arrived_ns) {
+            self.trim(newest);
+        }
     }
 
     /// Records that a frame arrived at `arrived_ns`.
@@ -124,7 +152,7 @@ impl Meter {
     }
 
     fn trim(&mut self, now_ns: u64) {
-        let horizon = now_ns.saturating_sub(WINDOW_NS);
+        let horizon = now_ns.saturating_sub(self.window_ns);
         while self
             .samples
             .front()
@@ -154,7 +182,7 @@ impl Meter {
         let live: Vec<&Sample> = self
             .samples
             .iter()
-            .filter(|sample| sample.arrived_ns + WINDOW_NS >= now_ns)
+            .filter(|sample| sample.arrived_ns + self.window_ns >= now_ns)
             .collect();
         let Some(first) = live.first() else {
             return stats;
@@ -313,6 +341,38 @@ mod tests {
         assert!(
             meter.samples.len() <= 51,
             "kept {} samples",
+            meter.samples.len()
+        );
+        assert_eq!(meter.count(), 200, "the true count survives the trimming");
+    }
+
+    #[test]
+    fn a_wider_window_keeps_what_the_default_would_have_dropped() {
+        let mut meter = Meter::with_window(30 * SECOND);
+        steady(&mut meter, 0, 100 * MS, 200, None);
+        // The same 20 s of history the default window trimmed to about 5 s.
+        assert!(
+            meter.samples.len() > 150,
+            "a 30 s window should have kept nearly all of it, kept {}",
+            meter.samples.len()
+        );
+    }
+
+    #[test]
+    fn shortening_the_window_drops_the_arrivals_outside_it() {
+        let mut meter = Meter::with_window(30 * SECOND);
+        steady(&mut meter, 0, 100 * MS, 200, None);
+        let wide = meter.samples.len();
+
+        meter.set_window(SECOND);
+        assert!(
+            meter.samples.len() < wide,
+            "narrowing the window should have trimmed, still {} samples",
+            meter.samples.len()
+        );
+        assert!(
+            meter.samples.len() <= 11,
+            "a 1 s window over a 10 Hz topic, got {}",
             meter.samples.len()
         );
         assert_eq!(meter.count(), 200, "the true count survives the trimming");

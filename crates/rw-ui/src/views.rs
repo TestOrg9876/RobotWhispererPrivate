@@ -489,11 +489,17 @@ mod tests {
     #[test]
     fn numbers_bring_the_plot_and_a_pin_brings_the_diff() {
         let mut history = History::default();
-        history.observe(&CanonicalValue::Struct(
-            [("data".to_string(), CanonicalValue::F64(1.))]
-                .into_iter()
-                .collect(),
-        ));
+        history.observe(
+            &CanonicalValue::Struct(
+                [("data".to_string(), CanonicalValue::F64(1.))]
+                    .into_iter()
+                    .collect(),
+            ),
+            crate::series::Limits {
+                window: 600,
+                fields: 12,
+            },
+        );
         assert!(Offers::of(&VisualizationRole::Text, &history, false).plottable);
 
         let offers = Offers::of(&VisualizationRole::PointCloud2, &history, true);

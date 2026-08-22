@@ -1,0 +1,33 @@
+# Settings: a rail of sections, and values that hold.
+#
+# Every number here was a constant nobody could reach, and every default is
+# still that constant — so opening this and changing nothing must leave the app
+# behaving exactly as it did.
+
+# Opened with its keybinding rather than by hunting the menu: a coordinate that
+# moves when a menu entry is added is a coordinate that will be wrong again.
+wait 900
+# A click first so the window is what the keystroke reaches: there is no window
+# manager under Xvfb to have focused it for us.
+click 700 650
+wait 400
+key ctrl+comma
+wait 1200
+move 700 600
+wait 400
+shot 01-settings-appearance
+
+# Requests: how many past runs of one request are kept.
+click 462 174
+wait 700
+move 700 600
+wait 400
+shot 02-settings-requests
+
+# Transforms: the one behaviour this branch turned on for everyone without
+# giving anyone a way to turn it off.
+click 462 270
+wait 700
+move 700 600
+wait 400
+shot 03-settings-transforms

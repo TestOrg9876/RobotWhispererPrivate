@@ -399,6 +399,28 @@ impl Buffer {
         self.window_ns
     }
 
+    /// Changes how much history is kept, trimming what no longer fits.
+    ///
+    /// Trimming happens here rather than on the next sample so that shortening
+    /// the window frees the memory it was asked to free, on a tree that may not
+    /// hear from its robot again for a while.
+    pub fn set_window(&mut self, window_ns: u64) {
+        self.window_ns = window_ns.max(1);
+        for link in self.links.values_mut() {
+            let Some((newest, _)) = link.samples.back().copied() else {
+                continue;
+            };
+            let horizon = newest.saturating_sub(self.window_ns);
+            while link
+                .samples
+                .front()
+                .is_some_and(|(stamp, _)| *stamp < horizon)
+            {
+                link.samples.pop_front();
+            }
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.links.is_empty()
     }
@@ -970,6 +992,26 @@ mod tests {
             node.samples <= 12,
             "the window should bound the ring, got {} samples",
             node.samples
+        );
+    }
+
+    #[test]
+    fn shortening_the_window_trims_what_is_already_held() {
+        let mut buffer = Buffer::with_window(10_000 * MS);
+        for step in 0..=20u64 {
+            buffer.insert("map", "base", step * 100 * MS, shifted(step as f32));
+        }
+        assert!(buffer.lookup("map", "base", 100 * MS).is_ok());
+
+        buffer.set_window(500 * MS);
+        assert_eq!(buffer.window_ns(), 500 * MS);
+        assert!(
+            buffer.lookup("map", "base", 100 * MS).is_err(),
+            "shortening the window should have dropped the old samples"
+        );
+        assert!(
+            buffer.lookup("map", "base", 1900 * MS).is_ok(),
+            "the newest samples are still there"
         );
     }
 

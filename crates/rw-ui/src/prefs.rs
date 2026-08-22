@@ -39,7 +39,7 @@ pub struct Prefs {
 /// `#[serde(default)]` on each field, not just on the struct, so a preferences
 /// file written before a field existed still loads and simply takes the default
 /// for the new one.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     /// How many points of a cloud are drawn. Above this the cloud is subsampled
     /// rather than dropped, so the shape survives and the frame rate does too.
@@ -73,6 +73,25 @@ pub struct Settings {
     /// How many runs of one request are kept.
     #[serde(default = "default_history_depth")]
     pub history_depth: usize,
+}
+
+/// The live settings, readable from any view.
+///
+/// A global rather than something threaded through every constructor: the
+/// numbers below are read deep inside decode and render paths that have a `cx`
+/// and nothing else, and a setting nobody can reach is the bug this replaced.
+impl gpui::Global for Settings {}
+
+impl Settings {
+    /// The settings in force, or the defaults before any have been loaded.
+    pub fn get(cx: &gpui::App) -> Self {
+        cx.try_global::<Self>().copied().unwrap_or_default()
+    }
+
+    /// The rate window in nanoseconds, which is what the pipeline wants.
+    pub fn rate_window_ns(&self) -> u64 {
+        self.rate_window_secs.max(1).saturating_mul(1_000_000_000)
+    }
 }
 
 fn default_point_budget() -> usize {
@@ -343,6 +362,30 @@ mod tests {
         assert!(settings.follow_transforms);
         assert_eq!(settings.console_lines, 2000);
         assert_eq!(settings.history_depth, 50);
+    }
+
+    #[test]
+    fn the_rate_window_converts_to_the_nanoseconds_the_pipeline_wants() {
+        let settings = Settings::default();
+        assert_eq!(settings.rate_window_ns(), rw_pipeline::stats::WINDOW_NS);
+        assert_eq!(
+            Settings {
+                rate_window_secs: 30,
+                ..Settings::default()
+            }
+            .rate_window_ns(),
+            30_000_000_000
+        );
+        // Zero would make every meter report on an empty window; the floor is
+        // one second, which is the smallest honest answer.
+        assert_eq!(
+            Settings {
+                rate_window_secs: 0,
+                ..Settings::default()
+            }
+            .rate_window_ns(),
+            1_000_000_000
+        );
     }
 
     #[test]

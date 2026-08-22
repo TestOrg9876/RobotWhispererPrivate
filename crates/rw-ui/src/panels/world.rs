@@ -43,6 +43,7 @@ use rw_canonical::CanonicalValue;
 use rw_render::{Content, Layer, MeshVertex, Solid};
 
 use crate::actions::{AddWorldRobot, RemoveWorldLayer, SetWorldFrame};
+use crate::prefs::Settings;
 use crate::scene_view::SceneView;
 use crate::session::{RobotWhisperer, Sessions};
 use crate::tf::Tree;
@@ -503,12 +504,13 @@ impl WorldPanel {
     fn sync(&mut self, cx: &mut Context<Self>) {
         self.settle_fixed(cx);
         let fixed = self.fixed.clone();
+        let budget = Settings::get(cx).point_budget;
         let mut drawn: Vec<Layer> = Vec::new();
 
         for index in 0..self.layers.len() {
             let tree = self.tree_for(index, cx);
             let (layers, frame, problem) = match &self.layers[index].source {
-                Source::Topic { .. } => self.topic_layers(index, &fixed, tree.as_ref()),
+                Source::Topic { .. } => self.topic_layers(index, &fixed, tree.as_ref(), budget),
                 Source::Robot { .. } => self.robot_layers(index, &fixed, tree.as_ref()),
             };
             let shown = self.layers[index].shown;
@@ -532,6 +534,7 @@ impl WorldPanel {
         index: usize,
         fixed: &str,
         tree: Option<&Tree>,
+        budget: usize,
     ) -> (Vec<Layer>, Option<SharedString>, Option<SharedString>) {
         let (value, schema) = {
             let Ok(incoming) = self.layers[index].incoming.lock() else {
@@ -550,7 +553,7 @@ impl WorldPanel {
             );
         };
         let role = viz::role_for(&schema);
-        let Some(pieces) = viz::draw(&role, &value) else {
+        let Some(pieces) = viz::draw(&role, &value, budget) else {
             return (
                 Vec::new(),
                 None,

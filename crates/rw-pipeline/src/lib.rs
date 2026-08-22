@@ -68,6 +68,12 @@ struct Inner {
     /// definition of that name sorted first. Behind a plain lock for the same
     /// reason `meters` is: a render reads it and a render cannot await.
     schemas: std::sync::Mutex<HashMap<(ConnectionId, String), String>>,
+    /// The window every meter averages over, in nanoseconds.
+    ///
+    /// A setting rather than a constant, and held here rather than passed to
+    /// each subscription, so that changing it reaches the meters already
+    /// running as well as the next one opened.
+    rate_window_ns: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Debug)]
@@ -116,6 +122,7 @@ impl CanonicalPipeline {
                 action_goals: Mutex::new(HashMap::new()),
                 schema_registry,
                 schemas: std::sync::Mutex::new(HashMap::new()),
+                rate_window_ns: std::sync::atomic::AtomicU64::new(stats::WINDOW_NS),
             }),
         }
     }
@@ -141,6 +148,29 @@ impl CanonicalPipeline {
             .ok()?
             .get(&(connection, target.to_string()))
             .cloned()
+    }
+
+    /// Sets the window every rate and bandwidth reading is averaged over.
+    ///
+    /// Applies to the meters already running, so a topic being watched right
+    /// now reports on the new window rather than after a resubscribe.
+    pub fn set_rate_window_ns(&self, window_ns: u64) {
+        let window_ns = window_ns.max(1);
+        self.inner
+            .rate_window_ns
+            .store(window_ns, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut meters) = self.inner.meters.lock() {
+            for meter in meters.values_mut() {
+                meter.set_window(window_ns);
+            }
+        }
+    }
+
+    /// The window rates are averaged over, in nanoseconds.
+    pub fn rate_window_ns(&self) -> u64 {
+        self.inner
+            .rate_window_ns
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Forgets what a connection described, when it goes away.
@@ -302,11 +332,10 @@ impl CanonicalPipeline {
             pack_and_send(&subscription_id, latest.as_ref(), true);
         }
 
-        self.inner
-            .meters
-            .lock()
-            .expect("meter mutex")
-            .insert(subscription_id.clone(), stats::Meter::new());
+        self.inner.meters.lock().expect("meter mutex").insert(
+            subscription_id.clone(),
+            stats::Meter::with_window(self.rate_window_ns()),
+        );
 
         let mut receiver = handle.receiver.resubscribe();
         let forwarder_id = subscription_id.clone();

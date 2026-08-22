@@ -106,7 +106,7 @@ pub struct Piece {
 /// `None` when this role has no geometry in it at all; an empty list when it
 /// does but this particular message was empty — a `/tf` with nothing in it, a
 /// scan where every beam missed.
-pub fn draw(role: &VisualizationRole, value: &CanonicalValue) -> Option<Vec<Piece>> {
+pub fn draw(role: &VisualizationRole, value: &CanonicalValue, budget: usize) -> Option<Vec<Piece>> {
     let simple = |content: Content| {
         vec![Piece {
             frame: geometry::frame_id(value),
@@ -116,9 +116,9 @@ pub fn draw(role: &VisualizationRole, value: &CanonicalValue) -> Option<Vec<Piec
     };
 
     match role {
-        VisualizationRole::PointCloud2 => {
-            Some(simple(Content::Points(cloud::decode(value)?.into())))
-        }
+        VisualizationRole::PointCloud2 => Some(simple(Content::Points(
+            cloud::decode(value, budget)?.into(),
+        ))),
         VisualizationRole::LaserScan => Some(simple(Content::Points(geometry::scan(value)?))),
         VisualizationRole::Marker | VisualizationRole::MarkerArray => marker::decode(value),
         VisualizationRole::Path => {
@@ -242,8 +242,9 @@ pub fn layers_for(
     role: &VisualizationRole,
     value: &CanonicalValue,
     tree: Option<&Tree>,
+    budget: usize,
 ) -> Option<Vec<Layer>> {
-    let pieces = draw(role, value)?;
+    let pieces = draw(role, value, budget)?;
     let fixed = pieces.iter().find_map(|piece| piece.frame.clone());
     Some(
         place(pieces, fixed.as_deref().unwrap_or_default(), tree)
@@ -255,6 +256,9 @@ pub fn layers_for(
 
 #[cfg(test)]
 mod tests {
+    /// The default point budget, so these tests describe the shipped behaviour.
+    const BUDGET: usize = 400_000;
+
     use super::*;
     use std::collections::BTreeMap;
 
@@ -389,7 +393,7 @@ mod tests {
                 CanonicalValue::Array(vec![CanonicalValue::F32(1.)]),
             ),
         ]);
-        let pieces = draw(&VisualizationRole::LaserScan, &message).expect("decodes");
+        let pieces = draw(&VisualizationRole::LaserScan, &message, BUDGET).expect("decodes");
         assert_eq!(pieces.len(), 1);
         assert_eq!(pieces[0].frame.as_deref(), Some("laser"));
         assert_eq!(pieces[0].at_ns, Some(4_500_000_000));
@@ -419,7 +423,7 @@ mod tests {
             ("header", header("map")),
             ("poses", CanonicalValue::Array(vec![step(0.), step(1.)])),
         ]);
-        let pieces = draw(&VisualizationRole::Path, &message).expect("decodes");
+        let pieces = draw(&VisualizationRole::Path, &message, BUDGET).expect("decodes");
         assert_eq!(pieces[0].frame.as_deref(), Some("map"));
         let Content::Lines(sets) = &pieces[0].content else {
             panic!("expected lines")
@@ -455,7 +459,7 @@ mod tests {
             "transforms",
             CanonicalValue::Array(vec![entry("map", "odom"), entry("odom", "base")]),
         )]);
-        let pieces = draw(&VisualizationRole::Tf, &message).expect("decodes");
+        let pieces = draw(&VisualizationRole::Tf, &message, BUDGET).expect("decodes");
         assert_eq!(pieces.len(), 2);
         assert_eq!(pieces[0].frame.as_deref(), Some("map"));
         assert_eq!(pieces[1].frame.as_deref(), Some("odom"));
@@ -473,17 +477,20 @@ mod tests {
     #[test]
     fn a_role_with_no_geometry_in_it_draws_nothing_at_all() {
         let message = map([("data", CanonicalValue::F64(1.))]);
-        assert_eq!(draw(&VisualizationRole::JsonTree, &message), None);
-        assert_eq!(draw(&VisualizationRole::Text, &message), None);
-        assert_eq!(draw(&VisualizationRole::Image, &message), None);
+        assert_eq!(draw(&VisualizationRole::JsonTree, &message, BUDGET), None);
+        assert_eq!(draw(&VisualizationRole::Text, &message, BUDGET), None);
+        assert_eq!(draw(&VisualizationRole::Image, &message, BUDGET), None);
     }
 
     #[test]
     fn a_message_that_claims_a_role_it_cannot_meet_is_refused_rather_than_drawn_empty() {
         let nonsense = map([("data", CanonicalValue::Int(1))]);
-        assert_eq!(draw(&VisualizationRole::LaserScan, &nonsense), None);
-        assert_eq!(draw(&VisualizationRole::Path, &nonsense), None);
-        assert_eq!(draw(&VisualizationRole::PointCloud2, &nonsense), None);
+        assert_eq!(draw(&VisualizationRole::LaserScan, &nonsense, BUDGET), None);
+        assert_eq!(draw(&VisualizationRole::Path, &nonsense, BUDGET), None);
+        assert_eq!(
+            draw(&VisualizationRole::PointCloud2, &nonsense, BUDGET),
+            None
+        );
     }
 
     #[test]
@@ -496,7 +503,7 @@ mod tests {
                 CanonicalValue::Array(vec![CanonicalValue::F32(1.)]),
             ),
         ]);
-        let pieces = draw(&VisualizationRole::LaserScan, &message).expect("decodes");
+        let pieces = draw(&VisualizationRole::LaserScan, &message, BUDGET).expect("decodes");
         assert_eq!(pieces[0].frame, None);
         assert_eq!(pieces[0].at_ns, None);
     }

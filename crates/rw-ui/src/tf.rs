@@ -19,6 +19,7 @@ use rw_canonical::CanonicalValue;
 use rw_tf::{Buffer, Transform};
 
 use crate::geometry;
+use crate::prefs::Settings;
 use crate::session::{RobotWhisperer, Sessions};
 
 /// The two topics every ROS graph puts its transform tree on.
@@ -169,19 +170,61 @@ pub struct TfStore {
     _work: HashMap<(i64, &'static str), Task<()>>,
 }
 
+/// How much transform history a tree keeps, from the setting.
+fn window_ns(settings: &Settings) -> u64 {
+    settings.tf_window_secs.max(1).saturating_mul(1_000_000_000)
+}
+
 impl TfStore {
     pub fn new() -> Self {
         Self::default()
     }
 
     /// The tree for a connection, created empty on first ask.
-    pub fn tree(&mut self, connection: i64) -> Arc<Mutex<Buffer>> {
-        Arc::clone(self.trees.entry(connection).or_default())
+    ///
+    /// `window_ns` is how much history it keeps — the setting, passed in rather
+    /// than looked up so this stays callable from anywhere.
+    pub fn tree(&mut self, connection: i64, window_ns: u64) -> Arc<Mutex<Buffer>> {
+        Arc::clone(
+            self.trees
+                .entry(connection)
+                .or_insert_with(|| Arc::new(Mutex::new(Buffer::with_window(window_ns)))),
+        )
     }
 
     /// The tree for a connection, if it has one yet.
     pub fn peek(&self, connection: i64) -> Option<Arc<Mutex<Buffer>>> {
         self.trees.get(&connection).map(Arc::clone)
+    }
+
+    /// Applies a change to the transform settings.
+    ///
+    /// Following is a live switch, not a launch flag: turning it off drops the
+    /// subscriptions and the trees they filled, because a pane placing geometry
+    /// with a tree nobody updates any more is exactly the silent-wrong-place
+    /// failure the transform code exists to prevent. Turning it back on
+    /// re-subscribes from scratch.
+    pub fn resettle(&mut self, sessions: &Entity<Sessions>, cx: &mut Context<Self>) {
+        let settings = Settings::get(cx);
+        if !settings.follow_transforms {
+            let had = !self.trees.is_empty();
+            self.trees.clear();
+            self.subscribed.clear();
+            self._work.clear();
+            if had {
+                cx.notify();
+            }
+            return;
+        }
+
+        let window_ns = window_ns(&settings);
+        for tree in self.trees.values() {
+            if let Ok(mut tree) = tree.lock() {
+                tree.set_window(window_ns);
+            }
+        }
+        self.follow(sessions, cx);
+        cx.notify();
     }
 
     /// Drops the trees of connections that have gone away.
@@ -212,6 +255,13 @@ impl TfStore {
     /// Idempotent: called on every discovery update, and opens a subscription
     /// at most once per connection and topic.
     pub fn follow(&mut self, sessions: &Entity<Sessions>, cx: &mut Context<Self>) {
+        let settings = Settings::get(cx);
+        // Off means off: nothing is subscribed, so a robot that publishes `/tf`
+        // at 200 Hz costs nothing at all.
+        if !settings.follow_transforms {
+            return;
+        }
+        let window_ns = window_ns(&settings);
         let live = sessions.read(cx);
         let pipeline = live.pipeline();
         let wanted: Vec<(i64, &'static str, rw_transport::ConnectionId)> = live
@@ -237,7 +287,7 @@ impl TfStore {
 
         for (connection, topic, session) in wanted {
             self.subscribed.insert((connection, topic));
-            let tree = self.tree(connection);
+            let tree = self.tree(connection, window_ns);
             let pipeline = Arc::clone(&pipeline);
             let is_static = topic == STATIC_TOPIC;
             let task = cx.spawn(async move |store, cx| {

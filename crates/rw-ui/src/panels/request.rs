@@ -27,21 +27,16 @@ use gpui_component::{
 use rw_canonical::CanonicalValue;
 use rw_core::domain::{HistoryEntry, NewHistoryEntry, Outcome, Request, RequestKind, Value};
 
-/// How many runs of one request are kept.
-///
-/// Enough that a morning's worth of calls is still there, few enough that a
-/// workspace of two hundred requests is not a database of everything anyone has
-/// ever done. Enforced on write, so it holds without anything having to sweep.
-const HISTORY_CAP: usize = 50;
 use rw_transport::ConnectionId;
 
 use crate::discovery::{self, Suggestion};
 use crate::docking::Home;
 use crate::form::{self, Field};
 use crate::param;
+use crate::prefs::Settings;
 use crate::runs::{RunState, Runs};
 use crate::scene_view::SceneView;
-use crate::series::History;
+use crate::series::{History, Limits};
 use crate::session::{RobotWhisperer, Sessions};
 use crate::tokens;
 use crate::views::{self, View};
@@ -570,6 +565,9 @@ impl RequestPanel {
         // captures it.
         let tap = RobotWhisperer::global(cx).recorder.read(cx).tap();
         let topic = target.clone();
+        // Read here rather than per message: a subscription callback has the
+        // frame and nothing else.
+        let limits = crate::series::Limits::current(cx);
 
         cx.spawn(async move |panel, cx| {
             let outcome = pipeline
@@ -584,7 +582,7 @@ impl RequestPanel {
                     let Ok(mut incoming) = incoming.lock() else {
                         return;
                     };
-                    incoming.history.observe(&frame.value);
+                    incoming.history.observe(&frame.value, limits);
                     incoming.value = Some(frame.value.clone());
                     incoming.schema = Some(frame.schema.name.clone().into());
                     incoming.count += 1;
@@ -633,7 +631,7 @@ impl RequestPanel {
                                 cx,
                             );
                             let mut incoming = panel.incoming.lock().expect("incoming mutex");
-                            incoming.history.observe(&response);
+                            incoming.history.observe(&response, Limits::current(cx));
                             incoming.value = Some(response);
                             incoming.count += 1;
                         }
@@ -667,6 +665,7 @@ impl RequestPanel {
         let incoming = Arc::clone(&self.incoming);
 
         let sent = goal.clone();
+        let limits = crate::series::Limits::current(cx);
         cx.spawn(async move |panel, cx| {
             let mut stream = match pipeline
                 .send_action_goal(session, &target, goal.into())
@@ -703,7 +702,7 @@ impl RequestPanel {
                 let Ok(mut incoming) = incoming.lock() else {
                     break;
                 };
-                incoming.history.observe(&feedback);
+                incoming.history.observe(&feedback, limits);
                 incoming.value = Some(feedback);
                 incoming.count += 1;
             }
@@ -722,7 +721,7 @@ impl RequestPanel {
                                 cx,
                             );
                             let mut incoming = panel.incoming.lock().expect("incoming mutex");
-                            incoming.history.observe(&value);
+                            incoming.history.observe(&value, Limits::current(cx));
                             incoming.value = Some(value);
                             incoming.count += 1;
                         }
@@ -770,7 +769,7 @@ impl RequestPanel {
                                 Some(Value::from(values.clone())),
                                 cx,
                             );
-                            panel.parameters_arrived(values, kinds);
+                            panel.parameters_arrived(values, kinds, Limits::current(cx));
                         }
                         Err(error) => {
                             let reason = error.to_string();
@@ -794,7 +793,12 @@ impl RequestPanel {
 
     /// Files a reading: into the response, so every view already built works on
     /// parameters, and into `parameters`, so the form can be rebuilt from it.
-    fn parameters_arrived(&mut self, values: CanonicalValue, kinds: BTreeMap<String, param::Kind>) {
+    fn parameters_arrived(
+        &mut self,
+        values: CanonicalValue,
+        kinds: BTreeMap<String, param::Kind>,
+        limits: Limits,
+    ) {
         let generation = self
             .parameters
             .as_ref()
@@ -803,7 +807,7 @@ impl RequestPanel {
 
         {
             let mut incoming = self.incoming.lock().expect("incoming mutex");
-            incoming.history.observe(&values);
+            incoming.history.observe(&values, limits);
             incoming.value = Some(values.clone());
             incoming.count += 1;
         }
@@ -865,7 +869,7 @@ impl RequestPanel {
                     panel.set_activity(Activity::Idle, cx);
                     panel._repaint = None;
                     if let Ok((values, kinds)) = reading {
-                        panel.parameters_arrived(values, kinds);
+                        panel.parameters_arrived(values, kinds, Limits::current(cx));
                     }
                     match outcome {
                         Ok(count) => {
@@ -1209,17 +1213,18 @@ impl RequestPanel {
         };
         let storage = self.workspace.read(cx).storage();
         let id = self.saved.id;
+        // The depth is read here rather than at the write: how many runs are
+        // kept is enforced on insert, so a lowered setting takes effect on the
+        // next call rather than needing anything to sweep.
+        let depth = Settings::get(cx).history_depth;
         cx.spawn(async move |panel, cx| {
-            if let Err(error) = storage.record_history(entry, HISTORY_CAP).await {
+            if let Err(error) = storage.record_history(entry, depth).await {
                 // Not being able to write the history of a call is not a reason
                 // to tell someone their call failed.
                 tracing::warn!(?error, "could not record this run");
                 return;
             }
-            let past = storage
-                .list_history(id, HISTORY_CAP)
-                .await
-                .unwrap_or_default();
+            let past = storage.list_history(id, depth).await.unwrap_or_default();
             panel
                 .update(cx, |panel, cx| {
                     panel.past = past;
@@ -1234,11 +1239,9 @@ impl RequestPanel {
     fn reload_history(&self, cx: &mut Context<Self>) {
         let storage = self.workspace.read(cx).storage();
         let id = self.saved.id;
+        let depth = Settings::get(cx).history_depth;
         cx.spawn(async move |panel, cx| {
-            let past = storage
-                .list_history(id, HISTORY_CAP)
-                .await
-                .unwrap_or_default();
+            let past = storage.list_history(id, depth).await.unwrap_or_default();
             panel
                 .update(cx, |panel, cx| {
                     panel.past = past;
@@ -1978,6 +1981,7 @@ impl RequestPanel {
             &crate::viz::role_for(&schema),
             &value,
             crate::tf::tree(self.draft.connection_id, cx).as_ref(),
+            Settings::get(cx).point_budget,
         ) else {
             return;
         };

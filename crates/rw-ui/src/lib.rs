@@ -160,6 +160,15 @@ pub fn open_window(cx: &mut App) -> Result<()> {
     // `Preference::System` reads the window appearance, which needs a window.
     let prefs = prefs::Prefs::load();
     theme::apply(&prefs.theme(), cx);
+    let settings = *prefs.settings();
+    cx.set_global(settings);
+    // The pipeline is where rates are measured, and it was built before the
+    // preferences were read.
+    RobotWhisperer::global(cx)
+        .sessions
+        .read(cx)
+        .pipeline()
+        .set_rate_window_ns(settings.rate_window_ns());
 
     cx.open_window(options, |window, cx| {
         let view = cx.new(|cx| workspace_view::WorkspaceView::new(prefs, window, cx));

@@ -63,7 +63,7 @@ move 1295 92
 wait 400
 move 700 700
 wait 400
-shot 04-dropped
+shot 04-row-dropped
 
 # Written, and read back: the node holds three now.
 click 1380 92

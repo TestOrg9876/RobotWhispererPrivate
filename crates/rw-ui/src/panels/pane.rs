@@ -25,6 +25,7 @@ use rw_canonical::CanonicalValue;
 
 use crate::panels::collections::Dragged;
 use crate::panels::drop;
+use crate::prefs::Settings;
 use crate::scene_view::SceneView;
 use crate::series::History;
 use crate::session::{RobotWhisperer, Sessions};
@@ -198,6 +199,9 @@ impl VizPanel {
         let topic = self.topic.clone();
         let recorder = RobotWhisperer::global(cx).recorder.read(cx).tap();
         let captured = topic.clone();
+        // Read here rather than per message: a subscription callback has the
+        // frame and nothing else.
+        let limits = crate::series::Limits::current(cx);
 
         self.start_repaint(cx);
         self._work = Some(cx.spawn(async move |pane, cx| {
@@ -213,7 +217,7 @@ impl VizPanel {
                     let Ok(mut incoming) = incoming.lock() else {
                         return;
                     };
-                    incoming.history.observe(&frame.value);
+                    incoming.history.observe(&frame.value, limits);
                     incoming.schema = Some(frame.schema.name.clone().into());
                     incoming.value = Some(frame.value.clone());
                     incoming.count += 1;
@@ -325,6 +329,7 @@ impl VizPanel {
             &crate::viz::role_for(&schema),
             &value,
             crate::tf::tree(self.connection, cx).as_ref(),
+            Settings::get(cx).point_budget,
         ) else {
             return;
         };

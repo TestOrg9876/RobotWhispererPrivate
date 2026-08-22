@@ -10,14 +10,6 @@
 
 use rw_canonical::CanonicalValue;
 
-/// How many points are handed on to the renderer.
-///
-/// A spinning lidar publishes a few hundred thousand points per sweep and a
-/// depth camera over three hundred thousand per frame, which draw fine. Beyond
-/// this the cloud is thinned rather than dropped: a subsampled cloud still
-/// shows the shape of the room, and a refused one shows nothing.
-pub const BUDGET: usize = 400_000;
-
 /// The datatypes `sensor_msgs/PointField` defines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Datatype {
@@ -139,7 +131,13 @@ impl Cloud {
 }
 
 /// Reads a point cloud message, if this is one.
-pub fn decode(value: &CanonicalValue) -> Option<Cloud> {
+///
+/// `budget` is how many points are handed on to the renderer. A spinning lidar
+/// publishes a few hundred thousand points per sweep and a depth camera over
+/// three hundred thousand per frame, which draw fine. Beyond the budget the
+/// cloud is thinned rather than dropped: a subsampled cloud still shows the
+/// shape of the room, and a refused one shows nothing.
+pub fn decode(value: &CanonicalValue, budget: usize) -> Option<Cloud> {
     let CanonicalValue::Struct(message) = value else {
         return None;
     };
@@ -168,8 +166,9 @@ pub fn decode(value: &CanonicalValue) -> Option<Cloud> {
     let rgb_channel = find("rgb").or_else(|| find("rgba"));
 
     // Thinning takes every nth point rather than the first n: a lidar sweep is
-    // ordered by angle, so the first 400k points would be one side of the room.
-    let stride = total.div_ceil(BUDGET).max(1);
+    // ordered by angle, so the first `budget` points would be one side of the
+    // room.
+    let stride = total.div_ceil(budget.max(1)).max(1);
     let kept = total.div_ceil(stride);
 
     let mut points = Vec::with_capacity(kept);
@@ -293,6 +292,9 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    /// The default point budget, so these tests describe the shipped behaviour.
+    const BUDGET: usize = 400_000;
+
     fn field(name: &str, offset: u64, datatype: u64) -> CanonicalValue {
         let mut entry = BTreeMap::new();
         entry.insert("name".into(), CanonicalValue::String(name.into()));
@@ -327,7 +329,7 @@ mod tests {
 
     #[test]
     fn the_common_layout_decodes() {
-        let cloud = decode(&xyz_only(&[[1., 2., 3.], [4., 5., 6.]])).expect("decodes");
+        let cloud = decode(&xyz_only(&[[1., 2., 3.], [4., 5., 6.]]), BUDGET).expect("decodes");
         assert_eq!(cloud.points, vec![[1., 2., 3.], [4., 5., 6.]]);
         assert_eq!(cloud.total, 2);
         assert!(cloud.rgb.is_none() && cloud.intensity.is_none());
@@ -341,11 +343,14 @@ mod tests {
         data.extend_from_slice(&3f32.to_le_bytes());
         data.extend_from_slice(&1f32.to_le_bytes());
         data.extend_from_slice(&2f32.to_le_bytes());
-        let cloud = decode(&message(
-            vec![field("z", 1, 7), field("x", 5, 7), field("y", 9, 7)],
-            13,
-            data,
-        ))
+        let cloud = decode(
+            &message(
+                vec![field("z", 1, 7), field("x", 5, 7), field("y", 9, 7)],
+                13,
+                data,
+            ),
+            BUDGET,
+        )
         .expect("decodes");
         assert_eq!(cloud.points, vec![[1., 2., 3.]]);
     }
@@ -356,7 +361,10 @@ mod tests {
         data.extend_from_slice(&1f32.to_le_bytes());
         data.extend_from_slice(&2f32.to_le_bytes());
         assert_eq!(
-            decode(&message(vec![field("x", 0, 7), field("y", 4, 7)], 8, data)),
+            decode(
+                &message(vec![field("x", 0, 7), field("y", 4, 7)], 8, data),
+                BUDGET
+            ),
             None
         );
     }
@@ -370,16 +378,19 @@ mod tests {
             }
             data.extend_from_slice(&intensity.to_le_bytes());
         }
-        let cloud = decode(&message(
-            vec![
-                field("x", 0, 7),
-                field("y", 4, 7),
-                field("z", 8, 7),
-                field("intensity", 12, 7),
-            ],
-            16,
-            data,
-        ))
+        let cloud = decode(
+            &message(
+                vec![
+                    field("x", 0, 7),
+                    field("y", 4, 7),
+                    field("z", 8, 7),
+                    field("intensity", 12, 7),
+                ],
+                16,
+                data,
+            ),
+            BUDGET,
+        )
         .expect("decodes");
         assert_eq!(cloud.intensity, Some(vec![10., 250.]));
         assert_eq!(cloud.intensity_range(), Some((10., 250.)));
@@ -393,16 +404,19 @@ mod tests {
         }
         // Little-endian BGRx in the slot: blue 0x30, green 0x20, red 0x10.
         data.extend_from_slice(&[0x30, 0x20, 0x10, 0x00]);
-        let cloud = decode(&message(
-            vec![
-                field("x", 0, 7),
-                field("y", 4, 7),
-                field("z", 8, 7),
-                field("rgb", 12, 7),
-            ],
-            16,
-            data,
-        ))
+        let cloud = decode(
+            &message(
+                vec![
+                    field("x", 0, 7),
+                    field("y", 4, 7),
+                    field("z", 8, 7),
+                    field("rgb", 12, 7),
+                ],
+                16,
+                data,
+            ),
+            BUDGET,
+        )
         .expect("decodes");
         assert_eq!(cloud.rgb, Some(vec![[0x10, 0x20, 0x30]]));
     }
@@ -415,11 +429,14 @@ mod tests {
         data.extend_from_slice(&(-5i16).to_le_bytes());
         data.push(7);
         data.extend_from_slice(&2.5f64.to_le_bytes());
-        let cloud = decode(&message(
-            vec![field("x", 0, 3), field("y", 2, 2), field("z", 3, 8)],
-            11,
-            data,
-        ))
+        let cloud = decode(
+            &message(
+                vec![field("x", 0, 3), field("y", 2, 2), field("z", 3, 8)],
+                11,
+                data,
+            ),
+            BUDGET,
+        )
         .expect("decodes");
         assert_eq!(cloud.points, vec![[-5., 7., 2.5]]);
     }
@@ -438,18 +455,21 @@ mod tests {
             unreachable!()
         };
         message.insert("is_bigendian".into(), CanonicalValue::Bool(true));
-        let cloud = decode(&CanonicalValue::Struct(message)).expect("decodes");
+        let cloud = decode(&CanonicalValue::Struct(message), BUDGET).expect("decodes");
         assert_eq!(cloud.points, vec![[1., 2., 3.]]);
     }
 
     #[test]
     fn missing_returns_are_dropped_rather_than_drawn_at_the_origin() {
-        let cloud = decode(&xyz_only(&[
-            [1., 1., 1.],
-            [f32::NAN, 0., 0.],
-            [0., f32::INFINITY, 0.],
-            [2., 2., 2.],
-        ]))
+        let cloud = decode(
+            &xyz_only(&[
+                [1., 1., 1.],
+                [f32::NAN, 0., 0.],
+                [0., f32::INFINITY, 0.],
+                [2., 2., 2.],
+            ]),
+            BUDGET,
+        )
         .expect("decodes");
         assert_eq!(cloud.points, vec![[1., 1., 1.], [2., 2., 2.]]);
         assert_eq!(cloud.total, 4, "the message still held four records");
@@ -463,11 +483,14 @@ mod tests {
             data.extend_from_slice(&axis.to_le_bytes());
         }
         data.extend_from_slice(&7f32.to_le_bytes());
-        let cloud = decode(&message(
-            vec![field("x", 0, 7), field("y", 4, 7), field("z", 8, 7)],
-            12,
-            data,
-        ))
+        let cloud = decode(
+            &message(
+                vec![field("x", 0, 7), field("y", 4, 7), field("z", 8, 7)],
+                12,
+                data,
+            ),
+            BUDGET,
+        )
         .expect("decodes");
         assert_eq!(cloud.points.len(), 2);
     }
@@ -477,7 +500,7 @@ mod tests {
         let points: Vec<[f32; 3]> = (0..BUDGET * 2 + 10)
             .map(|index| [index as f32, 0., 0.])
             .collect();
-        let cloud = decode(&xyz_only(&points)).expect("decodes");
+        let cloud = decode(&xyz_only(&points), BUDGET).expect("decodes");
         assert!(cloud.points.len() <= BUDGET, "thinned to fit the budget");
         assert_eq!(
             cloud.total,
@@ -494,19 +517,40 @@ mod tests {
     }
 
     #[test]
+    fn a_smaller_budget_thins_harder() {
+        let points: Vec<[f32; 3]> = (0..1_000).map(|index| [index as f32, 0., 0.]).collect();
+        let generous = decode(&xyz_only(&points), BUDGET).expect("decodes");
+        let mean = decode(&xyz_only(&points), 100).expect("decodes");
+        assert_eq!(
+            generous.points.len(),
+            1_000,
+            "under the budget, nothing goes"
+        );
+        assert!(
+            mean.points.len() <= 100,
+            "the budget bounds it, got {}",
+            mean.points.len()
+        );
+        assert_eq!(mean.total, 1_000, "the true count is still reported");
+    }
+
+    #[test]
     fn a_zero_length_cloud_is_not_a_cloud() {
-        assert_eq!(decode(&xyz_only(&[])), None);
+        assert_eq!(decode(&xyz_only(&[]), BUDGET), None);
     }
 
     #[test]
     fn an_unknown_datatype_is_ignored_rather_than_guessed() {
         let data = vec![0u8; 12];
         assert_eq!(
-            decode(&message(
-                vec![field("x", 0, 99), field("y", 4, 7), field("z", 8, 7)],
-                12,
-                data
-            )),
+            decode(
+                &message(
+                    vec![field("x", 0, 99), field("y", 4, 7), field("z", 8, 7)],
+                    12,
+                    data
+                ),
+                BUDGET
+            ),
             None,
             "x was dropped as unreadable, so there is no cloud"
         );
@@ -514,7 +558,7 @@ mod tests {
 
     #[test]
     fn bounds_cover_every_axis() {
-        let cloud = decode(&xyz_only(&[[-1., 5., 0.], [3., -2., 8.]])).expect("decodes");
+        let cloud = decode(&xyz_only(&[[-1., 5., 0.], [3., -2., 8.]]), BUDGET).expect("decodes");
         assert_eq!(cloud.bounds(), Some(([-1., -2., 0.], [3., 5., 8.])));
     }
 }

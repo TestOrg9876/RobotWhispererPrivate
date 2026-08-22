@@ -14,6 +14,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window,
     deferred, div, px,
 };
+use gpui_component::WindowExt as _;
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
@@ -1061,6 +1062,48 @@ impl RequestPanel {
         })
     }
 
+    /// The schema chip: the name, and the definition behind it when we have one.
+    ///
+    /// A plain label when the text is not to hand, so the chip never promises a
+    /// click that does nothing.
+    fn schema_chip(&self, schema: SharedString, cx: &mut Context<Self>) -> AnyElement {
+        let Some((hash, text)) = self.definition_text(&schema, cx) else {
+            return tokens::meta("Schema", schema, cx).into_any_element();
+        };
+        let title = schema.clone();
+        Button::new("schema")
+            .ghost()
+            .xsmall()
+            .child(tokens::meta("Schema", schema, cx))
+            .tooltip("Show the message definition")
+            .on_click(cx.listener(move |_, _: &ClickEvent, window, cx| {
+                show_definition(title.clone(), hash.clone(), text.clone(), window, cx);
+            }))
+            .into_any_element()
+    }
+
+    /// The definition text this connection actually sent for `name`.
+    ///
+    /// `ros2 interface show` answers with whatever is installed on the machine
+    /// you run it on. This answers with what the robot in front of you said,
+    /// which is the only version that explains the bytes on the wire — and it
+    /// is the same lookup the form is built from, so what you read is what the
+    /// fields came from.
+    fn definition_text(&self, name: &str, cx: &App) -> Option<(String, String)> {
+        let pipeline = self.sessions.read(cx).pipeline();
+        let registry = pipeline.schema_registry()?.clone();
+        let hash = self
+            .draft
+            .connection_id
+            .and_then(|id| self.sessions.read(cx).session(id))
+            .and_then(|session| pipeline.schema_hash(session, self.draft.target.trim()));
+        let entry = match hash.and_then(|hash| registry.get_by_hash(&hash)) {
+            Some(entry) => entry,
+            None => registry.get_by_name(name).into_iter().next()?,
+        };
+        Some((entry.hash.clone(), entry.definition.clone()))
+    }
+
     /// The message definition a form should be built from: a service's request
     /// or an action's goal.
     /// The form's fields for `name`, resolved the way *this* connection
@@ -1750,7 +1793,7 @@ impl RequestPanel {
                     tokens::card_header(cx)
                         .child(tokens::section_label(title, cx))
                         .when_some(schema, |header, schema| {
-                            header.child(tokens::meta("Schema", schema, cx))
+                            header.child(self.schema_chip(SharedString::from(schema), cx))
                         }),
                 )
                 .child(body)
@@ -2126,7 +2169,7 @@ impl RequestPanel {
                 })
             })
             .when_some(schema, |row, schema| {
-                row.child(tokens::meta("Schema", schema, cx))
+                row.child(self.schema_chip(schema, cx))
             });
 
         let body = match (&value, active) {
@@ -2430,6 +2473,48 @@ impl Render for RequestPanel {
                     .children(response),
             )
     }
+}
+
+/// Shows a message definition, the way `ros2 interface show` would.
+///
+/// The whole bundle, nested `MSG:` sections and all, because a `PointCloud2`
+/// is not readable without `PointField` beside it — and the CLI makes you run
+/// it again per type.
+fn show_definition(
+    name: SharedString,
+    hash: String,
+    text: String,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    // The hash is the identity the registry keyed this by, and it is how you
+    // tell two robots' `std_msgs/Header` apart when both are connected. Short
+    // enough to read out, long enough to be unique across one workspace.
+    let short: String = hash.chars().take(12).collect();
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        dialog.title(name.clone()).w(px(640.)).child(
+            v_flex()
+                .gap_2()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!("as this system described it · {short}")),
+                )
+                .child(
+                    div()
+                        .id("definition")
+                        .max_h(px(460.))
+                        .overflow_y_scroll()
+                        .p_3()
+                        .rounded(cx.theme().radius)
+                        .bg(cx.theme().muted)
+                        .text_xs()
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .child(text.clone()),
+                ),
+        )
+    });
 }
 
 #[cfg(test)]

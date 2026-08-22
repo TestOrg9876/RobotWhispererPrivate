@@ -1234,3 +1234,66 @@ impl Render for WorldPanel {
             )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn string_message(text: &str) -> CanonicalValue {
+        CanonicalValue::Struct(BTreeMap::from([(
+            "data".to_string(),
+            CanonicalValue::String(text.to_string()),
+        )]))
+    }
+
+    #[test]
+    fn a_description_is_read_out_of_a_std_msgs_string() {
+        assert_eq!(
+            description_of(&string_message("<robot name=\"x\"/>")).as_deref(),
+            Some("<robot name=\"x\"/>")
+        );
+    }
+
+    #[test]
+    fn a_bridge_that_unwrapped_the_message_is_still_understood() {
+        // Some bridges hand over single-field messages as the field itself.
+        // Refusing that would make the feature fail for a reason nobody could
+        // see from the outside.
+        assert_eq!(
+            description_of(&CanonicalValue::String("<robot/>".into())).as_deref(),
+            Some("<robot/>")
+        );
+    }
+
+    #[test]
+    fn an_empty_description_is_not_a_description() {
+        // A latched topic that has been advertised but never filled publishes
+        // an empty string. Taking it would replace "waiting" with a parse
+        // error, which is a worse thing to show.
+        assert_eq!(description_of(&string_message("")), None);
+        assert_eq!(description_of(&string_message("   \n  ")), None);
+        assert_eq!(description_of(&CanonicalValue::String(String::new())), None);
+    }
+
+    #[test]
+    fn something_that_is_not_a_string_is_not_a_description() {
+        assert_eq!(description_of(&CanonicalValue::Int(3)), None);
+        assert_eq!(
+            description_of(&CanonicalValue::Struct(BTreeMap::from([(
+                "data".to_string(),
+                CanonicalValue::Int(3),
+            )]))),
+            None
+        );
+    }
+
+    #[test]
+    fn a_described_robot_is_keyed_by_connection() {
+        // Two systems can each draw their own, and adding one twice is the
+        // no-op it is for a catalog robot.
+        assert_ne!(described_id(1), described_id(2));
+        assert_eq!(described_id(7), described_id(7));
+        assert!(described_id(7).contains(DESCRIPTION_TOPIC));
+    }
+}

@@ -47,7 +47,10 @@ click 700 500
 wait 500
 key ctrl+k
 wait 1200
-click 595 391
+# "Replay last recording", the ninth row. The palette's list is virtualised
+# now, so its rows are a contiguous 36px apart rather than 36 with a gap, and
+# every row below the first has moved.
+click 595 476
 wait 2500
 move 700 500
 wait 500

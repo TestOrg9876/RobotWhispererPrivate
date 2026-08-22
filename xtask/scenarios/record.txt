@@ -44,7 +44,11 @@ wait 700
 shot 03-palette
 # Clicked rather than typed and confirmed: without a window manager the
 # palette's field never takes keystrokes (see xtask/src/native.rs).
-click 595 391
+#
+# "Replay last recording", the ninth row. The palette's list is virtualised
+# now, so its rows are a contiguous 36px apart rather than 36 with a gap, and
+# every row below the first has moved.
+click 595 476
 wait 2500
 shot 03-replay-connection
 

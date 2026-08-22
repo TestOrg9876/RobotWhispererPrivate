@@ -86,6 +86,28 @@ bun run tauri build
 
 Platform-specific bundles are also available via `bun run tauri:build:linux` (AppImage) and `bun run tauri:build:macos:arm` / `:macos:intel` (`.app` and `.dmg`). Artifacts are written under `src-tauri/target/`.
 
+Snap:
+
+```shell
+snapcraft
+```
+
+This produces `robot-whisperer_<version>_amd64.snap` in the project root. Install it locally with:
+
+```shell
+sudo snap install --dangerous robot-whisperer_<version>_amd64.snap
+```
+
+The snap uses the `core22` base, so it runs on Ubuntu 20.04 as well as 22.04 and 24.04. The deb and AppImage require `libwebkit2gtk-4.1`, which Ubuntu 20.04 does not package, so the snap is the only option there.
+
+Building the snap requires `snapd` and `snapcraft`:
+
+```shell
+sudo snap install snapcraft --classic
+```
+
+The [Snap workflow](./.github/workflows/snap.yml) builds it on every push and pull request and uploads the result as a build artifact.
+
 ## Development
 
 ```shell

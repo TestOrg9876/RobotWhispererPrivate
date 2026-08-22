@@ -1,0 +1,81 @@
+name: robot-whisperer
+base: core22
+adopt-info: robot-whisperer
+summary: A Postman-style client for ROS
+description: |
+  Robot Whisperer gives you one interface to connect to a robot, browse its
+  topics, services and actions, send and inspect messages, and build live
+  dashboards from the data.
+
+  It connects to foxglove_bridge and rosbridge over WebSocket, for both ROS 1
+  and ROS 2, and ships an offline Dummy transport so you can try it without a
+  robot.
+
+grade: stable
+confinement: strict
+
+layout:
+  /usr/lib/$SNAPCRAFT_ARCH_TRIPLET/webkit2gtk-4.1:
+    bind: $SNAP/usr/lib/$SNAPCRAFT_ARCH_TRIPLET/webkit2gtk-4.1
+
+apps:
+  robot-whisperer:
+    command: usr/bin/robot-whisperer
+    command-chain:
+      - bin/ensure-locale
+    desktop: usr/share/applications/robot-whisperer.desktop
+    extensions:
+      - gnome
+    plugs:
+      - network
+      - network-bind
+      - home
+      - avahi-observe
+
+parts:
+  locale:
+    plugin: dump
+    source: snap/local
+    organize:
+      ensure-locale: bin/ensure-locale
+
+  robot-whisperer:
+    plugin: dump
+    source: .
+    after:
+      - locale
+    build-snaps:
+      - node/20/stable
+      - rustup/latest/stable
+    build-packages:
+      - build-essential
+      - curl
+      - dpkg
+      - file
+      - libayatana-appindicator3-dev
+      - librsvg2-dev
+      - libssl-dev
+      - libwebkit2gtk-4.1-dev
+      - libxdo-dev
+    stage-packages:
+      - libayatana-appindicator3-1
+      - libwebkit2gtk-4.1-0
+    override-build: |
+      set -eu
+
+      export BUN_INSTALL="$SNAPCRAFT_PART_BUILD/.bun"
+      curl -fsSL https://bun.sh/install | bash
+      export PATH="$BUN_INSTALL/bin:$PATH"
+
+      rustup default stable
+
+      bun install --frozen-lockfile
+      bun run tauri build -- --bundles deb
+
+      craftctl set version="$(node -p "require('./package.json').version")"
+
+      dpkg -x src-tauri/target/release/bundle/deb/*.deb "$SNAPCRAFT_PART_INSTALL"
+
+      desktop_file="$SNAPCRAFT_PART_INSTALL/usr/share/applications/robot-whisperer.desktop"
+      icon_path='${SNAP}/usr/share/icons/hicolor/128x128/apps/robot-whisperer.png'
+      sed -i "s|^Icon=robot-whisperer\$|Icon=$icon_path|" "$desktop_file"

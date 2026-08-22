@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+FALLBACK_LOCALE=en_US.UTF-8
+
+effective_locale="${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}"
+
+case "$effective_locale" in
+"" | C | C.* | POSIX | POSIX.*)
+	unset LC_ALL
+	LC_MESSAGES="$FALLBACK_LOCALE"
+	export LC_MESSAGES
+	;;
+esac
+
+exec "$@"

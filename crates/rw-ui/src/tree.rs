@@ -338,9 +338,10 @@ impl TreeView {
 /// How tall one row is. Fixed, because the list only virtualises when every row
 /// is the same height — and one form row is exactly that.
 const ROW_HEIGHT: f32 = 44.;
-/// How far one level indents. Small: the path already says where a field sits,
-/// so this is a hint at the shape rather than the thing that carries it.
-const INDENT: f32 = 10.;
+/// How far one level indents. Smaller than [`crate::tokens::SIDEBAR_INDENT`] on
+/// purpose: the path already says where a field sits, so this is a hint at the
+/// shape rather than the thing that carries it.
+pub const FIELD_INDENT: f32 = 10.;
 
 /// Draws the rows, with `on_toggle` called with the path of a branch clicked.
 ///
@@ -404,7 +405,7 @@ fn line(
         .h(px(ROW_HEIGHT))
         .w_full()
         .items_center()
-        .pl(px(row.depth as f32 * INDENT))
+        .pl(px(row.depth as f32 * FIELD_INDENT))
         .when(row.branch, |line| {
             line.cursor_pointer()
                 .hover(|line| line.bg(cx.theme().muted))

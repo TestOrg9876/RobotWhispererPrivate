@@ -18,7 +18,11 @@ Seed = collections.namedtuple("Seed", (
     "fg fg_muted fg_faint "
     "accent accent_hover accent_active on_accent "
     "success warning danger "
-    "topic service action"
+    # The four request kinds. `param` is spelled `yellow` because that is the
+    # base slot the app reads it from; most palettes have exactly one yellow,
+    # so it usually equals `warning` — a kind label and a status are never in
+    # the same place, and inventing a hue a theme does not have is worse.
+    "topic service action yellow"
 ))
 
 SEEDS = [
@@ -29,14 +33,14 @@ SEEDS = [
          "#e8ecf2", "#8d97a8", "#5c6675",
          "#3b82f6", "#60a5fa", "#2563eb", "#f8fafc",
          "#34d399", "#fbbf24", "#f87171",
-         "#60a5fa", "#34d399", "#a78bfa"),
+         "#60a5fa", "#34d399", "#a78bfa", "#facc15"),
     Seed("Robot Whisperer Light", "light",
          "#eef0f4", "#f7f8fa", "#ffffff", "#eceff4",
          "#dde1e8", "#c3cad4",
          "#111827", "#5b6472", "#8a929e",
          "#2563eb", "#3b82f6", "#1d4ed8", "#ffffff",
          "#059669", "#d97706", "#dc2626",
-         "#2563eb", "#059669", "#7c3aed"),
+         "#2563eb", "#059669", "#7c3aed", "#ca8a04"),
     # Ported favourites --------------------------------------------------------
     Seed("One Dark", "dark",
          "#16181d", "#1c1f25", "#282c34", "#31363f",
@@ -44,35 +48,35 @@ SEEDS = [
          "#abb2bf", "#828997", "#5c6370",
          "#61afef", "#7cc4f5", "#4a9ae0", "#1a1d23",
          "#98c379", "#e5c07b", "#e06c75",
-         "#61afef", "#98c379", "#c678dd"),
+         "#61afef", "#98c379", "#c678dd", "#e5c07b"),
     Seed("Dracula", "dark",
          "#15161c", "#1c1d26", "#282a36", "#33364a",
          "#3e4255", "#565a72",
          "#f8f8f2", "#a9adc1", "#6272a4",
          "#ff79c6", "#ff92d0", "#e45faf", "#191a21",
          "#50fa7b", "#f1fa8c", "#ff5555",
-         "#8be9fd", "#50fa7b", "#bd93f9"),
+         "#8be9fd", "#50fa7b", "#bd93f9", "#f1fa8c"),
     Seed("Nord", "dark",
          "#21252e", "#2a2f3a", "#333b4a", "#3e4759",
          "#48526a", "#5a6480",
          "#eceff4", "#b8c0ce", "#7b8494",
          "#88c0d0", "#9ed0dd", "#6fadbf", "#242933",
          "#a3be8c", "#ebcb8b", "#bf616a",
-         "#81a1c1", "#a3be8c", "#b48ead"),
+         "#81a1c1", "#a3be8c", "#b48ead", "#ebcb8b"),
     Seed("Solarized Light", "light",
          "#e8e1cc", "#f4eedb", "#fdf6e3", "#f1ebd8",
          "#d6cfb8", "#bdb69f",
          "#073642", "#657b83", "#93a1a1",
          "#268bd2", "#3a9ee0", "#1f7ab8", "#fdf6e3",
          "#859900", "#b58900", "#dc322f",
-         "#268bd2", "#859900", "#6c71c4"),
+         "#268bd2", "#859900", "#6c71c4", "#b58900"),
     Seed("Rosé Pine Dawn", "light",
          "#f2ebe3", "#fbf6f0", "#ffffff", "#f7f0ea",
          "#e3d6cd", "#cfc0b6",
          "#575279", "#797593", "#9893a5",
          "#d7827e", "#e0958f", "#b4636f", "#fffaf3",
          "#56949f", "#ea9d34", "#b4637a",
-         "#286983", "#56949f", "#907aa9"),
+         "#286983", "#56949f", "#907aa9", "#ea9d34"),
 ]
 
 def alpha(hex_colour, aa):
@@ -220,6 +224,7 @@ def theme(seed):
         ("base.blue", s.topic),
         ("base.green", s.service),
         ("base.magenta", s.action),
+        ("base.yellow", s.yellow),
         ("chart.1", s.topic),
         ("chart.2", s.service),
         ("chart.3", s.action),

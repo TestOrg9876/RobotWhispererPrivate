@@ -295,7 +295,9 @@ fn change_row(change: diff::Change, cx: &App) -> AnyElement {
         .items_baseline()
         .child(
             tokens::mono(cx)
-                .w(px(240.))
+                // The same column the request form and the pretty view use, so
+                // switching tabs on one card does not move the paths sideways.
+                .w(px(tokens::FIELD_LABEL_WIDTH))
                 .flex_shrink_0()
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)

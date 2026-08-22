@@ -7,9 +7,7 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{Div, Hsla, ParentElement as _, SharedString, Styled as _, div, px};
-use gpui_component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, tag::Tag, v_flex,
-};
+use gpui_component::{ActiveTheme as _, Icon, IconName, StyledExt as _, h_flex, v_flex};
 use rw_core::domain::RequestKind;
 
 /// Height of a standard control, and of the request bar. Comfortable density.
@@ -68,19 +66,6 @@ pub fn section_label(text: impl Into<SharedString>, cx: &gpui::App) -> Div {
         .font_medium()
         .text_color(cx.theme().muted_foreground)
         .child(text.into().to_uppercase())
-}
-
-/// The coloured pill identifying a request's kind, replacing the old `TypeBadge`.
-///
-/// A tag rather than an icon: `Topic`/`Service`/`Action` are words worth reading,
-/// and three similar glyphs are not distinguishable at a glance.
-pub fn kind_tag(kind: RequestKind, cx: &gpui::App) -> Tag {
-    // A tinted fill with the full-strength colour as text and border: legible on
-    // both the light and dark palettes without a second set of values.
-    let colour = kind_color(kind, cx);
-    Tag::custom(colour.opacity(0.14), colour, colour.opacity(0.32))
-        .rounded_full()
-        .small()
 }
 
 /// One row of a form: what the field is called, what type it is, and — added by
@@ -151,6 +136,15 @@ pub fn kind_short(kind: RequestKind) -> &'static str {
 
 /// How wide the kind column is: four monospaced characters and a little air.
 pub const KIND_WIDTH: f32 = 30.;
+
+/// The gutter left of the kind code, where a collection row draws its
+/// disclosure arrow. Reserved on every row so the codes line up whether or not
+/// the row can be opened.
+pub const KIND_GUTTER: f32 = 12.;
+
+/// How big the kind code is set. Smaller than the smallest text step: it is a
+/// label on a column, not something anyone reads a sentence of.
+pub const KIND_TEXT: f32 = 9.;
 
 /// Colour standing for a request kind, taken from the palette's `base.*` slots so
 /// it moves with the theme instead of being hard-coded here.
@@ -266,7 +260,11 @@ pub fn series_colors(cx: &gpui::App) -> Vec<gpui::Hsla> {
 ///
 /// Enough to read as a level at a glance without walking the deepest rows off
 /// the right of a narrow sidebar. This is the whole indentation: no guide lines.
-pub const INDENT: f32 = 14.;
+///
+/// Deliberately wider than [`crate::tree::FIELD_INDENT`]: a collection tree has
+/// nothing but nesting to say where a row sits, where a message field carries
+/// its own dotted path.
+pub const SIDEBAR_INDENT: f32 = 14.;
 
 #[cfg(test)]
 mod tests {

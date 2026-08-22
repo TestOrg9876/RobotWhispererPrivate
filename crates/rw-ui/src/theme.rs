@@ -189,11 +189,26 @@ mod tests {
 
             // The request-kind colours are private fields, so they are checked
             // through the serialised form — which also proves the rename holds.
+            //
+            // Every base slot `tokens::kind_color` reads has to be here. A slot
+            // the app reads and no theme emits does not fail loudly: it falls
+            // back to the library's own palette and quietly stops following the
+            // theme, which is how `base.yellow` went unnoticed for seven themes.
+            //
+            // Checked for a *value*, not for the key. `ThemeConfigColors`
+            // serialises every one of its fields, so an unset slot is present
+            // as `null` and `contains_key` says yes to all of them — which is
+            // why the earlier version of this assertion passed for colours no
+            // theme had ever declared.
             let round_tripped = colours(&theme);
-            for key in ["base.blue", "base.green", "base.magenta"] {
+            for key in ["base.blue", "base.green", "base.magenta", "base.yellow"] {
                 assert!(
-                    round_tripped.contains_key(key),
-                    "theme {:?} lost {key} in a serialise round trip",
+                    round_tripped
+                        .get(key)
+                        .and_then(serde_json::Value::as_str)
+                        .is_some(),
+                    "theme {:?} does not declare {key}, so it silently falls back \
+                     to the library palette",
                     theme.name
                 );
             }

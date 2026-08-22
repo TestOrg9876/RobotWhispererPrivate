@@ -547,7 +547,7 @@ fn render_row(
     rename_field: &Entity<InputState>,
     cx: &App,
 ) -> ListItem {
-    let indent = px(tokens::INDENT * depth as f32);
+    let indent = px(tokens::SIDEBAR_INDENT * depth as f32);
 
     if data.renaming {
         return ListItem::new(index).child(
@@ -582,14 +582,16 @@ fn render_row(
         // A request: a space where the arrow would be, so names line up whether
         // or not the row above can be opened, then the kind.
         Some(kind) => {
-            row = row.child(div().w(px(12.)).flex_none()).child(
-                tokens::mono(cx)
-                    .flex_none()
-                    .w(px(tokens::KIND_WIDTH))
-                    .text_size(px(9.))
-                    .text_color(tokens::kind_color(kind, cx))
-                    .child(tokens::kind_short(kind)),
-            );
+            row = row
+                .child(div().w(px(tokens::KIND_GUTTER)).flex_none())
+                .child(
+                    tokens::mono(cx)
+                        .flex_none()
+                        .w(px(tokens::KIND_WIDTH))
+                        .text_size(px(tokens::KIND_TEXT))
+                        .text_color(tokens::kind_color(kind, cx))
+                        .child(tokens::kind_short(kind)),
+                );
         }
     }
 
@@ -763,13 +765,13 @@ impl CollectionsPanel {
                                             .w_full()
                                             .gap_1p5()
                                             .items_center()
-                                            .child(div().w(px(12.)).flex_none())
+                                            .child(div().w(px(tokens::KIND_GUTTER)).flex_none())
                                             .child(
                                                 tokens::mono(cx)
                                                     .flex_none()
                                                     .w(px(tokens::KIND_WIDTH))
-                                                    .text_size(px(9.))
-                                                    .text_color(cx.theme().cyan)
+                                                    .text_size(px(tokens::KIND_TEXT))
+                                                    .text_color(cx.theme().muted_foreground)
                                                     .child("DASH"),
                                             )
                                             .child(

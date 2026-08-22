@@ -123,6 +123,15 @@ impl Tree {
         self.buffer().frames()
     }
 
+    /// The whole tree, roots first and each node carrying its depth.
+    ///
+    /// `Buffer::tree()` has returned exactly the shape a view wants since it
+    /// was written — frame, parent, depth, static, sample count, newest stamp —
+    /// and its only caller picked the root out and threw the rest away.
+    pub fn nodes(&self) -> Vec<rw_tf::Node> {
+        self.buffer().tree()
+    }
+
     /// The frame everything else hangs off, which is what a person means by
     /// "the world". `None` until something has been published.
     pub fn root(&self) -> Option<String> {

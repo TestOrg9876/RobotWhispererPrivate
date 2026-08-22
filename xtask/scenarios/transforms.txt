@@ -1,0 +1,30 @@
+# The transform tree: `view_frames` and `tf_monitor` without leaving the app.
+#
+# The data was always here — `Buffer::tree()` has returned frame, parent,
+# depth, static, sample count and newest stamp since it was written, and its
+# only caller picked the root out and threw the rest away.
+
+wait 900
+click 105 888
+wait 900
+click 1403 81
+wait 700
+click 1384 158
+wait 500
+click 1269 211
+type Simulator
+wait 500
+click 1395 242
+wait 1500
+click 1327 16
+wait 600
+click 1272 102
+wait 2500
+
+# The tree shares the bottom dock with the console: both answer "what is the
+# system doing", both are read in glances.
+click 445 861
+wait 1500
+move 700 500
+wait 600
+shot 01-tree

@@ -12,6 +12,7 @@ mod palette_view;
 pub(crate) mod pane;
 mod request;
 mod settings_view;
+mod transforms;
 mod welcome;
 mod world;
 
@@ -23,5 +24,6 @@ pub use palette_view::{PaletteEvent, PaletteView};
 pub use pane::{PaneChanged, VizPanel};
 pub use request::RequestPanel;
 pub use settings_view::{SettingsEvent, SettingsView};
+pub use transforms::TransformsPanel;
 pub use welcome::{WelcomeEvent, WelcomePanel};
 pub use world::WorldPanel;

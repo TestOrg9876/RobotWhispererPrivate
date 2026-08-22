@@ -38,8 +38,8 @@ use crate::layout;
 use crate::palette::{Choice, Entry};
 use crate::panels::{
     CollectionsEvent, CollectionsPanel, ConnectionsPanel, ConsolePanel, DashboardPanel,
-    PaletteEvent, PaletteView, RequestPanel, SettingsEvent, SettingsView, VizPanel, WelcomeEvent,
-    WelcomePanel, WorldPanel,
+    PaletteEvent, PaletteView, RequestPanel, SettingsEvent, SettingsView, TransformsPanel,
+    VizPanel, WelcomeEvent, WelcomePanel, WorldPanel,
 };
 use crate::prefs::Prefs;
 use crate::session::{Notice, RobotWhisperer, SessionEvent, Sessions, Status};
@@ -143,7 +143,21 @@ impl WorkspaceView {
         let dock = cx.new(|cx| DockArea::new("workspace", Some(LAYOUT_VERSION), window, cx));
         let weak = dock.downgrade();
         let left = DockItem::tab(collections.clone(), &weak, window, cx);
-        let bottom = DockItem::tab(console.clone(), &weak, window, cx);
+        // The console and the transform tree share the bottom dock as tabs:
+        // both are "what is the system doing", both are read in glances, and
+        // neither is worth a dock of its own. `view_frames` and `tf_monitor`
+        // are two of the most-run commands in robotics and both make you leave
+        // what you were looking at.
+        let transforms = TransformsPanel::view(cx);
+        let bottom = DockItem::tabs(
+            vec![
+                Arc::new(console.clone()) as Arc<dyn PanelView>,
+                Arc::new(transforms.clone()) as Arc<dyn PanelView>,
+            ],
+            &weak,
+            window,
+            cx,
+        );
         let welcome = WelcomePanel::view(cx);
         // Deliberately handed to `set_center` bare rather than wrapped in a
         // split. A `TabPanel` with no parent `StackPanel` reports itself

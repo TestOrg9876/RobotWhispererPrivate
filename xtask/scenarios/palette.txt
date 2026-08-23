@@ -54,12 +54,20 @@ move 720 300
 wait 400
 shot 03-palette-filtered
 
-# Settings, chosen from the palette.
-click 700 264
-wait 900
+# Settings, chosen from the palette. The filter is replaced rather than added
+# to: "conn" above matches the connections, and the two coordinates that used to
+# follow it were picking connection rows — so "04-settings" was a picture of the
+# connections panel and "05-theme-applied" of a disconnection.
+key ctrl+a
+wait 300
+type settings
+wait 800
+# The first result. Rows start at y=187 and are 36px apart.
+click 700 187
+wait 1000
 shot 04-settings
 
 # Choosing a theme applies it immediately — it is a preview, not a form.
-click 700 280
-wait 900
+click 700 285
+wait 1000
 shot 05-theme-applied

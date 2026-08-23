@@ -337,26 +337,20 @@ Ranked by what it costs you.
    looking. With no connection and no subscription the welcome screen should
    cost nothing; something is repainting. Cheap to chase and it is the one
    runtime number the Tauri app wins on its merits.
-3. **The drop highlight stops at the header.** A dashboard pane's `drag_over`
-   tint is on the body below the title strip, so dragging a topic over a card
-   lights up everything except its header. Cosmetic, and one level up from
-   where it is now.
-4. **Parameter history is recorded nowhere visible** — so it is not recorded at
+3. **Parameter history is recorded nowhere visible** — so it is not recorded at
    all. Parameters have runs, but the parameter form is its own response and
    there is no response card to hang a History tab on. Needs somewhere on the
    PARAMETERS card first.
-5. **The drop target is a full-pane solid wash.** Heavy; a border or light tint
-   would read better.
-6. **The world pane's layer rail** is 240px of full-height card for two rows.
-7. **Marker types 9 (text) and 10 (mesh resource) are not decoded.** Text needs
+4. **The world pane's layer rail** is 240px of full-height card for two rows.
+5. **Marker types 9 (text) and 10 (mesh resource) are not decoded.** Text needs
     glyph rendering, which `rw-render` does not have.
-8. **`/dummy/points` and `/dummy/image` build no payload form** — the schema
+6. **`/dummy/points` and `/dummy/image` build no payload form** — the schema
     does not reach `message_for` from the registry. Harmless now that topics do
     not publish, but the same gap would bite a service with those types.
-9. **Settings live only in a dialog.** The owner asked for "dialog now, panel
+7. **Settings live only in a dialog.** The owner asked for "dialog now, panel
     later"; the panel is not built. The content is a plain `v_flex` of rows, so
     moving it into a dock panel is a wrapper change, not a rewrite.
-10. **Three settings sections are thin.** Requests holds one row, Console holds
+8. **Three settings sections are thin.** Requests holds one row, Console holds
     one. `marker::LIST_BUDGET`, `tree::MAX_CHILDREN`, the console's default
     level filter and a request's default view are all still constants.
 

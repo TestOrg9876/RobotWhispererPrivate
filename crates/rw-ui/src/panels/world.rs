@@ -1198,12 +1198,19 @@ impl Render for WorldPanel {
             .min_h_0()
             .track_focus(&self.focus_handle)
             .bg(cx.theme().background)
+            // Carried at every moment so accepting a drag costs no reflow.
+            .border_2()
+            .border_color(gpui::transparent_black())
             .drag_over::<Dragged>(
                 move |style, dragged: &Dragged, _, cx| match drop::target_of_drag(
                     dragged,
                     workspace.read(cx),
                 ) {
-                    Some(target) if target.connection.is_some() => style.bg(cx.theme().drop_target),
+                    // A ring and a light wash, as on a dashboard pane: at full
+                    // strength the fill hides the thing being dropped into.
+                    Some(target) if target.connection.is_some() => style
+                        .bg(cx.theme().drop_target.opacity(0.45))
+                        .border_color(cx.theme().primary),
                     _ => style,
                 },
             )

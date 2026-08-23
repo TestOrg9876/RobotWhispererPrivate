@@ -14,7 +14,7 @@ use gpui::{
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Task, Window, div,
 };
-use gpui_component::dock::{Panel, PanelEvent, PanelState, TabPanel};
+use gpui_component::dock::{Panel, PanelEvent, PanelState, TabPanel, TitleStyle};
 use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _};
 use gpui_component::{
     ActiveTheme as _, Sizable as _,
@@ -479,6 +479,21 @@ impl Panel for VizPanel {
         }
     }
 
+    /// The dock's title bar, painted the pane's own colour.
+    ///
+    /// It is the pane's header — the topic, its counters and its menu — and it
+    /// has to look like the top of the pane rather than a band floating above
+    /// one. Its corners stay square: the bar is a *sibling* of the content in
+    /// `TabPanel`, not a child of anything rounded, and there is no hook at
+    /// this rev that would round it. That is a known trade, taken deliberately,
+    /// for keeping the dock's tiling and its drag-to-split.
+    fn title_style(&self, cx: &App) -> Option<TitleStyle> {
+        Some(TitleStyle {
+            background: cx.theme().group_box,
+            foreground: cx.theme().foreground,
+        })
+    }
+
     fn dump(&self, _cx: &App) -> PanelState {
         let mut state = PanelState::new(self);
         state.info = gpui_component::dock::PanelInfo::panel(
@@ -649,40 +664,44 @@ impl Render for VizPanel {
                 .into_any_element(),
         };
 
-        // The same material as everywhere else: content sits on an elevated
-        // card with a hairline border, inset from the pane's edge. Without it a
-        // dashboard reads as bare text on the window while every other surface
-        // in the app is a card, which is what made it look unfinished.
         // A topic dragged out of the sidebar lands here and retargets the
         // pane. The whole pane is the target rather than a strip of it: at the
         // sizes a dashboard pane comes in, anything smaller is a game.
         let workspace = self.workspace.clone();
         let pane = cx.entity();
 
-        // The pane draws its own card, header and all. Nothing above it does:
-        // a dashboard pane is a bare panel in a split, so there is no tab strip
-        // between the layout and this. That is the only arrangement in which
-        // the header can be *inside* the card — a `TabPanel` paints the window
-        // colour and puts its title bar above whatever it holds, and `Tiles`
-        // wraps that in a border without changing it.
-        //
-        // The padding is the gutter. A split places panels flush with a
-        // one-pixel handle, so the air between two cards has to come from the
-        // cards, and the handle then sits in it.
+        // The pane *is* the card, and the dock's title bar is its top: the bar
+        // is painted this same fill by `title_style` and this is the rest of
+        // the surface, so header and body are one block of colour. No inner
+        // card and no gutter — an inset card under a bar that is not inset is
+        // what made a dashboard look like a pane with something else sitting in
+        // it. The division between neighbours is the split's own handle.
         v_flex()
             .id("pane")
             .size_full()
             .min_h_0()
-            .p_0p5()
             .track_focus(&self.focus_handle)
+            .bg(cx.theme().group_box)
             .child(
-                tokens::card(cx)
+                v_flex()
                     .id("pane-drop")
                     .flex_1()
                     .min_h_0()
+                    // Carried at every moment so accepting a drag costs no
+                    // reflow: a border that appears on hover pushes the whole
+                    // body in by two pixels as the pointer crosses the edge.
+                    .border_2()
+                    .border_color(gpui::transparent_black())
                     .drag_over::<Dragged>(move |style, dragged: &Dragged, _, cx| {
                         match drop::target_of_drag(dragged, workspace.read(cx)) {
-                            Some(_) => style.bg(cx.theme().drop_target),
+                            // A ring, and a wash light enough to read the pane
+                            // through it. At full strength the fill covered the
+                            // body and stopped dead at the header, which read as
+                            // a blue rectangle dropped on a pane rather than a
+                            // pane willing to take something.
+                            Some(_) => style
+                                .bg(cx.theme().drop_target.opacity(0.45))
+                                .border_color(cx.theme().primary),
                             None => style,
                         }
                     })

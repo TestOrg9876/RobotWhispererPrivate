@@ -66,7 +66,7 @@ impl Default for Options {
 
 /// Runs one scenario and returns the screenshots it wrote.
 pub fn run(scenario: &Scenario, options: &Options) -> Result<Vec<PathBuf>> {
-    let display = format!(":{}", options.display);
+    let display = claim_display(options)?;
     std::fs::create_dir_all(&options.out_dir)
         .with_context(|| format!("creating {}", options.out_dir.display()))?;
 
@@ -226,9 +226,59 @@ fn prepare_home(options: &Options) -> Result<PathBuf> {
     Ok(home)
 }
 
+/// Whether anything is already serving this display.
+fn display_is_busy(display: &str) -> bool {
+    Command::new("xdpyinfo")
+        .env("DISPLAY", display)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// How many display numbers to try before giving up.
+const DISPLAYS_TO_TRY: u32 = 16;
+
+/// Finds a display number nobody is serving, starting at the requested one.
+///
+/// This exists because of a failure that wasted a great deal of somebody's
+/// time. The display number used to be hard-coded, and `spawn_xvfb` treated
+/// "xdpyinfo can reach it" as proof that *its own* Xvfb had come up. Both of
+/// those are false when something is already there:
+///
+/// - Two runs at once. The second Xvfb exits immediately with "server is
+///   already active", `xdpyinfo` succeeds against the *first* one, and the
+///   second run attaches to a display it does not own, finds the other run's
+///   window, and hangs.
+/// - A run that was killed rather than allowed to finish. Nothing runs the
+///   cleanup, so its Xvfb and its app are still on the display, and the next
+///   run inherits that mess — which is why cancelling a stuck run and starting
+///   another one gets a second stuck run.
+///
+/// Claiming a free number makes both harmless: concurrent runs get a display
+/// each, and a leftover is stepped over rather than joined.
+fn claim_display(options: &Options) -> Result<String> {
+    for offset in 0..DISPLAYS_TO_TRY {
+        let display = format!(":{}", options.display + offset);
+        if !display_is_busy(&display) {
+            if offset > 0 {
+                println!("  :{} is busy; using {display}", options.display);
+            }
+            return Ok(display);
+        }
+    }
+    bail!(
+        "displays :{}..:{} are all busy — something from an earlier run is \
+         still holding them (`pkill Xvfb` clears it)",
+        options.display,
+        options.display + DISPLAYS_TO_TRY - 1
+    );
+}
+
 fn spawn_xvfb(options: &Options, display: &str) -> Result<Child> {
     let screen = format!("{}x{}x24", options.width, options.height);
-    let child = Command::new("Xvfb")
+    let mut child = Command::new("Xvfb")
         .args([display, "-screen", "0", &screen, "-nolisten", "tcp"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -236,16 +286,14 @@ fn spawn_xvfb(options: &Options, display: &str) -> Result<Child> {
         .context("starting Xvfb — is it installed?")?;
 
     // Xvfb has no readiness signal; poll until xdpyinfo can reach the display.
+    // The exit check is the other half: without it, an Xvfb that died on
+    // startup still looks ready as long as *somebody* is serving the display.
     let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
-        if Command::new("xdpyinfo")
-            .env("DISPLAY", display)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
-        {
+        if let Some(status) = child.try_wait().context("polling Xvfb")? {
+            bail!("Xvfb exited on {display} before it was ready ({status})");
+        }
+        if display_is_busy(display) {
             return Ok(child);
         }
         std::thread::sleep(Duration::from_millis(200));

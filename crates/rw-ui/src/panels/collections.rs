@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    App, AppContext as _, ClickEvent, Context, Div, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
 };
@@ -598,21 +598,47 @@ fn render_row(
         .rounded(cx.theme().radius)
         .py_1p5()
         .child(
-            row.child(div().flex_1().min_w_0().truncate().child(data.name.clone()))
-                // The rate beside the dot, when the row is a live subscription:
-                // `ros2 topic hz` without leaving the list you are already reading.
-                .when_some(rate(&data.state, cx), |row, rate| {
-                    row.child(
-                        div()
-                            .flex_none()
-                            .mr_1p5()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(rate),
-                    )
-                })
-                .when_some(state_dot(&data.state, cx), |row, dot| row.child(dot)),
+            h_flex()
+                .w_full()
+                .items_stretch()
+                .children(indent_guides(depth, cx))
+                .child(
+                    row.child(div().flex_1().min_w_0().truncate().child(data.name.clone()))
+                        // The rate beside the dot, when the row is a live
+                        // subscription: `ros2 topic hz` without leaving the list
+                        // you are already reading.
+                        .when_some(rate(&data.state, cx), |row, rate| {
+                            row.child(
+                                div()
+                                    .flex_none()
+                                    .mr_1p5()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(rate),
+                            )
+                        })
+                        .when_some(state_dot(&data.state, cx), |row, dot| row.child(dot)),
+                ),
         )
+}
+
+/// One vertical rule per level of nesting, drawn down the left of a row.
+///
+/// Indentation alone was fourteen pixels of nothing, which is legible when a
+/// tree is two deep and guesswork when it is four. The rules are what turn a
+/// left margin into a readable depth — the only thing in the sidebar that says
+/// a row is *inside* something rather than merely after it.
+fn indent_guides(depth: usize, cx: &App) -> Vec<Div> {
+    let colour = cx.theme().border;
+    (0..depth)
+        .map(|_| {
+            div()
+                .flex_none()
+                .w(tokens::SIDEBAR_INDENT)
+                .border_l_1()
+                .border_color(colour)
+        })
+        .collect()
 }
 
 /// How fast a live subscription's topic is going, for the row it is on.

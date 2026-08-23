@@ -575,11 +575,6 @@ impl Panel for VizPanel {
         // the twelve a simulator publishes and not at all on the three hundred
         // a real robot does, and the palette already ranks and already takes
         // the keyboard.
-        // The dock used to add Close beside a pane's tab. A dashboard pane has
-        // no tab now, so its own menu carries it.
-        menu = menu
-            .separator()
-            .menu("Close pane", Box::new(crate::actions::ClosePane { pane }));
         if topics > 0 {
             menu = menu.separator().menu(
                 SharedString::from(match self.topic.is_empty() {

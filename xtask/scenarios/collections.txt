@@ -33,7 +33,10 @@ click 244 49
 wait 1400
 shot 02-requests
 
-# Drag the last one into the nested collection.
-drag 139 220 -> 139 123
+# Drag the last one into the *nested* collection, which is the case worth
+# photographing: a request two levels deep is what the indent guides are for.
+#
+# Rows are 33px apart from y=107, and both requests start at the root.
+drag 139 206 -> 139 140
 wait 1300
 shot 03-dragged

@@ -18,12 +18,14 @@ use gpui::{
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
     Subscription, Window, div,
 };
+use gpui_component::dock::ToggleZoom;
 use gpui_component::dock::{
-    DockArea, DockAreaState, DockEvent, DockItem, DockPlacement, PanelEvent, PanelState, PanelView,
+    DockArea, DockAreaState, DockEvent, DockItem, PanelEvent, PanelState, PanelView, StackPanel,
 };
 use gpui_component::{
-    ActiveTheme as _, IconName, Sizable as _,
+    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
+    h_flex, v_flex,
 };
 use rw_core::domain::Dashboard;
 
@@ -32,6 +34,7 @@ use crate::docking::Restored;
 use crate::panels::pane::Config;
 use crate::panels::{PaneChanged, VizPanel};
 use crate::session::RobotWhisperer;
+use crate::tokens;
 use crate::workspace::Workspace;
 
 /// Bumped when the shape of a saved arrangement changes. Layouts written by 2
@@ -181,20 +184,42 @@ impl DashboardPanel {
         self.pane(id).cloned()
     }
 
-    /// Adds an empty pane, for the user to point somewhere.
+    /// Adds an empty pane beside the others, for the user to point somewhere.
+    ///
+    /// Its own tab group added to the split, rather than
+    /// `DockArea::add_panel`, which puts the new panel in the first tab group
+    /// it finds — a second *tab* behind the first pane instead of a second
+    /// pane beside it. A dashboard tiles; that is the whole difference.
     fn add_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(stack) = self.stack(cx) else {
+            tracing::warn!("dashboard {} has no split to add a pane to", self.id);
+            return;
+        };
         let pane = VizPanel::view(Config::default(), cx);
         self.watch(&pane, cx);
-        self.dock.update(cx, |dock, cx| {
-            dock.add_panel(
-                Arc::new(pane) as Arc<dyn PanelView>,
-                DockPlacement::Center,
-                None,
-                window,
-                cx,
-            )
+        let weak = self.dock.downgrade();
+        let group = DockItem::tabs(
+            vec![Arc::new(pane) as Arc<dyn PanelView>],
+            &weak,
+            window,
+            cx,
+        );
+        stack.update(cx, |stack, cx| {
+            stack.add_panel(group.view(), None, weak, window, cx)
         });
         self.save(cx);
+    }
+
+    /// The split holding this dashboard's tab groups.
+    ///
+    /// Read back from the dock rather than held, because `DockArea::load`
+    /// builds a new one every time a saved arrangement is restored and a
+    /// stored handle would point at the one it replaced.
+    fn stack(&self, cx: &App) -> Option<Entity<StackPanel>> {
+        match self.dock.read(cx).center() {
+            DockItem::Split { view, .. } => Some(view.clone()),
+            _ => None,
+        }
     }
 
     /// Writes the arrangement out.
@@ -235,34 +260,80 @@ impl gpui_component::dock::Panel for DashboardPanel {
     ) {
         self.home.moved_to(tab_panel);
     }
+}
 
-    /// Rendered by the dock beside this panel's tab, so adding a pane costs no
-    /// height inside the dashboard itself.
-    fn toolbar_buttons(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<Vec<Button>> {
-        Some(vec![
-            Button::new("add-pane")
-                .ghost()
-                .xsmall()
-                .icon(IconName::Plus)
-                .tooltip("Add pane")
-                .on_click(
-                    cx.listener(|this, _: &ClickEvent, window, cx| this.add_pane(window, cx)),
-                ),
-        ])
+impl DashboardPanel {
+    /// The dashboard's own head, as the original app draws it: what this
+    /// screen is, then the two things you do to it.
+    ///
+    /// It was a `+` on the dock's tab strip, four pixels wide and unlabelled,
+    /// which is not a top section — it is a control hiding in the chrome. A
+    /// dashboard is a whole screen of work and it should say so before you
+    /// have to hover anything to find out.
+    fn header(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        h_flex()
+            .flex_shrink_0()
+            .w_full()
+            .px(tokens::designed(14.))
+            .py_2()
+            .gap_3()
+            .items_center()
+            .justify_between()
+            .child(
+                h_flex()
+                    .min_w_0()
+                    .gap_2p5()
+                    .items_center()
+                    .child(
+                        Icon::new(IconName::LayoutDashboard)
+                            .size_4()
+                            .text_color(cx.theme().primary),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_base()
+                            .font_semibold()
+                            .text_color(cx.theme().foreground)
+                            .child(self.name.clone()),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .flex_shrink_0()
+                    .gap_1p5()
+                    .items_center()
+                    .child(
+                        Button::new("zoom-dashboard")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Maximize)
+                            .label("Fullscreen")
+                            .on_click(cx.listener(|_, _: &ClickEvent, window, cx| {
+                                window.dispatch_action(Box::new(ToggleZoom), cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("add-pane")
+                            .primary()
+                            .small()
+                            .icon(IconName::Plus)
+                            .label("Add pane")
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.add_pane(window, cx)
+                            })),
+                    ),
+            )
+            .into_any_element()
     }
 }
 
 impl Render for DashboardPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Nothing but the dock. The dashboard's name is already the tab above
-        // it, and "Add pane" is a panel action the dock renders beside that
-        // tab — a header strip here would repeat the name and spend a row of
-        // every pane's height saying nothing.
-        div()
+        let header = self.header(cx);
+
+        v_flex()
             .size_full()
             .min_h_0()
             .bg(cx.theme().background)
@@ -288,6 +359,7 @@ impl Render for DashboardPanel {
                     pane.update(cx, |pane, cx| pane.freeze(cx));
                 }
             }))
+            .child(header)
             .child(self.dock.clone())
     }
 }

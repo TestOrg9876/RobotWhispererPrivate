@@ -9,7 +9,6 @@
 
 use std::sync::{Arc, Mutex};
 
-use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
@@ -18,7 +17,7 @@ use gpui::{
 use gpui_component::dock::{Panel, PanelEvent, PanelState, TabPanel};
 use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _};
 use gpui_component::{
-    ActiveTheme as _, Sizable as _, StyledExt as _,
+    ActiveTheme as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex, v_flex,
 };
@@ -596,63 +595,6 @@ impl Panel for VizPanel {
     }
 }
 
-impl VizPanel {
-    /// The strip along the card's top edge: what this pane is watching, how
-    /// much of it has arrived, and everything it can be told.
-    ///
-    /// Drawn here rather than by the dock. A dashboard pane is a bare panel in
-    /// a split, which is what lets the header be part of the card instead of a
-    /// band above it — and it means the menu the dock used to hang beside a tab
-    /// has to be hung here instead.
-    fn header(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = if self.topic.is_empty() {
-            SharedString::from("New pane")
-        } else {
-            SharedString::from(self.topic.clone())
-        };
-        let count = self.incoming.lock().expect("incoming mutex").count;
-        // The rate beside the count when there is one: two short readings in
-        // the space a title bar already takes, rather than a status strip
-        // inside the pane that would cost a row of it forever.
-        let rate = self
-            .subscription
-            .as_ref()
-            .and_then(|handle| self.sessions.read(cx).pipeline().stats(handle))
-            .and_then(|stats| stats.hz_label());
-        tokens::card_header(cx).child(
-            h_flex()
-                .flex_1()
-                .min_w_0()
-                .gap_2()
-                .items_baseline()
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .min_w_0()
-                        .text_xs()
-                        .font_medium()
-                        .truncate()
-                        .text_color(cx.theme().foreground)
-                        .child(title),
-                )
-                .when(count > 0, |strip| {
-                    strip.child(
-                        div()
-                            .flex_shrink_0()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(match rate {
-                                Some(rate) => {
-                                    SharedString::from(format!("{}  {rate}", compact(count)))
-                                }
-                                None => compact(count),
-                            }),
-                    )
-                }),
-        )
-    }
-}
-
 impl Render for VizPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_scene(cx);
@@ -738,7 +680,6 @@ impl Render for VizPanel {
                     .id("pane-drop")
                     .flex_1()
                     .min_h_0()
-                    .child(self.header(window, cx))
                     .drag_over::<Dragged>(move |style, dragged: &Dragged, _, cx| {
                         match drop::target_of_drag(dragged, workspace.read(cx)) {
                             Some(_) => style.bg(cx.theme().drop_target),

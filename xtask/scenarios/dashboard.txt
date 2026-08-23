@@ -28,7 +28,7 @@ shot 01-empty-dashboard
 # strip the dock already draws. Topic goes straight to the searchable picker,
 # which is the same palette the rest of the app searches with — a flat menu of
 # every topic does not survive a robot that publishes three hundred.
-click 575 270
+click 800 500
 wait 900
 shot 02-topic-picker
 # Chosen by clicking the row. Typing to narrow the list works in the app and
@@ -38,11 +38,11 @@ click 600 184
 wait 1800
 shot 02-first-pane
 
-# A second pane, added from the tab strip. Panes are tiles, so it lands beside
-# the first rather than sharing a tab strip with it.
-click 1383 50
+# A second pane, from the dashboard's own header rather than a `+` hiding on
+# the dock's tab strip.
+click 1382 82
 wait 1500
-click 1107 270
+click 1180 500
 wait 900
 # The rows are 36px apart and contiguous now that the list is virtualised, so
 # this is the third of them: /dummy/wave.
@@ -50,20 +50,20 @@ click 600 260
 wait 1800
 shot 03-two-panes
 
-# Dragged by its header, anywhere. This is what tiles buy over a split: a
-# dashboard is an arrangement rather than a subdivision, so a pane goes where
-# it is put instead of where the tree allows.
-dragover 1000 91 -> 700 430
+# Dragged by its tab to the bottom edge, which splits the layout there. This is
+# the dock's, not ours: a dashboard tiles, and a pane goes where the split tree
+# allows rather than to arbitrary coordinates.
+dragover 1000 116 -> 800 700
 wait 800
 release
 wait 2000
-shot 04-moved
+shot 04-split
 
 # Each pane's settings are on the menu inside its own header: flat, and one
 # entry per thing it can be told. The topic is one searchable entry saying how
 # many there are rather than all of them, and the message count beside the
 # title has the rate with it.
-click 795 91
+click 830 116
 wait 900
 shot 05-pane-menu
 

@@ -102,37 +102,43 @@ Paths are inside `~/.cargo/git/checkouts/gpui-component-*/7acfc18/`.
   `.segmented()` etc; `TabPanel` exposes no way to pass one. Only theme tokens
   reach it. Pill-shaped dock tabs need a library change.
 - **A pane cannot be an inset rounded card in the split dock.** The `TabPanel`
-  container has no border and no radius (`tab_panel.rs:1494`) and the resize
-  handle is 1px. The one layout that draws each pane as a bordered rounded card
-  with its strip inside is `Tiles` (`tiles.rs:1033-1042`), via
-  `DockItem::tiles`. **That trade is now made** for dashboards; request tabs
-  stay a bare `DockItem::tabs`.
-- **`Tiles` alone does not put the header in the card.** It draws the border,
-  the radius and the shadow, but the `TabPanel` inside it paints
-  `tokens.background` (`tab_panel.rs:1494`) — the *window* colour — and its
-  title bar is a sibling above your content. On its own that gives the same
-  floating header, inside a box. Three things have to meet:
-  1. `Panel::title_style` (`panel.rs:74`) paints the strip the card's colour.
-     It only applies on the single-panel path (`tab_panel.rs:766`), which is
-     every dashboard pane.
-  2. The panel's own render drops its frame and its inner card and *is* the
-     card, so strip and body are one fill.
-  3. `Theme::tile_radius` and `Theme::tile_shadow` are set from the app.
-     They are **not theme-schema keys** — the library defaults are `px(0.)` and
-     flat — so `theme::apply_named` sets them after every `apply_config`.
-- **`DockItem::tiles` takes a `TileMeta` per pane** (bounds + z-index), and a
-  pane added later through `DockArea::add_panel(.., Center, bounds, ..)` lands
-  at `TileMeta::default().bounds` — the same ten pixels — unless you pass
-  bounds. `dashboard::tile_bounds` lays them out two to a row.
+  container has no border and no radius (`tab_panel.rs:1494`), its title bar is
+  a *sibling* of the content rather than a child of anything rounded, and
+  `TitleStyle` (`panel.rs:74`) carries two colours and nothing else. `PanelStyle`
+  has no "off". `GroupBox` puts its title *above* the box. There is no renderer
+  or skin hook at this rev. A tiled dashboard of rounded cards is therefore not
+  reachable without a library change — **the square-cornered header is a
+  deliberate, accepted trade** for keeping the dock's tiling, its drag-to-split
+  and its drag-to-rearrange.
+- **`StackPanel` hard-asserts its children.** `assert_panel_is_valid` requires
+  every child to be a `TabPanel` or a `StackPanel`; a `DockItem::panel` inside a
+  split compiles and then panics at runtime with "Panel must be a `TabPanel` or
+  `StackPanel`". Split children are always `DockItem::tabs`.
+- **`DockArea::add_panel` adds a *tab*, not a pane.** It puts the panel in the
+  first tab group it finds, so on a dashboard it lands behind the first pane.
+  To add a pane *beside* the others, build a new `DockItem::tabs` and hand it to
+  the centre `StackPanel::add_panel` — `dashboard::add_pane` does exactly that.
+- **`Tiles` is not a tiling window manager.** Despite the name it is a
+  free-floating canvas: `.absolute().left(bounds.origin.x)`, a `z_index` per
+  item and `bring_to_front`. It draws a bordered rounded card
+  (`tiles.rs:1033-1042`), which is why it was tried, but panes overlap and drift
+  rather than filling the dashboard. Dashboards use `DockItem::h_split` of
+  `DockItem::tabs`, which is what tiles the space.
+- **`overflow_hidden` masks to a rectangle, not to a shape.** A rounded parent
+  with `overflow_hidden` does *not* clip a child's fill to its rounding, so any
+  child painting a different colour into a corner paints through it. Round the
+  child too, at the parent's radius minus its border width — `tokens::card_header`
+  does this with `radius_lg - 1px`.
 - **A saved layout string carries no version.** The version lives on the
   `DockAreaState` built around it at load time, so it always reads as current.
   Bumping `LAYOUT_VERSION` does not reject an old layout; `DashboardPanel`
-  checks `PanelState::info` is `PanelInfo::Tiles` and drops it if not.
+  checks the saved shape is the one it builds today and drops it if not.
 - **`window.dispatch_action` travels up from whatever is focused.** A panel
   that has never been clicked into is not on that path, and the action arrives
   nowhere — silently. Under the split dock every dashboard pane shared one
   `TabPanel`, so the visible pane was always the focused one and this never
-  showed; with tiles the second pane's topic picker did nothing at all. Focus
+  showed; once each pane got its own tab group the second pane's topic picker
+  did nothing at all. Focus
   the panel first (`window.focus(&self.focus_handle, cx)`), or dispatch from a
   menu entry, which carries its own path.
 - **Reading the `TabPanel` from inside `Panel::title` is a double lease** and
@@ -246,6 +252,26 @@ From review. These are not preferences and should not be re-litigated.
 - **No submenus.** Flat menus only.
 - **No settings tree** in a pane. The handful of controls that matter, on the
   flat menu the dock already draws.
+- **The menu is described once** (`rw-ui/src/menu.rs`) and rendered twice.
+  `App::set_menus` hands it to the operating system — which is the whole point
+  on macOS, where the menu bar is at the top of the *screen*, the first menu
+  becomes the application menu, and Settings is expected in it under `Cmd+,`.
+  `menu::popup` renders the same description into the title bar's `⋯` button for
+  the platforms that draw no menu bar, flat with each section's name as a label
+  rather than as a submenu. On macOS that button is not drawn at all
+  (`menu::NATIVE_MENU_BAR`): a second copy of the menu an inch below the first.
+  `set_menus` is safe everywhere — the Linux platform stores the menus, the web
+  platform ignores them.
+- **A menu the OS holds is built once**, so any item whose *wording* depends on
+  state has to be rebuilt when that state changes: `menu::refresh` after
+  toggling the recorder. The item says what the next click will do, not what the
+  pair of things it might do are.
+- **Settings and connections live in the footer**, as an icon each beside the
+  connection chips — obvious because they are always in the same place, and
+  non-intrusive because they are an icon wide. Connections are there because
+  that is where their state already is, and the way in has to be present when
+  there *are* connections, not only when there are none: the screen that most
+  needs the form is the one with a connection that will not come up.
 - **Nothing said twice.** No duplicated titles, no schema named in two places.
 - **No section for something with no content** — and no chrome row that carries
   no information.
@@ -254,9 +280,11 @@ From review. These are not preferences and should not be re-litigated.
 - **Pretty is the default view.** "Tabs" means the request tabs across the top,
   not the view strip inside a response.
 - Every pane uses `tokens::card` and its content fills the pane — except a
-  dashboard pane, which *is* the card: `Tiles` draws its border and rounding,
-  `title_style` paints its header strip the card colour, and the panel adds no
-  frame of its own. A card inside a card is the nested look that was rejected.
+  dashboard pane, which *is* the card: the panel paints the card colour edge to
+  edge and `title_style` paints the dock's header strip to match, so strip and
+  body are one fill and there is no card inside a card. Its top corners are
+  square, because the strip is a sibling of the content rather than a child of
+  anything rounded; that is the accepted price of the dock's tiling.
 
 - **A length that styles an element is a rem; a length that is persisted
   geometry or a device affordance is a pixel.** The theme's `font.size` is one

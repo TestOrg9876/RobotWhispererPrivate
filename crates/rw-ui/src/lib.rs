@@ -17,6 +17,7 @@ pub mod image;
 pub mod layout;
 pub mod log;
 pub mod marker;
+pub mod menu;
 pub mod nesting;
 pub mod palette;
 pub mod panels;
@@ -89,6 +90,9 @@ pub fn init(storage: SharedStorage, pipeline: Arc<CanonicalPipeline>, cx: &mut A
         recorder,
         tf,
     });
+
+    // After the globals: the menu bar reads application state for its wording.
+    menu::install(cx);
 
     Ok(())
 }

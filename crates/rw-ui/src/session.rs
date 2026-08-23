@@ -545,6 +545,15 @@ impl RobotWhisperer {
     pub fn global(cx: &gpui::App) -> &Self {
         cx.global::<Self>()
     }
+
+    /// The globals, if they have been installed yet.
+    ///
+    /// For the handful of callers that run either side of `init` — the menu bar
+    /// is built from application state, and is also what a bare `gpui` test
+    /// harness has none of.
+    pub fn try_global(cx: &gpui::App) -> Option<&Self> {
+        cx.try_global::<Self>()
+    }
 }
 
 #[cfg(test)]

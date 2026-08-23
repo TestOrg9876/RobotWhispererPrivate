@@ -18,7 +18,7 @@ click 1395 242
 wait 1500
 click 1327 16
 wait 600
-click 1272 102
+click 1272 391
 wait 2500
 
 # The tree shares the bottom dock with the console: both answer "what is the

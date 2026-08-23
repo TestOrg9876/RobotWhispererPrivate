@@ -41,6 +41,8 @@ actions!(
         ExportWorkspace,
         /// Read a workspace file into this one.
         ImportWorkspace,
+        /// Close the application.
+        Quit,
     ]
 );
 
@@ -190,6 +192,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-w", ClosePanel, None),
         KeyBinding::new("ctrl-w", ClosePanel, None),
         KeyBinding::new("shift-escape", ToggleZoom, None),
+        KeyBinding::new("cmd-q", Quit, None),
+        KeyBinding::new("ctrl-q", Quit, None),
     ]);
 }
 

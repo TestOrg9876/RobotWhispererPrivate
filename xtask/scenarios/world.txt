@@ -15,13 +15,13 @@ click 1395 242
 wait 1500
 click 1327 16
 wait 600
-click 1272 102
+click 1272 391
 wait 900
 
 # Open the 3D world from the flat menu.
 click 1327 16
 wait 600
-click 1231 193
+click 1231 313
 wait 2000
 move 700 500
 shot 01-empty-world

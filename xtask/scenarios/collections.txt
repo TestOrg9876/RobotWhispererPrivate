@@ -40,3 +40,17 @@ shot 02-requests
 drag 139 206 -> 139 140
 wait 1300
 shot 03-dragged
+
+# A collection out of its parent. The empty space below the tree is the root's
+# own drop target, so dragging something out is the same gesture as dragging it
+# in — and the request nested inside Wrist travels with it.
+drag 139 140 -> 139 420
+wait 1300
+shot 04-collection-out
+
+# And back in. Nothing here stops a collection holding collections; what is
+# guarded is dropping one inside itself, and a row that would refuse the drop
+# does not light up.
+drag 139 140 -> 139 107
+wait 1300
+shot 05-collection-in

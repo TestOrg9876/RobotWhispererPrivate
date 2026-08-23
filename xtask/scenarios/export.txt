@@ -6,7 +6,10 @@ wait 900
 click 1327 16
 wait 700
 shot 01-menu
-click 1272 202
+# Export workspace…, in the File section. The coordinate this replaced landed
+# five rows short of it, so the shot below was of a scenario that had never
+# reached the dialog at all.
+click 1272 179
 wait 1500
 click 38 888
 wait 900

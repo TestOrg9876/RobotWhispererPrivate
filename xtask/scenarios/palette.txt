@@ -33,7 +33,7 @@ shot 01-two-connections
 # focused under a bare X server with no window manager.
 click 1327 16
 wait 700
-click 1265 45
+click 1265 229
 wait 900
 shot 02-palette
 

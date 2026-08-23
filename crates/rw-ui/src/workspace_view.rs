@@ -19,7 +19,7 @@ use gpui_component::dock::{
 };
 use gpui_component::menu::DropdownMenu as _;
 use gpui_component::{
-    ActiveTheme as _, IconName, Root, Sizable as _, TitleBar, WindowExt as _,
+    ActiveTheme as _, Icon, IconName, Root, Sizable as _, TitleBar, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     status_bar::StatusBar,
@@ -567,34 +567,23 @@ impl WorkspaceView {
 
     /// Everything that is not a per-request control, behind one button.
     ///
-    /// A theme picker permanently occupying the title bar is a setting wearing a
-    /// toolbar button's clothes; it lives in Settings with the other ones.
-    fn app_menu(&self) -> AnyElement {
-        Button::new("app-menu")
-            .ghost()
-            .small()
-            .icon(IconName::Ellipsis)
-            .tooltip("Menu")
-            .dropdown_menu(move |menu, _window, _cx| {
-                menu.menu("Command palette…", Box::new(CommandPalette))
-                    .menu("New request", Box::new(NewRequest))
-                    .menu("Manage connections…", Box::new(ManageConnections))
-                    .separator()
-                    .menu("Toggle request list", Box::new(ToggleSidebar))
-                    .menu("New dashboard", Box::new(NewDashboard))
-                    .menu("3D world", Box::new(ShowWorld))
-                    .menu("Start or stop recording", Box::new(ToggleRecording))
-                    .menu("Replay last recording", Box::new(ReplayRecording))
-                    .menu("Save recording…", Box::new(SaveRecording))
-                    .menu("Open recording…", Box::new(OpenRecording))
-                    .menu("Toggle console", Box::new(ToggleConsole))
-                    .separator()
-                    .menu("Import workspace…", Box::new(ImportWorkspace))
-                    .menu("Export workspace…", Box::new(ExportWorkspace))
-                    .separator()
-                    .menu("Settings…", Box::new(OpenSettings))
-            })
-            .into_any_element()
+    /// The same menu the operating system is given in [`crate::menu`], so the
+    /// two cannot drift — and nothing at all on the platforms that draw that
+    /// menu themselves, where this would be a second copy of it an inch below
+    /// the first.
+    fn app_menu(&self) -> Option<AnyElement> {
+        if crate::menu::NATIVE_MENU_BAR {
+            return None;
+        }
+        Some(
+            Button::new("app-menu")
+                .ghost()
+                .small()
+                .icon(IconName::Ellipsis)
+                .tooltip("Menu")
+                .dropdown_menu(crate::menu::popup)
+                .into_any_element(),
+        )
     }
 
     // ── dialogs ────────────────────────────────────────────────────────────────
@@ -773,9 +762,16 @@ impl WorkspaceView {
             ),
             Entry::new("Command", "New dashboard", Choice::Command("NewDashboard")),
             Entry::new("Command", "3D world", Choice::Command("ShowWorld")),
+            // Named for what it will do now, not for the pair of things it
+            // might: a palette is read at a glance, and "start or stop" makes
+            // the reader work out which one they are about to get.
             Entry::new(
                 "Command",
-                "Start or stop recording",
+                if RobotWhisperer::global(cx).recorder.read(cx).is_recording() {
+                    "Stop recording"
+                } else {
+                    "Record every subscribed topic"
+                },
                 Choice::Command("ToggleRecording"),
             ),
             Entry::new(
@@ -900,6 +896,9 @@ impl WorkspaceView {
             recorder.update(cx, |recorder, cx| recorder.start(name, cx));
             self.say("recording every subscribed topic", cx);
         }
+        // The menu bar is built once and then held by the OS, so the item that
+        // names what the next click will do has to be rebuilt when that changes.
+        crate::menu::refresh(cx);
         cx.notify();
     }
 
@@ -1394,25 +1393,59 @@ impl WorkspaceView {
             // On the left with the toggles, because it is the app's own state;
             // the right is left free for whatever has just gone wrong.
             .left(h_flex().gap_1().items_center().children(chips))
-            .when(nothing_connected, |bar| {
-                // States the fact rather than repeating the welcome screen's
-                // call to action. The footer reports; it does not recruit.
-                bar.left(
-                    Button::new("add-connection")
-                        .ghost()
-                        .xsmall()
-                        .tooltip("Manage connections")
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child("No connections"),
-                        )
-                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                            this.open_connections(window, cx)
-                        })),
-                )
-            })
+            // The way in to adding and editing them, always in the same place
+            // whether there are none or nine. It used to appear only when the
+            // list was empty, which left the one screen that needs it most —
+            // the one with a connection that will not come up — with no way
+            // back to the form except a keyboard shortcut.
+            .left(
+                Button::new("manage-connections")
+                    .ghost()
+                    .xsmall()
+                    .tooltip("Manage connections")
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .child(
+                                Icon::new(IconName::Network)
+                                    .size_3()
+                                    .text_color(cx.theme().muted_foreground),
+                            )
+                            // States the fact rather than repeating the welcome
+                            // screen's call to action. The footer reports; it
+                            // does not recruit. With connections listed beside
+                            // it the icon says the same thing in less room.
+                            .when(nothing_connected, |row| {
+                                row.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("No connections"),
+                                )
+                            }),
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.open_connections(window, cx)
+                    })),
+            )
+            // Settings, one click from anywhere, taking up an icon's worth of
+            // room. macOS users have it in the application menu where the
+            // system says it lives; this is for everyone else — and it stays on
+            // macOS too, because a footer gear is not in anybody's way.
+            .left(
+                Button::new("open-settings")
+                    .ghost()
+                    .xsmall()
+                    // The gear, not the sliders: the sliders already mean "edit
+                    // this connection" a few pixels to the left, and one glyph
+                    // for two verbs is how an icon stops carrying meaning.
+                    .icon(IconName::Settings)
+                    .tooltip("Settings")
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.open_settings(window, cx)
+                    })),
+            )
             // Recording is a mode, and a mode with nothing on screen to say it
             // is on is how people end up with a fifty-thousand-message file
             // they did not want.
@@ -1598,7 +1631,7 @@ impl Render for WorkspaceView {
             .child(
                 TitleBar::new()
                     .child(div().flex_1())
-                    .child(h_flex().gap_1().items_center().child(menu)),
+                    .child(h_flex().gap_1().items_center().children(menu)),
             )
             .child(div().flex_1().min_h_0().child(self.dock.clone()))
             .children(replay_bar)

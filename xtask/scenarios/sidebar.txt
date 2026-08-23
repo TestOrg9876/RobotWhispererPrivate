@@ -19,7 +19,7 @@ click 1395 242
 wait 1500
 click 1327 16
 wait 600
-click 1272 102
+click 1272 391
 wait 900
 
 # A collection to put them in. Creating one starts its rename in place, so the

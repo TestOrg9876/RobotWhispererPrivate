@@ -16,9 +16,9 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, Task, Window, div,
 };
 use gpui_component::dock::{Panel, PanelEvent, PanelState, TabPanel};
-use gpui_component::menu::DropdownMenu as _;
+use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _};
 use gpui_component::{
-    ActiveTheme as _, IconName, Sizable as _, StyledExt as _,
+    ActiveTheme as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     h_flex, v_flex,
 };
@@ -575,6 +575,11 @@ impl Panel for VizPanel {
         // the twelve a simulator publishes and not at all on the three hundred
         // a real robot does, and the palette already ranks and already takes
         // the keyboard.
+        // The dock used to add Close beside a pane's tab. A dashboard pane has
+        // no tab now, so its own menu carries it.
+        menu = menu
+            .separator()
+            .menu("Close pane", Box::new(crate::actions::ClosePane { pane }));
         if topics > 0 {
             menu = menu.separator().menu(
                 SharedString::from(match self.topic.is_empty() {
@@ -619,50 +624,37 @@ impl VizPanel {
             .as_ref()
             .and_then(|handle| self.sessions.read(cx).pipeline().stats(handle))
             .and_then(|stats| stats.hz_label());
-        let this = cx.entity();
-
-        tokens::card_header(cx)
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .gap_2()
-                    .items_baseline()
-                    .child(
+        tokens::card_header(cx).child(
+            h_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_2()
+                .items_baseline()
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .min_w_0()
+                        .text_xs()
+                        .font_medium()
+                        .truncate()
+                        .text_color(cx.theme().foreground)
+                        .child(title),
+                )
+                .when(count > 0, |strip| {
+                    strip.child(
                         div()
                             .flex_shrink_0()
-                            .min_w_0()
                             .text_xs()
-                            .font_medium()
-                            .truncate()
-                            .text_color(cx.theme().foreground)
-                            .child(title),
+                            .text_color(cx.theme().muted_foreground)
+                            .child(match rate {
+                                Some(rate) => {
+                                    SharedString::from(format!("{}  {rate}", compact(count)))
+                                }
+                                None => compact(count),
+                            }),
                     )
-                    .when(count > 0, |strip| {
-                        strip.child(
-                            div()
-                                .flex_shrink_0()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(match rate {
-                                    Some(rate) => {
-                                        SharedString::from(format!("{}  {rate}", compact(count)))
-                                    }
-                                    None => compact(count),
-                                }),
-                        )
-                    }),
-            )
-            .child(
-                Button::new("pane-menu")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Ellipsis)
-                    .tooltip("Pane settings")
-                    .dropdown_menu(move |menu, window, cx| {
-                        this.update(cx, |pane, cx| pane.dropdown_menu(menu, window, cx))
-                    }),
-            )
+                }),
+        )
     }
 }
 
@@ -728,6 +720,7 @@ impl Render for VizPanel {
         // pane. The whole pane is the target rather than a strip of it: at the
         // sizes a dashboard pane comes in, anything smaller is a game.
         let workspace = self.workspace.clone();
+        let pane = cx.entity();
 
         // The pane draws its own card, header and all. Nothing above it does:
         // a dashboard pane is a bare panel in a split, so there is no tab strip
@@ -772,7 +765,15 @@ impl Render for VizPanel {
                             .id("pane-body")
                             .overflow_scroll()
                             .child(body),
-                    ),
+                    )
+                    // On right-click rather than behind a permanent button. A
+                    // dashboard is a wall of panes, and a control in the corner
+                    // of every one of them is a wall of controls. These
+                    // settings are wanted rarely, and rarely is what a context
+                    // menu is for.
+                    .context_menu(move |menu, window, cx| {
+                        pane.update(cx, |pane, cx| pane.dropdown_menu(menu, window, cx))
+                    }),
             )
     }
 }

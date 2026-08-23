@@ -106,47 +106,53 @@ pub fn section_label(text: impl Into<SharedString>, cx: &gpui::App) -> Div {
         .child(text.into().to_uppercase())
 }
 
-/// The pill that names a request's kind in a list.
+/// The badge that names a request's kind in a list.
 ///
-/// A tinted fill in the kind's own colour, with the full-strength colour as its
-/// text and a hairline of it as the border — legible on both palettes from one
-/// value, and a shape rather than three letters of loose mono, which is what
-/// made the sidebar read as a log file instead of a list.
-pub fn kind_tag(kind: RequestKind, cx: &gpui::App) -> Div {
-    let colour = kind_color(kind, cx);
+/// Measured off the original app rather than invented: a 4px rounded rect, ten
+/// pixels of bold uppercase with a little letter-spacing, the kind's colour at
+/// a tenth for the fill and a third for the border, and the full-strength
+/// colour as the text. Sized by its content, not by a column — three letters
+/// in a fixed-width box is a log file, and the badge is the thing that stops
+/// the sidebar reading like one.
+fn badge(label: &'static str, colour: Hsla, border: Hsla, fill: Hsla, cx: &gpui::App) -> Div {
     h_flex()
         .flex_none()
-        .w(KIND_WIDTH)
-        .justify_center()
-        .px_1()
-        .py_0p5()
-        .rounded_full()
-        .bg(colour.opacity(0.14))
+        .items_center()
+        .px(designed(6.))
+        .py(designed(2.))
+        .rounded(designed(4.))
+        .bg(fill)
         .border_1()
-        .border_color(colour.opacity(0.32))
+        .border_color(border)
         .text_size(KIND_TEXT)
+        .font_bold()
         .text_color(colour)
-        .font_family(cx.theme().mono_font_family.clone())
-        .child(kind_short(kind))
+        .child(label)
+        .when(cx.theme().shadow, |badge| badge)
 }
 
-/// The same pill for something that is not a request kind and has no colour of
+/// The badge for one of the four request kinds.
+pub fn kind_tag(kind: RequestKind, cx: &gpui::App) -> Div {
+    let colour = kind_color(kind, cx);
+    badge(
+        kind_short(kind),
+        colour,
+        colour.opacity(0.32),
+        colour.opacity(0.10),
+        cx,
+    )
+}
+
+/// The same badge for something that is not a request kind and has no colour of
 /// its own — a dashboard row. Shape without a claim to a hue.
-pub fn quiet_tag(label: impl Into<SharedString>, cx: &gpui::App) -> Div {
-    h_flex()
-        .flex_none()
-        .w(KIND_WIDTH)
-        .justify_center()
-        .px_1()
-        .py_0p5()
-        .rounded_full()
-        .bg(cx.theme().muted)
-        .border_1()
-        .border_color(cx.theme().border)
-        .text_size(KIND_TEXT)
-        .text_color(cx.theme().muted_foreground)
-        .font_family(cx.theme().mono_font_family.clone())
-        .child(label.into())
+pub fn quiet_tag(label: &'static str, cx: &gpui::App) -> Div {
+    badge(
+        label,
+        cx.theme().muted_foreground,
+        cx.theme().border,
+        cx.theme().muted,
+        cx,
+    )
 }
 
 /// One row of a form: what the field is called, what type it is, and — added by
@@ -223,9 +229,9 @@ pub const KIND_WIDTH: Rems = designed(30.);
 /// the row can be opened.
 pub const KIND_GUTTER: Rems = designed(12.);
 
-/// How big the kind code is set. Smaller than the smallest text step: it is a
-/// label on a column, not something anyone reads a sentence of.
-pub const KIND_TEXT: Rems = designed(9.);
+/// How big the kind code is set, from the original app: ten pixels of bold
+/// uppercase, which is a badge rather than a word.
+pub const KIND_TEXT: Rems = designed(10.);
 
 /// Colour standing for a request kind, taken from the palette's `base.*` slots so
 /// it moves with the theme instead of being hard-coded here.

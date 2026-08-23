@@ -104,6 +104,17 @@ pub struct FreezePane {
     pub pane: u64,
 }
 
+/// Take a pane out of its dashboard.
+///
+/// The dock used to offer this beside a pane's tab. A dashboard pane has no
+/// tab any more — it is a card in a resizable group — so its own menu carries
+/// it and the dashboard above it does the removing.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = robot_whisperer, no_json)]
+pub struct ClosePane {
+    pub pane: u64,
+}
+
 /// Put a topic in the 3D world.
 ///
 /// Like the dashboard's pane actions, these carry the pane they are about: the

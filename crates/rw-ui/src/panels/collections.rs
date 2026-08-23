@@ -665,6 +665,34 @@ impl Panel for CollectionsPanel {
     fn closable(&self, _cx: &App) -> bool {
         false
     }
+
+    /// The section's actions, drawn by the dock on the panel's own strip — the
+    /// same place the original app puts them, right-aligned against the
+    /// section label.
+    fn toolbar_buttons(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Vec<Button>> {
+        Some(vec![
+            Button::new("new-collection")
+                .ghost()
+                .xsmall()
+                .icon(IconName::Folder)
+                .tooltip("New collection")
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.add_collection(None, window, cx);
+                })),
+            Button::new("new-request")
+                .ghost()
+                .xsmall()
+                .icon(IconName::Plus)
+                .tooltip("New request")
+                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                    cx.emit(CollectionsEvent::New);
+                })),
+        ])
+    }
 }
 
 impl CollectionsPanel {
@@ -903,45 +931,18 @@ impl Render for CollectionsPanel {
                     .update(cx, |workspace, cx| workspace.delete_collection(id, cx))
                     .detach();
             }))
-            // The panel's own head: the one thing anybody opens this to do,
-            // then the field for finding what they did before.
-            //
-            // Both float on the sidebar rather than sitting in a bordered band
-            // flush to its edges. Every surface in this app is a rounded card
-            // now, and a full-bleed chrome strip with a hairline under it was
-            // the last thing still drawn like a file tree from 2010.
+            // A search row, and nothing else. The original app's sidebar is
+            // section labels with their actions right-aligned, and the actions
+            // for this one belong on the panel's own strip, which is where the
+            // dock draws them. The full-width primary button that was here was
+            // invented rather than observed, and it is why this looked wrong.
             .child(
-                v_flex()
-                    .flex_shrink_0()
-                    .p_2()
-                    .gap_2()
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .gap_1p5()
-                            .child(
-                                Button::new("new-request-primary")
-                                    .primary()
-                                    .small()
-                                    .flex_1()
-                                    .icon(IconName::Plus)
-                                    .label("New request")
-                                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                                        cx.emit(CollectionsEvent::New);
-                                    })),
-                            )
-                            .child(
-                                Button::new("new-collection-primary")
-                                    .outline()
-                                    .small()
-                                    .icon(IconName::Folder)
-                                    .tooltip("New collection")
-                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                        this.add_collection(None, window, cx);
-                                    })),
-                            ),
-                    )
-                    .child(Input::new(&self.search).small().cleanable(true)),
+                div().flex_shrink_0().px_2().py_1p5().child(
+                    Input::new(&self.search)
+                        .xsmall()
+                        .appearance(false)
+                        .cleanable(true),
+                ),
             )
             .on_action(cx.listener(|_, action: &DeleteDashboard, _, cx| {
                 cx.emit(CollectionsEvent::DeleteDashboard(action.0));

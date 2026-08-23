@@ -13,13 +13,13 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, AppContext as _, Bounds, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render,
-    SharedString, Styled as _, Subscription, Window, div, point, px, size,
+    App, AppContext as _, Axis, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    Subscription, Window, div,
 };
 use gpui_component::dock::{
-    DockArea, DockAreaState, DockEvent, DockItem, DockPlacement, PanelEvent, PanelInfo, PanelState,
-    PanelView,
+    DockArea, DockAreaState, DockEvent, DockItem, PanelEvent, PanelInfo, PanelState, PanelView,
+    StackPanel,
 };
 use gpui_component::{
     ActiveTheme as _, IconName, Sizable as _,
@@ -36,35 +36,10 @@ use crate::workspace::Workspace;
 
 /// Bumped when the shape of a saved arrangement changes.
 ///
-/// Version 2 moved dashboards from a split to tiles, so every layout saved
-/// before it describes a `StackPanel` this can no longer rebuild.
-const LAYOUT_VERSION: usize = 2;
-
-/// How big a pane arrives, and how far apart they sit.
-const TILE_WIDTH: f32 = 520.;
-const TILE_HEIGHT: f32 = 360.;
-const TILE_GAP: f32 = 12.;
-/// How many panes are laid across before the next one starts a row.
-const TILES_PER_ROW: usize = 2;
-
-/// Where the nth pane lands.
-///
-/// Tiles are placed rather than split, so something has to choose — and a pane
-/// dropped at the library's default lands at the same ten pixels as the one
-/// before it. Two to a row in the order they were added, with a margin, so a
-/// dashboard looks arranged before anyone has dragged anything and is free to
-/// be dragged anywhere afterwards.
-fn tile_bounds(index: usize) -> Bounds<Pixels> {
-    let column = (index % TILES_PER_ROW) as f32;
-    let row = (index / TILES_PER_ROW) as f32;
-    Bounds {
-        origin: point(
-            px(TILE_GAP + column * (TILE_WIDTH + TILE_GAP)),
-            px(TILE_GAP + row * (TILE_HEIGHT + TILE_GAP)),
-        ),
-        size: size(px(TILE_WIDTH), px(TILE_HEIGHT)),
-    }
-}
+/// Version 2 was tiles — panes at free coordinates. Version 3 is a split
+/// again, of bare panels rather than tab panels, so neither of the two shapes
+/// saved before it can be rebuilt into what this now draws.
+const LAYOUT_VERSION: usize = 3;
 
 pub struct DashboardPanel {
     focus_handle: FocusHandle,
@@ -94,22 +69,26 @@ impl DashboardPanel {
             let dock = cx.new(|cx| DockArea::new("dashboard", Some(LAYOUT_VERSION), window, cx));
             let weak = dock.downgrade();
 
-            // Tiles rather than a split. `Tiles` is the only thing in the dock
-            // that draws a panel as a bordered, rounded box with the panel's
-            // own header strip inside it — a `TabPanel` in a `StackPanel` has
-            // no border and no radius at all, and its one-pixel split handles
-            // leave nothing between panes to be a gap. It is also what makes a
-            // dashboard freely draggable and resizable rather than splittable,
-            // which is what a dashboard is for.
+            // A split of *bare* panels. Two decisions, and really the same one
+            // twice.
+            //
+            // A split, because a dashboard tiles: every pane fills its share of
+            // the space, and dragging an edge takes space from its neighbour.
+            // Free coordinates — panes that overlap each other and leave holes
+            // — were tried here and were wrong.
+            //
+            // Bare panels rather than `DockItem::tabs`, because a `TabPanel`
+            // paints the window colour across its whole area and puts its title
+            // bar above whatever it holds. Nothing between the split and the
+            // pane is the only arrangement in which a pane can draw itself as
+            // one card with its header inside it.
             let first = VizPanel::view(Config::default(), cx);
-            let centre = DockItem::tiles(
-                vec![DockItem::tabs(
-                    vec![Arc::new(first.clone()) as Arc<dyn PanelView>],
-                    &weak,
-                    window,
-                    cx,
+            let centre = DockItem::split_with_sizes(
+                Axis::Horizontal,
+                vec![DockItem::panel(
+                    Arc::new(first.clone()) as Arc<dyn PanelView>
                 )],
-                vec![tile_bounds(0)],
+                vec![None],
                 &weak,
                 window,
                 cx,
@@ -166,9 +145,9 @@ impl DashboardPanel {
         // current one. A layout written before tiles describes a `StackPanel`,
         // which would load happily and give back the split dashboard this
         // replaced, so it is recognised by its shape and dropped.
-        if !matches!(centre.info, PanelInfo::Tiles { .. }) {
+        if !matches!(centre.info, PanelInfo::Stack { .. }) {
             tracing::info!(
-                "dashboard {} was saved before tiles; starting it fresh",
+                "dashboard {} was saved in an older shape; starting it fresh",
                 self.id
             );
             return;
@@ -222,20 +201,33 @@ impl DashboardPanel {
 
     /// Adds an empty pane, for the user to point somewhere.
     fn add_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Added to the split itself rather than through `DockArea::add_panel`,
+        // which looks for a `TabPanel` among the children and makes one when it
+        // finds none — putting the new pane in a tab strip beside the old one
+        // instead of beside it in the layout.
+        let Some(stack) = self.stack(cx) else {
+            tracing::warn!("dashboard {} has no split to add a pane to", self.id);
+            return;
+        };
         let pane = VizPanel::view(Config::default(), cx);
-        // Placed before `watch` pushes it, so the first pane is index 0.
-        let bounds = tile_bounds(self.panes.len());
         self.watch(&pane, cx);
-        self.dock.update(cx, |dock, cx| {
-            dock.add_panel(
-                Arc::new(pane) as Arc<dyn PanelView>,
-                DockPlacement::Center,
-                Some(bounds),
-                window,
-                cx,
-            )
+        let dock = self.dock.downgrade();
+        stack.update(cx, |stack, cx| {
+            stack.add_panel(Arc::new(pane) as Arc<dyn PanelView>, None, dock, window, cx)
         });
         self.save(cx);
+    }
+
+    /// The split holding this dashboard's panes.
+    ///
+    /// Read back from the dock rather than held, because `DockArea::load`
+    /// builds a new one every time a saved arrangement is restored and a
+    /// stored handle would point at the one it replaced.
+    fn stack(&self, cx: &App) -> Option<Entity<StackPanel>> {
+        match self.dock.read(cx).center() {
+            DockItem::Split { view, .. } => Some(view.clone()),
+            _ => None,
+        }
     }
 
     /// Writes the arrangement out.

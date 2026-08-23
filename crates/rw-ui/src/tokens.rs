@@ -68,7 +68,14 @@ pub fn card(cx: &gpui::App) -> Div {
 ///
 /// One step further up the elevation ramp than the card body, which is what
 /// separates chrome from content without spending a second border on it.
+///
+/// Its top corners are rounded to match. `overflow_hidden` on the card masks to
+/// a *rectangle* — it is a scroll clip, not a shape — so a child with a fill of
+/// its own paints straight through the card's rounding and leaves two square
+/// notches where the corners should be. Inset by the card's one-pixel border so
+/// the two arcs are concentric rather than merely close.
 pub fn card_header(cx: &gpui::App) -> Div {
+    let inner = (cx.theme().radius_lg - px(1.)).max(px(0.));
     h_flex()
         .h(CARD_HEADER_HEIGHT)
         .flex_shrink_0()
@@ -78,6 +85,8 @@ pub fn card_header(cx: &gpui::App) -> Div {
         .gap_3()
         .px_3()
         .bg(cx.theme().muted)
+        .rounded_tl(inner)
+        .rounded_tr(inner)
         .border_b_1()
         .border_color(cx.theme().border)
 }
@@ -95,6 +104,49 @@ pub fn section_label(text: impl Into<SharedString>, cx: &gpui::App) -> Div {
         .font_medium()
         .text_color(cx.theme().muted_foreground)
         .child(text.into().to_uppercase())
+}
+
+/// The pill that names a request's kind in a list.
+///
+/// A tinted fill in the kind's own colour, with the full-strength colour as its
+/// text and a hairline of it as the border — legible on both palettes from one
+/// value, and a shape rather than three letters of loose mono, which is what
+/// made the sidebar read as a log file instead of a list.
+pub fn kind_tag(kind: RequestKind, cx: &gpui::App) -> Div {
+    let colour = kind_color(kind, cx);
+    h_flex()
+        .flex_none()
+        .w(KIND_WIDTH)
+        .justify_center()
+        .px_1()
+        .py_0p5()
+        .rounded_full()
+        .bg(colour.opacity(0.14))
+        .border_1()
+        .border_color(colour.opacity(0.32))
+        .text_size(KIND_TEXT)
+        .text_color(colour)
+        .font_family(cx.theme().mono_font_family.clone())
+        .child(kind_short(kind))
+}
+
+/// The same pill for something that is not a request kind and has no colour of
+/// its own — a dashboard row. Shape without a claim to a hue.
+pub fn quiet_tag(label: impl Into<SharedString>, cx: &gpui::App) -> Div {
+    h_flex()
+        .flex_none()
+        .w(KIND_WIDTH)
+        .justify_center()
+        .px_1()
+        .py_0p5()
+        .rounded_full()
+        .bg(cx.theme().muted)
+        .border_1()
+        .border_color(cx.theme().border)
+        .text_size(KIND_TEXT)
+        .text_color(cx.theme().muted_foreground)
+        .font_family(cx.theme().mono_font_family.clone())
+        .child(label.into())
 }
 
 /// One row of a form: what the field is called, what type it is, and — added by

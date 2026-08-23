@@ -582,14 +582,9 @@ fn render_row(
         // A request: a space where the arrow would be, so names line up whether
         // or not the row above can be opened, then the kind.
         Some(kind) => {
-            row = row.child(div().w(tokens::KIND_GUTTER).flex_none()).child(
-                tokens::mono(cx)
-                    .flex_none()
-                    .w(tokens::KIND_WIDTH)
-                    .text_size(tokens::KIND_TEXT)
-                    .text_color(tokens::kind_color(kind, cx))
-                    .child(tokens::kind_short(kind)),
-            );
+            row = row
+                .child(div().w(tokens::KIND_GUTTER).flex_none())
+                .child(tokens::kind_tag(kind, cx));
         }
     }
 
@@ -670,32 +665,6 @@ impl Panel for CollectionsPanel {
     fn closable(&self, _cx: &App) -> bool {
         false
     }
-
-    /// The panel's own actions, drawn by the dock beside its tab.
-    fn toolbar_buttons(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<Vec<Button>> {
-        Some(vec![
-            Button::new("new-collection")
-                .ghost()
-                .xsmall()
-                .icon(IconName::Folder)
-                .tooltip("New collection")
-                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                    this.add_collection(None, window, cx);
-                })),
-            Button::new("new-request")
-                .ghost()
-                .xsmall()
-                .icon(IconName::Plus)
-                .tooltip("New request")
-                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                    cx.emit(CollectionsEvent::New);
-                })),
-        ])
-    }
 }
 
 impl CollectionsPanel {
@@ -737,7 +706,7 @@ impl CollectionsPanel {
                     .id("dashboards")
                     .flex_1()
                     .min_h_0()
-                    .px_1()
+                    .px_2()
                     .pb_1()
                     .overflow_y_scroll()
                     .when(dashboards.is_empty(), |list| {
@@ -764,14 +733,7 @@ impl CollectionsPanel {
                                             .gap_1p5()
                                             .items_center()
                                             .child(div().w(tokens::KIND_GUTTER).flex_none())
-                                            .child(
-                                                tokens::mono(cx)
-                                                    .flex_none()
-                                                    .w(tokens::KIND_WIDTH)
-                                                    .text_size(tokens::KIND_TEXT)
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child("DASH"),
-                                            )
+                                            .child(tokens::quiet_tag("DASH", cx))
                                             .child(
                                                 div()
                                                     .flex_1()
@@ -941,22 +903,45 @@ impl Render for CollectionsPanel {
                     .update(cx, |workspace, cx| workspace.delete_collection(id, cx))
                     .detach();
             }))
-            // Flush against the panel rather than floating in it: a search row
-            // in a file tree is part of the chrome, not a control sitting on top
-            // of it. The hairline below is what separates it from the rows.
+            // The panel's own head: the one thing anybody opens this to do,
+            // then the field for finding what they did before.
+            //
+            // Both float on the sidebar rather than sitting in a bordered band
+            // flush to its edges. Every surface in this app is a rounded card
+            // now, and a full-bleed chrome strip with a hairline under it was
+            // the last thing still drawn like a file tree from 2010.
             .child(
-                div()
+                v_flex()
                     .flex_shrink_0()
-                    .px_2p5()
-                    .py_1p5()
-                    .border_b_1()
-                    .border_color(cx.theme().sidebar_border)
+                    .p_2()
+                    .gap_2()
                     .child(
-                        Input::new(&self.search)
-                            .xsmall()
-                            .appearance(false)
-                            .cleanable(true),
-                    ),
+                        h_flex()
+                            .w_full()
+                            .gap_1p5()
+                            .child(
+                                Button::new("new-request-primary")
+                                    .primary()
+                                    .small()
+                                    .flex_1()
+                                    .icon(IconName::Plus)
+                                    .label("New request")
+                                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                                        cx.emit(CollectionsEvent::New);
+                                    })),
+                            )
+                            .child(
+                                Button::new("new-collection-primary")
+                                    .outline()
+                                    .small()
+                                    .icon(IconName::Folder)
+                                    .tooltip("New collection")
+                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                        this.add_collection(None, window, cx);
+                                    })),
+                            ),
+                    )
+                    .child(Input::new(&self.search).small().cleanable(true)),
             )
             .on_action(cx.listener(|_, action: &DeleteDashboard, _, cx| {
                 cx.emit(CollectionsEvent::DeleteDashboard(action.0));
@@ -973,7 +958,7 @@ impl Render for CollectionsPanel {
                 div()
                     .flex_1()
                     .min_h_0()
-                    .px_1()
+                    .px_2()
                     // The root drop target, so dragging something out of a
                     // collection is the same gesture as dragging it in.
                     .drag_over::<Dragged>(|style, _, _, cx| style.bg(cx.theme().sidebar_accent))

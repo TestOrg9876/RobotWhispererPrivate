@@ -103,7 +103,6 @@ fn apply_named(name: &str, cx: &mut App) {
     Theme::global_mut(cx).apply_config(&config);
     Theme::change(mode, None, cx);
     apply_base_size(cx);
-    apply_tile_style(cx);
 }
 
 /// The smallest and largest base font size worth offering.
@@ -124,22 +123,6 @@ fn apply_base_size(cx: &mut App) {
         .base_font_size
         .clamp(MIN_BASE_SIZE, MAX_BASE_SIZE) as f32;
     Theme::global_mut(cx).font_size = gpui::px(size);
-}
-
-/// The two tile knobs, which the theme schema has no keys for.
-///
-/// A dashboard pane is drawn by the library's `Tiles`, which is the only thing
-/// in the dock that draws a panel as a bordered box with the panel's own header
-/// strip *inside* it. It ships square and flat — `tile_radius` defaults to zero
-/// — so the fields that make one read as a card are set here, beside everything
-/// else about how this app looks, and re-set on every change because
-/// `apply_config` knows nothing about them.
-fn apply_tile_style(cx: &mut App) {
-    let radius = cx.theme().radius_lg;
-    let shadow = cx.theme().shadow;
-    let theme = Theme::global_mut(cx);
-    theme.tile_radius = radius;
-    theme.tile_shadow = shadow;
 }
 
 /// The applied theme's name, for display.

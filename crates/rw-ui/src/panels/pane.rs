@@ -9,15 +9,16 @@
 
 use std::sync::{Arc, Mutex};
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Task, Window, div,
 };
-use gpui_component::dock::{Panel, PanelEvent, PanelState, TabPanel, TitleStyle};
+use gpui_component::dock::{Panel, PanelEvent, PanelState, TabPanel};
 use gpui_component::menu::DropdownMenu as _;
 use gpui_component::{
-    ActiveTheme as _, Sizable as _,
+    ActiveTheme as _, IconName, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     h_flex, v_flex,
 };
@@ -479,21 +480,6 @@ impl Panel for VizPanel {
         }
     }
 
-    /// The header strip is painted the card's own colour.
-    ///
-    /// This is what puts the topic, the counters and the pane menu *inside* the
-    /// card rather than on a strip floating above it. `Tiles` draws the border
-    /// and the rounding around the whole panel, the title bar is the top of
-    /// that panel, and the body below it is the same fill — so the three read
-    /// as one surface instead of a label and a card that happen to be near
-    /// each other.
-    fn title_style(&self, cx: &App) -> Option<TitleStyle> {
-        Some(TitleStyle {
-            background: cx.theme().group_box,
-            foreground: cx.theme().foreground,
-        })
-    }
-
     fn dump(&self, _cx: &App) -> PanelState {
         let mut state = PanelState::new(self);
         state.info = gpui_component::dock::PanelInfo::panel(
@@ -610,6 +596,76 @@ impl Panel for VizPanel {
     }
 }
 
+impl VizPanel {
+    /// The strip along the card's top edge: what this pane is watching, how
+    /// much of it has arrived, and everything it can be told.
+    ///
+    /// Drawn here rather than by the dock. A dashboard pane is a bare panel in
+    /// a split, which is what lets the header be part of the card instead of a
+    /// band above it — and it means the menu the dock used to hang beside a tab
+    /// has to be hung here instead.
+    fn header(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let title = if self.topic.is_empty() {
+            SharedString::from("New pane")
+        } else {
+            SharedString::from(self.topic.clone())
+        };
+        let count = self.incoming.lock().expect("incoming mutex").count;
+        // The rate beside the count when there is one: two short readings in
+        // the space a title bar already takes, rather than a status strip
+        // inside the pane that would cost a row of it forever.
+        let rate = self
+            .subscription
+            .as_ref()
+            .and_then(|handle| self.sessions.read(cx).pipeline().stats(handle))
+            .and_then(|stats| stats.hz_label());
+        let this = cx.entity();
+
+        tokens::card_header(cx)
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_2()
+                    .items_baseline()
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .min_w_0()
+                            .text_xs()
+                            .font_medium()
+                            .truncate()
+                            .text_color(cx.theme().foreground)
+                            .child(title),
+                    )
+                    .when(count > 0, |strip| {
+                        strip.child(
+                            div()
+                                .flex_shrink_0()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(match rate {
+                                    Some(rate) => {
+                                        SharedString::from(format!("{}  {rate}", compact(count)))
+                                    }
+                                    None => compact(count),
+                                }),
+                        )
+                    }),
+            )
+            .child(
+                Button::new("pane-menu")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Ellipsis)
+                    .tooltip("Pane settings")
+                    .dropdown_menu(move |menu, window, cx| {
+                        this.update(cx, |pane, cx| pane.dropdown_menu(menu, window, cx))
+                    }),
+            )
+    }
+}
+
 impl Render for VizPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_scene(cx);
@@ -673,23 +729,28 @@ impl Render for VizPanel {
         // sizes a dashboard pane comes in, anything smaller is a game.
         let workspace = self.workspace.clone();
 
-        // No card inside the pane, and no frame around it. The pane *is* the
-        // card now: `Tiles` draws its border, its rounding and its shadow, the
-        // title bar above this is painted the same fill by `title_style`, and
-        // this is the rest of that one surface. The old shape — an eight-pixel
-        // frame, then a card, then a header strip outside the card — is what
-        // made a dashboard look like a pane with something else sitting in it.
+        // The pane draws its own card, header and all. Nothing above it does:
+        // a dashboard pane is a bare panel in a split, so there is no tab strip
+        // between the layout and this. That is the only arrangement in which
+        // the header can be *inside* the card — a `TabPanel` paints the window
+        // colour and puts its title bar above whatever it holds, and `Tiles`
+        // wraps that in a border without changing it.
+        //
+        // The padding is the gutter. A split places panels flush with a
+        // one-pixel handle, so the air between two cards has to come from the
+        // cards, and the handle then sits in it.
         v_flex()
             .id("pane")
             .size_full()
             .min_h_0()
+            .p_0p5()
             .track_focus(&self.focus_handle)
-            .bg(cx.theme().group_box)
             .child(
-                v_flex()
+                tokens::card(cx)
                     .id("pane-drop")
                     .flex_1()
                     .min_h_0()
+                    .child(self.header(window, cx))
                     .drag_over::<Dragged>(move |style, dragged: &Dragged, _, cx| {
                         match drop::target_of_drag(dragged, workspace.read(cx)) {
                             Some(_) => style.bg(cx.theme().drop_target),

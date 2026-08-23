@@ -218,7 +218,11 @@ def theme(seed):
         ("list.even.background", s.card),
         ("list.hover.background", s.subtle),
         ("list.active.background", alpha(s.accent, "26")),
-        ("list.active.border", s.accent),
+        # The same value as the fill, so a selected row is a soft tinted shape
+        # and not a shape with a hard rule drawn round it. A sidebar selection
+        # is the one in macOS's, and an outline at full accent strength is what
+        # made ours look stencilled on.
+        ("list.active.border", alpha(s.accent, "26")),
         ("list.head.background", s.panel),
         ("table.background", s.card),
         ("table.even.background", s.card),

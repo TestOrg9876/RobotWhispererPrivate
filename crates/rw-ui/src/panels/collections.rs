@@ -550,12 +550,15 @@ fn render_row(
     let indent = tokens::scaled(tokens::SIDEBAR_INDENT, depth as f32);
 
     if data.renaming {
-        return ListItem::new(index).child(
-            h_flex()
-                .w_full()
-                .pl(indent)
-                .child(Input::new(rename_field).xsmall()),
-        );
+        return ListItem::new(index)
+            .rounded(cx.theme().radius)
+            .py_1p5()
+            .child(
+                h_flex()
+                    .w_full()
+                    .pl(indent)
+                    .child(Input::new(rename_field).xsmall()),
+            );
     }
 
     let mut row = h_flex().w_full().gap_1p5().items_center().pl(indent);
@@ -588,22 +591,28 @@ fn render_row(
         }
     }
 
-    ListItem::new(index).child(
-        row.child(div().flex_1().min_w_0().truncate().child(data.name.clone()))
-            // The rate beside the dot, when the row is a live subscription:
-            // `ros2 topic hz` without leaving the list you are already reading.
-            .when_some(rate(&data.state, cx), |row, rate| {
-                row.child(
-                    div()
-                        .flex_none()
-                        .mr_1p5()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(rate),
-                )
-            })
-            .when_some(state_dot(&data.state, cx), |row, dot| row.child(dot)),
-    )
+    // Inset and rounded, the way a macOS sidebar row is: the selection is a
+    // shape floating in the panel rather than a band painted edge to edge, and
+    // the list's own horizontal padding is what leaves room for it.
+    ListItem::new(index)
+        .rounded(cx.theme().radius)
+        .py_1p5()
+        .child(
+            row.child(div().flex_1().min_w_0().truncate().child(data.name.clone()))
+                // The rate beside the dot, when the row is a live subscription:
+                // `ros2 topic hz` without leaving the list you are already reading.
+                .when_some(rate(&data.state, cx), |row, rate| {
+                    row.child(
+                        div()
+                            .flex_none()
+                            .mr_1p5()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(rate),
+                    )
+                })
+                .when_some(state_dot(&data.state, cx), |row, dot| row.child(dot)),
+        )
 }
 
 /// How fast a live subscription's topic is going, for the row it is on.
@@ -754,6 +763,8 @@ impl CollectionsPanel {
                             .map(|(index, dashboard)| {
                                 let id = dashboard.id;
                                 ListItem::new(("dashboard", index))
+                                    .rounded(cx.theme().radius)
+                                    .py_1p5()
                                     .selected(selected == Some(id))
                                     .child(
                                         h_flex()

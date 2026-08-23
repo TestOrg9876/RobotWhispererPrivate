@@ -208,16 +208,18 @@ pub fn kind_label(kind: RequestKind) -> &'static str {
 
 /// The short label that names a request's kind in a list.
 ///
-/// Four characters at most, in a monospaced face and a fixed-width column, so
-/// every name after it starts at the same x — a ragged left edge is what makes a
-/// long list tiring to scan. The full word is [`kind_label`], for the selector
-/// where there is room for it.
+/// Three characters, every one of them, which is what the original app uses.
+/// That is not a style choice: the badge is sized by its content, so equal
+/// labels are what makes every name after them start at the same x. Mixing
+/// three and four gave a ragged left edge, which is the thing that makes a long
+/// list tiring to scan. The full word is [`kind_label`], for the selector where
+/// there is room for it.
 pub fn kind_short(kind: RequestKind) -> &'static str {
     match kind {
         RequestKind::Topic => "TOP",
-        RequestKind::Service => "SERV",
+        RequestKind::Service => "SER",
         RequestKind::Action => "ACT",
-        RequestKind::Param => "PARM",
+        RequestKind::Param => "PAR",
     }
 }
 
@@ -356,6 +358,20 @@ pub const SIDEBAR_INDENT: Rems = designed(14.);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Equal-width labels are what lines the names up, so this is a layout
+    /// assertion rather than a spelling one.
+    #[test]
+    fn kind_codes_are_all_the_same_length() {
+        for kind in [
+            RequestKind::Topic,
+            RequestKind::Service,
+            RequestKind::Action,
+            RequestKind::Param,
+        ] {
+            assert_eq!(kind_short(kind).len(), 3, "{kind:?}");
+        }
+    }
 
     #[test]
     fn kind_labels_are_stable_and_distinct() {

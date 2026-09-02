@@ -313,7 +313,14 @@ From review. These are not preferences and should not be re-litigated.
   clouds, 200 for `JointState`/`Imu`, enforced by `min_interval_ns`. So a
   1000 Hz topic displays at 58 Hz *by design* — no view can show more, and
   decoding what will never be drawn is waste. Any throughput number for this
-  app has to be read with that in mind.
+  app has to be read with that in mind. Foxglove applies it; rosbridge does not.
+- **Under Xvfb, CPU tracks the pane's redraw rate, not the bandwidth.**
+  9.6 MB/s at 10 Hz costs less than 697 B/s at 58 Hz. That column is llvmpipe
+  drawing the window in software, and a GPU should collapse most of it — so
+  treat headless CPU numbers as a rendering measurement first.
+- **CDR aligns every four-byte primitive to four bytes relative to the body,**
+  including the length prefix of a string or array. Getting this wrong in the
+  bench bridge made the decoder read `"jpeg"` as a length and ask for 1.7 GB.
 - **Values that a transport callback needs are captured at subscribe time**
   (`series::Limits`, the point budget): a callback has the frame and nothing
   else, and reaching for a global from off the UI thread is not available.
@@ -335,33 +342,37 @@ From review. These are not preferences and should not be re-litigated.
 
 Ranked by what it costs you.
 
-1. **178 MiB/s balloons resident memory to ~5 GB.** A 1080p rgb8 stream at
-   30 Hz, against a view drawing 20-30 frames a second, should not accumulate.
-   The Tauri app does it too (5.7 GB), which is no defence. Found by
-   benchmarking; the most actionable thing it turned up. See
+1. **Incoming frames queue without a bound.** At 178 MiB/s (1080p rgb8, 30 Hz)
+   the app runs **2.8 seconds behind** at 14.8 Hz and holds **5.5 GB** resident.
+   The backlog is the memory. The Tauri app is worse (7.0 GB), which is no
+   defence: a client seconds behind and growing has already failed. See
    `docs/benchmarks.md`.
-2. **The browser build has never been seen running.** It compiles again (it did
+2. **The rosbridge transport ignores the subscription rate cap.** Foxglove
+   enforces `default_target_hz_for_schema` via `min_interval_ns`; rosbridge does
+   not, so a 100 Hz topic displays at 98.8 Hz there and 58 Hz over Foxglove. One
+   policy, applied by one of two transports.
+3. **The browser build has never been seen running.** It compiles again (it did
    not, for some time — see `docs/web-known-issues.md`), but headless Chromium
    here has no WebGPU, so it stops at the loading screen and nothing about it
    is verified. The biggest unknown in the project.
-3. **This app burns ~0.7% CPU drawing nothing.** Found by benchmarking, not by
+4. **This app burns ~0.7% CPU drawing nothing.** Found by benchmarking, not by
    looking. With no connection and no subscription the welcome screen should
    cost nothing; something is repainting. Cheap to chase and it is the one
    runtime number the Tauri app wins on its merits.
-4. **Parameter history is recorded nowhere visible** — so it is not recorded at
+5. **Parameter history is recorded nowhere visible** — so it is not recorded at
    all. Parameters have runs, but the parameter form is its own response and
    there is no response card to hang a History tab on. Needs somewhere on the
    PARAMETERS card first.
-5. **The world pane's layer rail** is 240px of full-height card for two rows.
-6. **Marker types 9 (text) and 10 (mesh resource) are not decoded.** Text needs
+6. **The world pane's layer rail** is 240px of full-height card for two rows.
+7. **Marker types 9 (text) and 10 (mesh resource) are not decoded.** Text needs
     glyph rendering, which `rw-render` does not have.
-7. **`/dummy/points` and `/dummy/image` build no payload form** — the schema
+8. **`/dummy/points` and `/dummy/image` build no payload form** — the schema
     does not reach `message_for` from the registry. Harmless now that topics do
     not publish, but the same gap would bite a service with those types.
-8. **Settings live only in a dialog.** The owner asked for "dialog now, panel
+9. **Settings live only in a dialog.** The owner asked for "dialog now, panel
     later"; the panel is not built. The content is a plain `v_flex` of rows, so
     moving it into a dock panel is a wrapper change, not a rewrite.
-9. **Three settings sections are thin.** Requests holds one row, Console holds
+10. **Three settings sections are thin.** Requests holds one row, Console holds
     one. `marker::LIST_BUDGET`, `tree::MAX_CHILDREN`, the console's default
     level filter and a request's default view are all still constants.
 

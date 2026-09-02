@@ -15,6 +15,10 @@ def seed(path, kind, url, name="Bench"):
     now = time.strftime("%Y-%m-%dT%H:%M:%S.000000000Z", time.gmtime())
     config = json.dumps({"kind": kind, "url": url, "headers": []})
     c = sqlite3.connect(path)
+    # Requests first: they carry a foreign key onto connections, and dropping
+    # the parent row first fails the constraint — which is what left our app
+    # unable to migrate its own database.
+    c.execute("delete from requests")
     c.execute("delete from connections")
     c.execute(
         "insert into connections (name, transport_kind, config_json, auto_connect,"

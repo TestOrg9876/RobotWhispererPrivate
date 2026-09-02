@@ -108,74 +108,92 @@ undetermined. It is not claimed as working.
 
 ## Throughput
 
-The section the first pass could not produce. `cargo xtask load-bridge` is a
-synthetic Foxglove/rosbridge server; `scripts/bench/` drives both clients to a
-live subscription and measures the process tree while it streams.
+`cargo xtask load-bridge` is a synthetic Foxglove/rosbridge server;
+`scripts/bench/` drives both clients to a live subscription and measures the
+process tree while it streams.
 
-Every row below was verified by screenshot: the client is subscribed, the
-schema resolved, and messages counted. Runs where that check failed are listed
-as failures rather than as numbers.
+Every row was verified by screenshot: both clients subscribed, schema resolved,
+messages counted. The bridge reports what it actually wrote each second, so a
+run it could not keep up with cannot be mistaken for a client that kept up.
 
-| load | offered | delivered | GPUI CPU / RSS | Tauri CPU / RSS |
+| load | offered | delivered | GPUI | Tauri |
 | --- | --- | --- | --- | --- |
 | welcome screen | — | — | **0.9 % / 204 MB** | 222 % / 543 MB |
 | request tab, no subscription | — | — | **0.9 % / 209 MB** | — |
-| 1 topic, `std_msgs/Float64` @ 1000 Hz | 1000 msg/s | 995 msg/s | 153 % / **213 MB** | 144 % / 619 MB |
-| 5 topics @ 200 Hz each | 1000 msg/s | 996 msg/s | 143 % / **216 MB** | 142 % / 674 MB |
-| 1080p `sensor_msgs/Image` rgb8 @ 30 Hz | 178 MiB/s | 178 MiB/s | **198 % / 5114 MB** | 295 % / 5720 MB |
+| `Float64` @ 1000 Hz | 1000 msg/s | 991 msg/s | 153 % / **213 MB** | **120 %** / 611 MB |
+| 5 topics @ 200 Hz | 1000 msg/s | 996 msg/s | 142 % / **216 MB** | **122 %** / 679 MB |
+| `Float64` @ 100 Hz, rosbridge | 100 msg/s | 99 msg/s | 154 % / **213 MB** | **114 %** / 614 MB |
+| `PointCloud2`, 60k points @ 10 Hz | 9.2 MiB/s | 9.2 MiB/s | **130 % / 703 MB** | 273 % / 1368 MB |
+| `PointCloud2`, ROS 1 dialect | 9.2 MiB/s | 9.0 MiB/s | **131 % / 705 MB** | 271 % / 1379 MB |
+| `CompressedImage`, 300 kB @ 60 Hz | 17.6 MiB/s | 17.6 MiB/s | **143 % / 369 MB** | 279 % / 959 MB |
+| `Image`, 1080p rgb8 @ 30 Hz | 178 MiB/s | 168 MiB/s | **220 % / 5493 MB** | 294 % / 6989 MB |
 
-### The number that changes how the rest reads
+### Where each side wins, and why
 
-**This client throttles on purpose, at the transport, before decode.**
+**On real robotics payloads we use less than half the CPU** — 130 % against
+273 % on point clouds, 143 % against 279 % on compressed images — and about
+half the memory. That is the case the app exists for.
+
+**On trivial scalar messages the Tauri app wins**: 120 % against our 153 % at
+1000 Hz. Saying otherwise would be picking the flattering rows.
+
+### The CPU tracks the display rate, not the bandwidth
+
+Ours, ordered by how fast the pane updates rather than by bytes:
+
+| pane updates at | bandwidth | CPU |
+| --- | --- | --- |
+| 9.96 Hz (point cloud) | 9.6 MB/s | 130 % |
+| 22.1 Hz (compressed image) | 6.8 MB/s | 143 % |
+| 50 Hz × 5 panes | 700 B/s | 142 % |
+| 58.1 Hz (scalar) | 697 B/s | 153 % |
+
+CPU climbs with the redraw rate and ignores the bandwidth entirely — 9.6 MB/s
+at 10 Hz is cheaper than 697 B/s at 58 Hz. **This is llvmpipe drawing the
+window in software, not message processing**, which also explains the scalar
+rows: nothing else is happening there, so redraw is all the cost there is. On a
+GPU most of this column should collapse. It is an inference from the
+correlation, not something measured directly — no GPU was available here.
+
+### The rate cap, and where it is missing
+
 `default_target_hz_for_schema` caps a subscription at 60 Hz by default, 30 Hz
-for images, 15 Hz for point clouds, 200 Hz for `JointState` and `Imu`; the
+for images, 15 Hz for point clouds, 200 Hz for `JointState` and `Imu`. The
 Foxglove transport enforces it with `min_interval_ns` and drops the rest
-without decoding them.
+*without decoding them* — 1000 Hz displays at 58 Hz, five topics at 50 Hz each,
+a 60 Hz compressed image stream at 22 Hz. No view can show more, and decoding
+what will never be drawn is waste.
 
-So at 1000 msg/s offered it displays 58 Hz, and with five topics it displays
-about 50 Hz on each — measured off the app's own rate readout, which matches
-the cap. That is a design decision, not a shortfall: no view can show 1000 Hz,
-and decoding what will never be drawn is waste.
+**The rosbridge transport does not apply it.** A 100 Hz topic displayed at
+98.8 Hz where Foxglove would have capped it at 60. Same policy, one transport,
+so the same stream costs differently depending on how you connected. That is a
+bug, not a design choice.
 
-It also means the CPU columns are **not equal work**. Ours decodes ~60
-messages a second; the Tauri app has no rate cap and no rate readout, so what
-it decodes cannot be read off the screen. Comparing 153 % against 144 % without
-that caveat would be dishonest in our favour, and stating it is dishonest in
-theirs — so: at equal *offered* load we use slightly more CPU and a third of
-the memory, and we deliberately do less decoding.
+### 1080p raw: both clients fall behind
 
-### Where the difference is unambiguous
+At 178 MiB/s neither keeps up. The delivered rate drops to 168 MiB/s — the only
+row where the bridge's writes stall — and ours reports **2.8 seconds of
+latency** at 14.8 Hz of an offered 30.
 
-At 1080p rgb8 — 178 MiB/s, the heaviest load either client will meet — we use
-**33 % less CPU** (198 % against 295 %) at the same delivered bandwidth. Both
-clients read every byte off the socket: the bridge's writes never stalled, so
-neither was applying backpressure.
-
-**Both balloon to about 5 GB of RSS there, and that is a bug in both.** 178 MiB/s
-against a client that draws 20-30 frames a second should not accumulate; ours
-holds slightly less, which is not a defence. It is the most actionable thing
-this whole exercise found.
-
-### Memory, everywhere else
-
-Three times less, consistently: ~215 MB against ~600 MB, in one process rather
-than three. That gap is stable across every load and it is the clearest result
-here.
+That backlog *is* the memory: **5.5 GB resident for us, 7.0 GB for the Tauri
+app.** Frames arrive faster than they are drawn and queue without a bound.
+Holding 1.5 GB less than the other one is not a defence; a client seconds
+behind and growing has already failed. It is the most actionable thing this
+exercise found and it is now the top open issue.
 
 ## What is still not measured
 
-- **Point cloud, compressed image, ROS 1 dialect, and rosbridge.** The harness
-  encodes these wrongly — verified by screenshot: the client sat on "waiting
-  for the first message" while the bridge delivered at it. Adding the schema
-  dependency bundles fixed part of it and not all. Those cells are absent
-  rather than filled with numbers from runs that did not do what they claimed.
-- **What the Tauri app processes.** It shows no message count, rate, bandwidth
-  or latency, so its throughput can only be inferred from CPU. Ours reports all
-  four, which is why our side of the table can be checked and theirs cannot.
-- **GPU.** Everything here is llvmpipe under Xvfb. Both clients are affected,
-  but a real GPU would change the 1080p row most.
+- **GPU.** Everything here is llvmpipe under Xvfb, which the section above
+  argues is most of our CPU column. This is the biggest gap in the numbers.
+- **What the Tauri app processes.** It reports no message count, rate,
+  bandwidth or latency, so only its CPU and memory can be compared. Ours
+  reports all four, which is why our side of every row can be checked against
+  the bridge and theirs cannot.
+- **Large payloads over rosbridge.** The JSON transport is covered for scalars
+  only; point clouds and images over rosbridge would need base64 array encoding
+  in the bridge.
 
-## What could not be measured (first pass)
+## What could not be measured (first pass, superseded)
 
 **Rendering under load** — a point cloud streaming into both — is the number
 that would matter most, and it is missing. Driving the Tauri UI needs synthetic

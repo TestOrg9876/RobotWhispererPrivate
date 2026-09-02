@@ -4,8 +4,7 @@
 //! milestone is verified the same way, and the environment needs half a dozen
 //! non-obvious settings to render at all.
 
-mod load_bridge;
-mod load_shapes;
+use xtask::load_bridge;
 mod native;
 mod scenario;
 mod web;

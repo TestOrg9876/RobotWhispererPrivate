@@ -51,7 +51,15 @@ fn cdr_head(buffer: &mut Vec<u8>) {
     buffer.extend_from_slice(&[0x00, 0x01, 0x00, 0x00]);
 }
 
-fn put_u32(buffer: &mut Vec<u8>, value: u32) {
+/// Write a `uint32`, aligned.
+///
+/// In CDR every four-byte primitive sits on a four-byte boundary relative to
+/// the start of the body — including the length prefix of a string or an array,
+/// which is the case that is easy to forget. Forgetting it put
+/// `CompressedImage`'s "jpeg" one byte early, the decoder read those four
+/// characters as a length, and asked for 1.7 GB.
+fn put_u32(buffer: &mut Vec<u8>, value: u32, dialect: Dialect) {
+    align(buffer, 4, dialect);
     buffer.extend_from_slice(&value.to_le_bytes());
 }
 
@@ -59,12 +67,12 @@ fn put_string(buffer: &mut Vec<u8>, text: &str, dialect: Dialect) {
     match dialect {
         // ROS 1: length then bytes, no terminator.
         Dialect::Ros1 => {
-            put_u32(buffer, text.len() as u32);
+            put_u32(buffer, text.len() as u32, dialect);
             buffer.extend_from_slice(text.as_bytes());
         }
         // ROS 2 CDR: length includes the NUL, and the string is terminated.
         Dialect::Ros2 => {
-            put_u32(buffer, text.len() as u32 + 1);
+            put_u32(buffer, text.len() as u32 + 1, dialect);
             buffer.extend_from_slice(text.as_bytes());
             buffer.push(0);
         }
@@ -82,10 +90,10 @@ fn align(buffer: &mut Vec<u8>, to: usize, dialect: Dialect) {
 
 fn put_header(buffer: &mut Vec<u8>, frame: &str, dialect: Dialect) {
     if dialect == Dialect::Ros1 {
-        put_u32(buffer, 0); // seq, which ROS 2 does not have
+        put_u32(buffer, 0, dialect); // seq, which ROS 2 does not have
     }
-    put_u32(buffer, 1_700_000_000); // stamp.sec
-    put_u32(buffer, 0); // stamp.nsec
+    put_u32(buffer, 1_700_000_000, dialect); // stamp.sec
+    put_u32(buffer, 0, dialect); // stamp.nsec
     put_string(buffer, frame, dialect);
 }
 
@@ -148,25 +156,21 @@ fn pointcloud(index: usize, hz: f64, dialect: Dialect) -> Stream {
         cdr_head(&mut payload);
     }
     put_header(&mut payload, "laser", dialect);
-    align(&mut payload, 4, dialect);
-    put_u32(&mut payload, 1); // height
-    put_u32(&mut payload, POINTS); // width
+    put_u32(&mut payload, 1, dialect); // height
+    put_u32(&mut payload, POINTS, dialect); // width
 
     // fields: x, y, z, intensity — all FLOAT32
-    put_u32(&mut payload, 4);
+    put_u32(&mut payload, 4, dialect);
     for (name, offset) in [("x", 0u32), ("y", 4), ("z", 8), ("intensity", 12)] {
         put_string(&mut payload, name, dialect);
-        align(&mut payload, 4, dialect);
-        put_u32(&mut payload, offset);
+        put_u32(&mut payload, offset, dialect);
         payload.push(7); // FLOAT32
-        align(&mut payload, 4, dialect);
-        put_u32(&mut payload, 1); // count
+        put_u32(&mut payload, 1, dialect); // count
     }
     payload.push(0); // is_bigendian
-    align(&mut payload, 4, dialect);
-    put_u32(&mut payload, POINT_STEP);
-    put_u32(&mut payload, POINT_STEP * POINTS);
-    put_u32(&mut payload, POINTS * POINT_STEP); // data length
+    put_u32(&mut payload, POINT_STEP, dialect);
+    put_u32(&mut payload, POINT_STEP * POINTS, dialect);
+    put_u32(&mut payload, POINTS * POINT_STEP, dialect); // data length
     let mut point = 0u32;
     while point < POINTS {
         let angle = point as f32 * 0.001;
@@ -212,14 +216,12 @@ fn image_raw(index: usize, hz: f64, dialect: Dialect) -> Stream {
         cdr_head(&mut payload);
     }
     put_header(&mut payload, "camera", dialect);
-    align(&mut payload, 4, dialect);
-    put_u32(&mut payload, HEIGHT);
-    put_u32(&mut payload, WIDTH);
+    put_u32(&mut payload, HEIGHT, dialect);
+    put_u32(&mut payload, WIDTH, dialect);
     put_string(&mut payload, "rgb8", dialect);
     payload.push(0); // is_bigendian
-    align(&mut payload, 4, dialect);
-    put_u32(&mut payload, WIDTH * 3); // step
-    put_u32(&mut payload, pixels as u32);
+    put_u32(&mut payload, WIDTH * 3, dialect); // step
+    put_u32(&mut payload, pixels as u32, dialect);
     // A gradient rather than zeros: a run of identical bytes is unrealistically
     // kind to anything that compresses on the way past.
     payload.extend((0..pixels).map(|i| (i % 251) as u8));
@@ -258,8 +260,7 @@ fn image_compressed(index: usize, hz: f64, dialect: Dialect) -> Stream {
     }
     put_header(&mut payload, "camera", dialect);
     put_string(&mut payload, "jpeg", dialect);
-    align(&mut payload, 4, dialect);
-    put_u32(&mut payload, body.len() as u32);
+    put_u32(&mut payload, body.len() as u32, dialect);
     payload.extend_from_slice(&body);
 
     Stream {
@@ -277,4 +278,54 @@ fn image_compressed(index: usize, hz: f64, dialect: Dialect) -> Stream {
         payload: Arc::new(payload),
         json: Arc::new(serde_json::json!({ "format": "jpeg", "data": vec![0u8; 1024] })),
     }
+}
+
+/// The `rosapi/message_details` typedefs for a stream.
+///
+/// The rosbridge transport builds its whole decoder from these. Returning the
+/// empty field lists this once did makes every message arrive and decode to
+/// nothing, which the app reports as "this message has no fields" — a benchmark
+/// row that measured a stub rather than a client.
+pub fn typedefs(stream: &Stream) -> serde_json::Value {
+    let mut out = Vec::new();
+    for (index, section) in stream.schema.split(RULE).enumerate() {
+        let (name, body) = if index == 0 {
+            (stream.schema_name.clone(), section)
+        } else {
+            match section.split_once('\n') {
+                Some((head, rest)) => (head.trim().to_string(), rest),
+                None => continue,
+            }
+        };
+        let mut names = Vec::new();
+        let mut types = Vec::new();
+        let mut lens = Vec::new();
+        for line in body.lines() {
+            let line = line.split('#').next().unwrap_or("").trim();
+            // Constants are not fields, and a rosapi typedef lists them apart.
+            if line.is_empty() || line.contains('=') {
+                continue;
+            }
+            let Some((ty, field)) = line.split_once(char::is_whitespace) else {
+                continue;
+            };
+            let field = field.trim();
+            if field.is_empty() {
+                continue;
+            }
+            names.push(field.to_string());
+            types.push(ty.trim().to_string());
+            // -1 for anything not a fixed-length array, which is what a real
+            // rosapi reports; the `[]` in the type carries the rest.
+            lens.push(-1i64);
+        }
+        out.push(serde_json::json!({
+            "type": name,
+            "fieldnames": names,
+            "fieldtypes": types,
+            "fieldarraylen": lens,
+            "examples": [], "constnames": [], "constvalues": [],
+        }));
+    }
+    serde_json::json!({ "typedefs": out })
 }

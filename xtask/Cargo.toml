@@ -14,3 +14,13 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
 tokio-tungstenite = "0.23"
 futures-util = "0.3"
+
+[dev-dependencies]
+# The bench payloads are checked against the app's own decoders, so a wrong
+# encoding fails in seconds here instead of showing up as an empty pane in a
+# fifteen-minute benchmark run.
+rw-schema-foxglove = { path = "../crates/rw-schema-foxglove" }
+rw-codec-cdr = { path = "../crates/rw-codec-cdr" }
+rw-codec-rosmsg = { path = "../crates/rw-codec-rosmsg" }
+rw-canonical = { path = "../crates/rw-canonical" }
+rw-wire = { path = "../crates/rw-wire" }

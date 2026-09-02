@@ -370,13 +370,7 @@ fn rosapi(config: &Config, service: &str, args: &serde_json::Value) -> serde_jso
             let wanted = args["type"].as_str().unwrap_or_default();
             let found = config.streams.iter().find(|s| s.schema_name == wanted);
             match found {
-                Some(stream) => serde_json::json!({
-                    "typedefs": [{
-                        "type": stream.schema_name,
-                        "fieldnames": [], "fieldtypes": [], "fieldarraylen": [],
-                        "examples": [], "constnames": [], "constvalues": [],
-                    }],
-                }),
+                Some(stream) => crate::load_shapes::typedefs(stream),
                 None => serde_json::json!({ "typedefs": [] }),
             }
         }

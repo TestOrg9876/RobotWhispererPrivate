@@ -9125,6 +9125,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "futures-util",
+ "rw-canonical",
+ "rw-codec-cdr",
+ "rw-codec-rosmsg",
+ "rw-schema-foxglove",
+ "rw-wire",
  "serde",
  "serde_json",
  "tokio",

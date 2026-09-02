@@ -4,6 +4,8 @@
 //! milestone is verified the same way, and the environment needs half a dozen
 //! non-obvious settings to render at all.
 
+mod load_bridge;
+mod load_shapes;
 mod native;
 mod scenario;
 mod web;
@@ -28,6 +30,7 @@ usage: cargo xtask <task>
 
 tasks:
   screenshot-native [scenario…]   drive the native app under Xvfb and capture it
+  load-bridge [options]           synthetic Foxglove/rosbridge server for benchmarks
   web [--dev] [--serve]           build the wasm bundle, optionally serving it
   screenshot-web [scenario…]      replay the same scenarios in Chromium
   list-scenarios                  show the committed scenarios
@@ -44,6 +47,7 @@ fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("screenshot-native") => screenshot_native(args.collect()),
+        Some("load-bridge") => load_bridge::main(args.collect()),
         Some("web") => build_web(args.collect()),
         Some("screenshot-web") => screenshot_web(args.collect()),
         Some("wasm-bindgen-version") => web::print_bindgen_version(),

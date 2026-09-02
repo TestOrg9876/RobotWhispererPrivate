@@ -8,3 +8,9 @@ publish = false
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# For `cargo xtask load-bridge`, the synthetic Foxglove/rosbridge server the
+# throughput benchmark runs against. A Python generator would be the
+# bottleneck: 1080p60 uncompressed is 373 MB/s per stream.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
+tokio-tungstenite = "0.23"
+futures-util = "0.3"

@@ -11,6 +11,37 @@ use std::sync::Arc;
 
 use crate::load_bridge::{Dialect, Stream, header_schema};
 
+/// The separator a Foxglove concatenated schema uses between a root definition
+/// and each of its dependencies.
+const RULE: &str =
+    "\n================================================================================\nMSG: ";
+
+/// A schema bundle: the root, then every type it names.
+///
+/// A real `foxglove_bridge` sends this. Sending the root alone leaves the
+/// client unable to resolve `builtin_interfaces/Time` or `sensor_msgs/PointField`,
+/// and it decodes nothing — which is exactly what happened here: the point
+/// cloud and compressed-image runs reported "waiting for the first message"
+/// while the bridge was delivering 9 MiB/s at them.
+fn bundle(root: String, deps: &[(&str, &str)]) -> String {
+    let mut out = root;
+    for (name, body) in deps {
+        out.push_str(RULE);
+        out.push_str(name);
+        out.push('\n');
+        out.push_str(body);
+    }
+    out
+}
+
+fn time_dep(dialect: Dialect) -> Vec<(&'static str, &'static str)> {
+    match dialect {
+        // ROS 1 `time` is a primitive; nothing to define.
+        Dialect::Ros1 => vec![],
+        Dialect::Ros2 => vec![("builtin_interfaces/Time", "int32 sec\nuint32 nanosec\n")],
+    }
+}
+
 /// 1920x1080, the resolution the question was asked about.
 const WIDTH: u32 = 1920;
 const HEIGHT: u32 = 1080;
@@ -150,10 +181,23 @@ fn pointcloud(index: usize, hz: f64, dialect: Dialect) -> Stream {
     Stream {
         topic: format!("/bench/points_{index}"),
         schema_name: "sensor_msgs/PointCloud2".into(),
-        schema: format!(
-            "{}\nuint32 height\nuint32 width\nsensor_msgs/PointField[] fields\nbool is_bigendian\nuint32 point_step\nuint32 row_step\nuint8[] data\nbool is_dense\n",
-            header_schema(dialect)
-        ),
+        schema: {
+            let mut deps = vec![(
+                "sensor_msgs/PointField",
+                "string name\nuint32 offset\nuint8 datatype\nuint32 count\n",
+            )];
+            deps.extend(time_dep(dialect));
+            bundle(
+                format!(
+                    "std_msgs/Header header\nuint32 height\nuint32 width\nsensor_msgs/PointField[] fields\nbool is_bigendian\nuint32 point_step\nuint32 row_step\nuint8[] data\nbool is_dense\n"
+                ),
+                &{
+                    let mut all = vec![("std_msgs/Header", header_schema(dialect))];
+                    all.extend(deps);
+                    all
+                },
+            )
+        },
         hz,
         payload: Arc::new(payload),
         json: Arc::new(serde_json::json!({ "height": 1, "width": POINTS })),
@@ -183,9 +227,13 @@ fn image_raw(index: usize, hz: f64, dialect: Dialect) -> Stream {
     Stream {
         topic: format!("/bench/image_{index}"),
         schema_name: "sensor_msgs/Image".into(),
-        schema: format!(
-            "{}\nuint32 height\nuint32 width\nstring encoding\nuint8 is_bigendian\nuint32 step\nuint8[] data\n",
-            header_schema(dialect)
+        schema: bundle(
+            "std_msgs/Header header\nuint32 height\nuint32 width\nstring encoding\nuint8 is_bigendian\nuint32 step\nuint8[] data\n".to_string(),
+            &{
+                let mut all = vec![("std_msgs/Header", header_schema(dialect))];
+                all.extend(time_dep(dialect));
+                all
+            },
         ),
         hz,
         payload: Arc::new(payload),
@@ -217,9 +265,13 @@ fn image_compressed(index: usize, hz: f64, dialect: Dialect) -> Stream {
     Stream {
         topic: format!("/bench/image_c_{index}"),
         schema_name: "sensor_msgs/CompressedImage".into(),
-        schema: format!(
-            "{}\nstring format\nuint8[] data\n",
-            header_schema(dialect)
+        schema: bundle(
+            "std_msgs/Header header\nstring format\nuint8[] data\n".to_string(),
+            &{
+                let mut all = vec![("std_msgs/Header", header_schema(dialect))];
+                all.extend(time_dep(dialect));
+                all
+            },
         ),
         hz,
         payload: Arc::new(payload),

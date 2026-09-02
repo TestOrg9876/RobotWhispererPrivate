@@ -97,6 +97,30 @@ pub async fn serve(config: Config) -> Result<()> {
         config.port,
         config.streams.len()
     );
+    // Report what was actually written every second. Without this a run that
+    // the bridge could not keep up with is indistinguishable from a client
+    // that kept up perfectly, and the whole measurement is worthless — a
+    // debug build of this program delivered 58 Hz of an offered 1000.
+    tokio::spawn(async move {
+        let mut last_frames = 0u64;
+        let mut last_bytes = 0u64;
+        let mut ticker = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            ticker.tick().await;
+            let frames = SENT_FRAMES.load(Ordering::Relaxed);
+            let bytes = SENT_BYTES.load(Ordering::Relaxed);
+            if frames != last_frames {
+                eprintln!(
+                    "load-bridge: delivered {} msg/s, {:.1} MiB/s",
+                    frames - last_frames,
+                    (bytes - last_bytes) as f64 / 1_048_576.0
+                );
+            }
+            last_frames = frames;
+            last_bytes = bytes;
+        }
+    });
+
     let config = Arc::new(config);
     loop {
         let (stream, _) = listener.accept().await?;
@@ -117,15 +141,16 @@ async fn foxglove(stream: tokio::net::TcpStream, config: Arc<Config>) -> Result<
         Dialect::Ros1 => "foxglove.websocket.v1",
         Dialect::Ros2 => "foxglove.sdk.v1",
     };
-    let websocket = tokio_tungstenite::accept_hdr_async(stream, |_req: &Request, mut response: Response| {
-        response.headers_mut().insert(
-            "sec-websocket-protocol",
-            wanted.parse().expect("static subprotocol"),
-        );
-        Ok(response)
-    })
-    .await
-    .context("foxglove handshake")?;
+    let websocket =
+        tokio_tungstenite::accept_hdr_async(stream, |_req: &Request, mut response: Response| {
+            response.headers_mut().insert(
+                "sec-websocket-protocol",
+                wanted.parse().expect("static subprotocol"),
+            );
+            Ok(response)
+        })
+        .await
+        .context("foxglove handshake")?;
     let (mut sink, mut source) = websocket.split();
 
     let encoding = match config.dialect {
@@ -177,7 +202,9 @@ async fn foxglove(stream: tokio::net::TcpStream, config: Arc<Config>) -> Result<
         let subscriptions = Arc::clone(&subscriptions);
         tokio::spawn(async move {
             while let Some(Ok(message)) = source.next().await {
-                let Message::Text(text) = message else { continue };
+                let Message::Text(text) = message else {
+                    continue;
+                };
                 let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
                     continue;
                 };
@@ -185,10 +212,9 @@ async fn foxglove(stream: tokio::net::TcpStream, config: Arc<Config>) -> Result<
                     Some("subscribe") => {
                         let mut map = subscriptions.lock().await;
                         for entry in value["subscriptions"].as_array().into_iter().flatten() {
-                            let (Some(id), Some(channel)) = (
-                                entry["id"].as_u64(),
-                                entry["channelId"].as_u64(),
-                            ) else {
+                            let (Some(id), Some(channel)) =
+                                (entry["id"].as_u64(), entry["channelId"].as_u64())
+                            else {
                                 continue;
                             };
                             map.insert(channel as u32, id as u32);
@@ -256,7 +282,9 @@ async fn rosbridge(stream: tokio::net::TcpStream, config: Arc<Config>) -> Result
         let tx = tx.clone();
         tokio::spawn(async move {
             while let Some(Ok(message)) = source.next().await {
-                let Message::Text(text) = message else { continue };
+                let Message::Text(text) = message else {
+                    continue;
+                };
                 let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
                     continue;
                 };
@@ -302,8 +330,8 @@ async fn rosbridge(stream: tokio::net::TcpStream, config: Arc<Config>) -> Result
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             // Serialised once: rosbridge is JSON, and re-encoding a 1080p frame
             // per tick would measure this program instead of the client.
-            let text = serde_json::json!({ "op": "publish", "topic": topic, "msg": *json })
-                .to_string();
+            let text =
+                serde_json::json!({ "op": "publish", "topic": topic, "msg": *json }).to_string();
             loop {
                 ticker.tick().await;
                 if !subscribed.lock().await.contains_key(&topic) {

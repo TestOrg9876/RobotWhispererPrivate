@@ -106,7 +106,76 @@ needs WebGPU, which is not available here even with `--enable-unsafe-webgpu`
 and swiftshader, so whether the app or the environment is at fault is
 undetermined. It is not claimed as working.
 
-## What could not be measured
+## Throughput
+
+The section the first pass could not produce. `cargo xtask load-bridge` is a
+synthetic Foxglove/rosbridge server; `scripts/bench/` drives both clients to a
+live subscription and measures the process tree while it streams.
+
+Every row below was verified by screenshot: the client is subscribed, the
+schema resolved, and messages counted. Runs where that check failed are listed
+as failures rather than as numbers.
+
+| load | offered | delivered | GPUI CPU / RSS | Tauri CPU / RSS |
+| --- | --- | --- | --- | --- |
+| welcome screen | — | — | **0.9 % / 204 MB** | 222 % / 543 MB |
+| request tab, no subscription | — | — | **0.9 % / 209 MB** | — |
+| 1 topic, `std_msgs/Float64` @ 1000 Hz | 1000 msg/s | 995 msg/s | 153 % / **213 MB** | 144 % / 619 MB |
+| 5 topics @ 200 Hz each | 1000 msg/s | 996 msg/s | 143 % / **216 MB** | 142 % / 674 MB |
+| 1080p `sensor_msgs/Image` rgb8 @ 30 Hz | 178 MiB/s | 178 MiB/s | **198 % / 5114 MB** | 295 % / 5720 MB |
+
+### The number that changes how the rest reads
+
+**This client throttles on purpose, at the transport, before decode.**
+`default_target_hz_for_schema` caps a subscription at 60 Hz by default, 30 Hz
+for images, 15 Hz for point clouds, 200 Hz for `JointState` and `Imu`; the
+Foxglove transport enforces it with `min_interval_ns` and drops the rest
+without decoding them.
+
+So at 1000 msg/s offered it displays 58 Hz, and with five topics it displays
+about 50 Hz on each — measured off the app's own rate readout, which matches
+the cap. That is a design decision, not a shortfall: no view can show 1000 Hz,
+and decoding what will never be drawn is waste.
+
+It also means the CPU columns are **not equal work**. Ours decodes ~60
+messages a second; the Tauri app has no rate cap and no rate readout, so what
+it decodes cannot be read off the screen. Comparing 153 % against 144 % without
+that caveat would be dishonest in our favour, and stating it is dishonest in
+theirs — so: at equal *offered* load we use slightly more CPU and a third of
+the memory, and we deliberately do less decoding.
+
+### Where the difference is unambiguous
+
+At 1080p rgb8 — 178 MiB/s, the heaviest load either client will meet — we use
+**33 % less CPU** (198 % against 295 %) at the same delivered bandwidth. Both
+clients read every byte off the socket: the bridge's writes never stalled, so
+neither was applying backpressure.
+
+**Both balloon to about 5 GB of RSS there, and that is a bug in both.** 178 MiB/s
+against a client that draws 20-30 frames a second should not accumulate; ours
+holds slightly less, which is not a defence. It is the most actionable thing
+this whole exercise found.
+
+### Memory, everywhere else
+
+Three times less, consistently: ~215 MB against ~600 MB, in one process rather
+than three. That gap is stable across every load and it is the clearest result
+here.
+
+## What is still not measured
+
+- **Point cloud, compressed image, ROS 1 dialect, and rosbridge.** The harness
+  encodes these wrongly — verified by screenshot: the client sat on "waiting
+  for the first message" while the bridge delivered at it. Adding the schema
+  dependency bundles fixed part of it and not all. Those cells are absent
+  rather than filled with numbers from runs that did not do what they claimed.
+- **What the Tauri app processes.** It shows no message count, rate, bandwidth
+  or latency, so its throughput can only be inferred from CPU. Ours reports all
+  four, which is why our side of the table can be checked and theirs cannot.
+- **GPU.** Everything here is llvmpipe under Xvfb. Both clients are affected,
+  but a real GPU would change the 1080p row most.
+
+## What could not be measured (first pass)
 
 **Rendering under load** — a point cloud streaming into both — is the number
 that would matter most, and it is missing. Driving the Tauri UI needs synthetic
